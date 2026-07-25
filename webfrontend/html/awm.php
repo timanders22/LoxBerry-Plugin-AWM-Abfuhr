@@ -41,7 +41,7 @@ if (isset($_GET['say'])) {
     awm_fetch(false, 1);
     $text = awm_announce_text();
     if ($text === '') {
-        $text = 'Ding Dong! Dies ist eine Testansage des Abfuhrkalenders. Morgen wird keine Tonne abgeholt.';
+        $text = 'Hallo! Dies ist eine Testansage des Abfuhrkalenders. Morgen wird keine Tonne abgeholt.';
     }
     $ok = awm_say($text);
     echo 'SAY;OK=' . ($ok ? 1 : 0) . ";TEXT=$text\n";

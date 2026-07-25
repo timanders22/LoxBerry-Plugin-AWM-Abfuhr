@@ -85,7 +85,7 @@ function awm_config() {
     }
     $cfg['notify'] += array('audio' => 1, 'push' => 1, 'time' => '18:00');
     $cfg['tts'] += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
-                         'zones' => '1', 'volume' => 20, 'lang' => 'de', 'template' => '');
+                         'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
     return $cfg;
 }
 
@@ -452,7 +452,7 @@ function awm_tts_url($text) {
         return '';
     }
     if ($mode === 'musicserver') {
-        // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~20,4~20,6~20".
+        // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~8,4~8,6~8".
         // Explizite Angaben "Zone~Lautstaerke" haben Vorrang.
         $vol = max(1, min(100, (int) $tts['volume']));
         $zones = array();
@@ -509,10 +509,10 @@ function awm_announce_text($st = null) {
         return '';
     }
     if (count($namen) === 1) {
-        return 'Ding Dong! Morgen wird ' . $namen[0] . ' abgeholt. Bitte rausstellen.';
+        return 'Hallo! Morgen wird ' . $namen[0] . ' abgeholt. Bitte rausstellen.';
     }
     $letzte = array_pop($namen);
-    return 'Ding Dong! Morgen werden ' . implode(', ', $namen) . ' und ' . $letzte . ' abgeholt. Bitte rausstellen.';
+    return 'Hallo! Morgen werden ' . implode(', ', $namen) . ' und ' . $letzte . ' abgeholt. Bitte rausstellen.';
 }
 
 /** Cron-Pruefung: Ansage am Vorabend zur konfigurierten Uhrzeit (einmal pro Tag). */
