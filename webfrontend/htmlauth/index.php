@@ -1,6 +1,6 @@
 <?php
 /**
- * Abfuhrkalender AWM Muenchen - Admin-Oberflaeche (v1.0.0)
+ * Abfuhrkalender AWM Muenchen - Admin-Oberflaeche (v1.0.1)
  * Reiter: Einstellungen | Einbindung in Loxone | Test | Protokoll
  * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
  *
@@ -112,7 +112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         'ip' => trim((string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : '')),
         'port' => max(1, min(65535, (int) (isset($_POST['tts_port']) ? $_POST['tts_port'] : 7091))),
         'zones' => trim((string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '1')),
-        'volume' => max(1, min(100, (int) (isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 20))),
+        'volume' => max(1, min(100, (int) (isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 8))),
         'lang' => preg_replace('/[^a-z]/', '', strtolower((string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : 'de'))) ?: 'de',
         'template' => trim((string) (isset($_POST['tts_template']) ? $_POST['tts_template'] : '')),
     );
@@ -138,7 +138,7 @@ $aw_cfg += array('cals' => array(), 'fetch_days' => 14, 'lookahead' => 35, 'auto
 $aw_notify = is_array($aw_cfg['notify']) ? $aw_cfg['notify'] : array();
 $aw_notify += array('audio' => 1, 'push' => 1, 'time' => '18:00');
 $aw_tts = is_array($aw_cfg['tts']) ? $aw_cfg['tts'] : array();
-$aw_tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' => '1', 'volume' => 20, 'lang' => 'de', 'template' => '');
+$aw_tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091, 'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
 $aw_cals = function_exists('awm_cals') ? awm_cals() : array();
 
 $aw_states = array();
