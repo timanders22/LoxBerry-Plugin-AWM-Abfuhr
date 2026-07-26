@@ -188,6 +188,22 @@ $aw_host = aw_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 .aw-tbl th { background: #f0f0f0; }
 .aw-wrap .aw-btn, .aw-wrap a.aw-btn, .aw-wrap button { text-shadow: none !important; box-shadow: none !important; }
 .aw-wrap a.aw-btn, .aw-wrap a.aw-btn:visited, .aw-wrap a.aw-btn:hover { color: #fff !important; text-decoration: none; }
+
+/* --- Einheitliches Kachel-Raster im Reiter Test (Standard aller Plugins) --- */
+.aw-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
+.aw-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
+.aw-knopfreihe form { margin: 0; display: flex; }
+.aw-knopfreihe .aw-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
+    display: inline-flex; align-items: center; justify-content: center; line-height: 1.25; }
+.aw-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
+.aw-legende span { display: inline-flex; align-items: center; gap: 6px; }
+.aw-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.aw-btn.aw-b-lesen   { background: #6dac20; }
+.aw-btn.aw-b-technik { background: #546e7a; }
+.aw-btn.aw-b-aktion  { background: #e0620d; }
+.aw-punkt.aw-b-lesen   { background: #6dac20; }
+.aw-punkt.aw-b-technik { background: #546e7a; }
+.aw-punkt.aw-b-aktion  { background: #e0620d; }
 </style>
 <div class="aw-wrap">
 
@@ -442,18 +458,37 @@ Alle Werte gibt es auch &uuml;ber das LoxBerry MQTT Gateway (Reiter Einstellunge
 <!-- ================= Reiter: Test ================= -->
 <div class="aw-pane" id="tab-test">
 <h2>Test</h2>
+<div class="aw-legende">
+<span><i class="aw-punkt aw-b-lesen"></i> Ansehen &mdash; fragt nur ab, ver&auml;ndert nichts</span>
+<span><i class="aw-punkt aw-b-technik"></i> Technische Auskunft &mdash; f&uuml;r die Fehlersuche</span>
+<span><i class="aw-punkt aw-b-aktion"></i> L&ouml;st etwas aus &mdash; sendet oder ver&auml;ndert</span>
+</div>
+
+<h3 class="aw-h3">Ansehen</h3>
+<div class="aw-knopfreihe">
+<a class="aw-btn aw-b-lesen"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php" target="_blank">Loxone-Zeile abrufen</a>
+<a class="aw-btn aw-b-lesen"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?json=1" target="_blank">JSON-Ansicht</a>
+</div>
+
+<h3 class="aw-h3">Technische Auskunft</h3>
+<div class="aw-knopfreihe">
+<a class="aw-btn aw-b-technik"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?debug=1" target="_blank">Debug (alle Termine)</a>
+<a class="aw-btn aw-b-technik"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?refresh=1&amp;debug=1" target="_blank">Neu abrufen + Debug</a>
+<a class="aw-btn aw-b-technik" style="margin-left:8px;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?debug=1&amp;cal=2" target="_blank">Debug Kalender 2</a>
+</div>
+
+<h3 class="aw-h3">L&ouml;st etwas aus</h3>
+<div class="aw-knopfreihe">
+<a class="aw-btn aw-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?say=1" target="_blank">Test-Ansage jetzt</a>
+<a class="aw-btn aw-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?ptest=1" target="_blank">Test-Pushnachricht</a>
+<a class="aw-btn aw-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?renew=1" target="_blank">Jahres-Erneuerung testen</a>
+</div>
+
+
 <p>
-<a class="aw-btn" style="display:inline-block;margin-right:8px;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php" target="_blank">Loxone-Zeile abrufen</a>
-<a class="aw-btn" style="display:inline-block;margin-right:8px;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?debug=1" target="_blank">Debug (alle Termine)</a>
-<a class="aw-btn" style="display:inline-block;margin-right:8px;background:#607d8b;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?refresh=1&amp;debug=1" target="_blank">Neu abrufen + Debug</a>
-<a class="aw-btn" style="display:inline-block;margin-right:8px;background:#607d8b;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?json=1" target="_blank">JSON-Ansicht</a>
-</p>
-<p>
-<a class="aw-btn" style="display:inline-block;margin-right:8px;background:#e65100;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?say=1" target="_blank">Test-Ansage jetzt</a>
-<a class="aw-btn" style="display:inline-block;margin-right:8px;background:#e65100;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?ptest=1" target="_blank">Test-Pushnachricht</a>
-<a class="aw-btn" style="display:inline-block;background:#455a64;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?renew=1" target="_blank">Jahres-Erneuerung testen</a>
+
 <?php if (isset($aw_cals[2])) { ?>
-<a class="aw-btn" style="display:inline-block;margin-left:8px;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?debug=1&amp;cal=2" target="_blank">Debug Kalender 2</a>
+
 <?php } ?>
 </p>
 <div class="aw-small">
