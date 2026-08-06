@@ -2,10 +2,10 @@
 /**
  * Abfuhrkalender AWM Muenchen - gemeinsame Bibliothek
  *
- * Laedt iCal-/ICS-Exporte von Abfuhrkalendern (AWM Muenchen oder andere
- * Anbieter, solange die Termin-Titel die Tonnen-Namen enthalten), rollt
- * Serientermine selbst aus (RRULE FREQ=WEEKLY + INTERVAL + UNTIL + EXDATE +
- * einzelne "Achtung"-Verschiebungstermine) und liefert:
+ * Laedt iCal-/ICS-Exporte von Abfuhrkalendern - AWM Muenchen ebenso wie jeder
+ * andere Entsorger in Deutschland - rollt Serientermine selbst aus (ab 1.1.0
+ * FREQ=DAILY/WEEKLY/MONTHLY/YEARLY mit INTERVAL, BYDAY, BYMONTHDAY, COUNT,
+ * UNTIL und EXDATE, siehe awm_regeln.php) und liefert:
  *   - Loxone-Textzeile (kompatibel zum klassischen muell.php-Format)
  *   - bis zu 2 Kalender (z. B. Zuhause + Ferienhaus), Auswahl per &cal=2
  *   - JSON-Zustand, MQTT ueber das LoxBerry MQTT Gateway
@@ -19,6 +19,10 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 date_default_timezone_set('Europe/Berlin');
+
+// Tonnenzuordnung und Wiederholungsregeln (ab 1.1.0). Liegt in einer eigenen
+// Datei, damit die Aenderung gegenueber 1.0.2 an einer Stelle nachlesbar ist.
+require_once __DIR__ . '/awm_regeln.php';
 
 function awm_paths() {
     $lbhomedir = getenv('LBHOMEDIR') ?: (is_dir('/opt/loxberry') ? '/opt/loxberry' : '');
@@ -228,10 +232,10 @@ function awm_series($cal = 1) {
             $s['desc'] = str_replace(array('\\,', '\\;', '\\n'), array(',', ';', ' '), trim($mdx[1]));
         }
         if (preg_match('/RRULE:([^\r\n]+)/', $ev, $mr)) {
-            $r = $mr[1];
-            if (preg_match('/FREQ=(\w+)/', $r, $m2)) { $s['freq'] = $m2[1]; }
-            if (preg_match('/INTERVAL=(\d+)/', $r, $m2)) { $s['interval'] = max(1, (int) $m2[1]); }
-            if (preg_match('/UNTIL=(\d{8})/', $r, $m2)) { $s['until'] = $m2[1]; }
+            // Ab 1.1.0 wird die RRULE vollstaendig zerlegt (awm_regeln.php).
+            // Bis 1.0.2 wurden BYDAY, BYMONTHDAY und COUNT ignoriert - bei
+            // monatlichen Kalendern fiel dadurch fast das ganze Jahr weg.
+            $s = array_merge($s, awm_rrule_lesen($mr[1]));
         }
         if (preg_match_all('/EXDATE[^:\r\n]*:(\d{8})/', $ev, $mx)) {
             $s['exdates'] = $mx[1];
@@ -243,51 +247,35 @@ function awm_series($cal = 1) {
 
 /** Holt eine Serie am Datum (Ymd) ab? */
 function awm_pickup($s, $ymd) {
-    if (in_array($ymd, $s['exdates'])) {
-        return false;
-    }
-    if ($s['freq'] === null) {
-        return $s['start'] === $ymd;    // Einzeltermin (z. B. "Achtung: ...")
-    }
-    if ($s['freq'] !== 'WEEKLY') {
-        return $s['start'] === $ymd;    // andere Frequenzen: nur Basistermin
-    }
-    if ($ymd < $s['start'] || $ymd > $s['until']) {
-        return false;
-    }
-    $a = DateTime::createFromFormat('Ymd', $s['start']);
-    $b = DateTime::createFromFormat('Ymd', $ymd);
-    if (!$a || !$b) {
-        return false;
-    }
-    $tage = (int) $a->diff($b)->format('%a');
-    if ($tage % 7 !== 0) {
-        return false;                    // gleicher Wochentag wie der Basistermin
-    }
-    return (($tage / 7) % $s['interval']) === 0;
+    // Ab 1.1.0 macht das awm_trifft() in awm_regeln.php - mit allen
+    // Frequenzen. Fuer FREQ=WEEKLY ohne BYDAY ist das Ergebnis Zeile fuer
+    // Zeile dasselbe wie in 1.0.2; die Selbstpruefung weist das nach.
+    return awm_trifft($s, $ymd);
 }
 
-/** Tonnen-Erkennung aus dem Termin-Titel. */
-function awm_bins_of($summary) {
-    $l = function_exists('mb_strtolower') ? mb_strtolower($summary, 'UTF-8') : strtolower($summary);
-    $b = array('rest' => 0, 'bio' => 0, 'papier' => 0, 'wert' => 0);
-    if (strpos($l, 'rest') !== false || strpos($l, 'hausm') !== false) { $b['rest'] = 1; }
-    if (strpos($l, 'bio') !== false) { $b['bio'] = 1; }
-    if (strpos($l, 'papier') !== false) { $b['papier'] = 1; }
-    if (strpos($l, 'wertstoff') !== false || strpos($l, 'gelbe') !== false) { $b['wert'] = 1; }
-    return $b;
+/** Tonnen-Erkennung aus dem Termin-Titel.
+ *
+ * Ab 1.1.0 gilt zuerst die Zuordnungstabelle des Kalenders; trifft keine
+ * Regel, greift unveraendert die eingebaute Erkennung von 1.0.2.
+ */
+function awm_bins_of($summary, $cal = 1) {
+    return awm_bins_regeln($summary, awm_regeln($cal));
 }
 
 /** Welche Tonnen werden am Datum (Ymd) abgeholt? */
-function awm_bins($serien, $ymd) {
-    $t = array('rest' => 0, 'bio' => 0, 'papier' => 0, 'wert' => 0, 'texte' => array());
+function awm_bins($serien, $ymd, $cal = 1) {
+    // Die vier alten Schluessel bleiben an erster Stelle - daran haengen
+    // Konfiguration, MQTT-Themen und Loxone-Bausteine.
+    $t = awm_tonnen_leer();
+    $t['texte'] = array();
+    $regeln = awm_regeln($cal);
     foreach ($serien as $s) {
         if (!awm_pickup($s, $ymd)) {
             continue;
         }
-        $b = awm_bins_of($s['summary']);
-        foreach (array('rest', 'bio', 'papier', 'wert') as $k) {
-            if ($b[$k]) { $t[$k] = 1; }
+        $b = awm_bins_regeln($s['summary'], $regeln);
+        foreach ($b as $k => $v) {
+            if ($v) { $t[$k] = 1; }
         }
         $t['texte'][] = $s['summary'];
     }
@@ -312,8 +300,8 @@ function awm_state($force = false, $cal = 1) {
         'ok' => $serien ? 1 : 0,
         'cal' => $cal,
         'datum' => date('Ymd'),
-        'heute' => awm_bins($serien, date('Ymd')),
-        'morgen' => awm_bins($serien, date('Ymd', strtotime('+1 day'))),
+        'heute' => awm_bins($serien, date('Ymd'), $cal),
+        'morgen' => awm_bins($serien, date('Ymd', strtotime('+1 day')), $cal),
         'tage' => array('rest' => -1, 'bio' => -1, 'papier' => -1, 'wert' => -1),
         'naechste' => array('rest' => '', 'bio' => '', 'papier' => '', 'wert' => ''),
         'termine' => array(),
@@ -327,7 +315,7 @@ function awm_state($force = false, $cal = 1) {
     $lastterm = '';
     for ($d = 0; $d <= $look; $d++) {
         $ymd = date('Ymd', strtotime("+$d day"));
-        $x = awm_bins($serien, $ymd);
+        $x = awm_bins($serien, $ymd, $cal);
         foreach (array('rest', 'bio', 'papier', 'wert') as $k) {
             if ($x[$k] && $st['tage'][$k] < 0) {
                 $st['tage'][$k] = $d;
@@ -540,63 +528,215 @@ function awm_announce_check() {
     awm_say($text);
 }
 
-/* ---------------- Automatische Jahres-Erneuerung (AWM, Best-Effort) ---------------- */
+/* ==================================================================
+ * Automatische Link-Erneuerung zum Jahreswechsel
+ *
+ * Viele Abfuhrkalender-Links tragen das Kalenderjahr in sich. Zum
+ * Jahreswechsel liefert der alte Link dann keine Termine mehr - und das
+ * faellt erst auf, wenn die Tonne stehen bleibt. awm_state() setzt
+ * deshalb 'warnung', und hier wird versucht, den Link selbst zu erneuern.
+ *
+ * Ab 1.2.0 ist das nach Entsorger aufgeteilt:
+ *
+ *   awm_renew_strategien()   die Tabelle - HIER kommen neue Provider dazu
+ *   awm_renew_kand_*()       rechnen aus einer URL Kandidaten fuers
+ *                            Folgejahr aus. Reine Textarbeit, kein Netz,
+ *                            deshalb von awm_selbstpruefung_erneuerung()
+ *                            nachpruefbar.
+ *   awm_renew_scrape_awm()   die Rueckfallebene fuer AWM (Website lesen).
+ *   awm_renew()              waehlt die Strategie und schreibt das
+ *                            Ergebnis in die Konfiguration.
+ *
+ * MUENCHEN BLEIBT UNVERAENDERT. Die AWM-Strategie ist Zeile fuer Zeile
+ * die aus 1.1.0: erst Jahr im Link tauschen, dann die Ergebnisseite
+ * scrapen. Der einzige Unterschied ist, dass auch der gescrapte Link
+ * jetzt Termine enthalten MUSS, bevor er uebernommen wird - bis 1.1.0
+ * genuegte ein BEGIN:VCALENDAR, ein leerer Kalender konnte also einen
+ * funktionierenden Link ueberschreiben.
+ * ================================================================== */
 
 /**
- * Der AWM-iCal-Link enthaelt das Kalenderjahr (+ cHash). Diese Funktion versucht,
- * einen Link fuers Folgejahr zu beschaffen:
- *   Stufe 1: Jahr im Link tauschen und testen (falls der Server den cHash nicht prueft).
- *   Stufe 2: Ergebnisseite der AWM-Website mit denselben Parametern (ohne cHash)
- *            laden und den frischen ICS-Link herauslesen (Scraping).
- * Bei Erfolg wird die Konfiguration aktualisiert (inkl. Sicherungskopie).
+ * Welche Strategie gilt fuer welche URL? Erster Treffer gewinnt, deshalb
+ * steht die allgemeine Rueckfallebene ('*') zuletzt.
+ *
+ *   muster    Textstueck in der URL, '*' trifft immer
+ *   kand      Funktion(URL) -> Liste von Kandidaten-URLs fuers Folgejahr
+ *   fallback  Funktion(URL, cal) -> array(URL, ICS-Text) oder leer;
+ *             laeuft nur, wenn kein Kandidat funktioniert hat
  */
-function awm_renew($cal = 1) {
-    $p = awm_paths();
-    $cfg = awm_config();
-    $c = awm_cal($cal);
-    if ($c === null || stripos($c['url'], 'awm-muenchen.de') === false) {
-        return false; // nur fuer AWM-Links
+function awm_renew_strategien() {
+    return array(
+        array('muster' => 'awm-muenchen.de',
+              'name' => 'AWM Muenchen',
+              'kand' => 'awm_renew_kand_awm',
+              'fallback' => 'awm_renew_scrape_awm'),
+        array('muster' => 'abfall.io',
+              'name' => 'Abfallplus / abfall.io',
+              'kand' => 'awm_renew_kand_jahresfenster',
+              'fallback' => ''),
+        array('muster' => '*',
+              'name' => 'allgemein (Jahreszahl im Link)',
+              'kand' => 'awm_renew_kand_jahreszahl',
+              'fallback' => ''),
+    );
+}
+
+function awm_renew_strategie($url) {
+    foreach (awm_renew_strategien() as $s) {
+        if ($s['muster'] === '*' || stripos($url, $s['muster']) !== false) {
+            return $s;
+        }
     }
-    if (!preg_match('/year%5D=(\d{4})|year\]=(\d{4})/i', $c['url'], $my)) {
-        return false;
+    return null;
+}
+
+/**
+ * Kandidat abrufen und pruefen.
+ *
+ * Uebernommen wird nur ein Kalender MIT Terminen. Damit bleibt ein
+ * Fehlgriff folgenlos: der alte Link steht weiter in der Konfiguration.
+ * Rueckgabe: ICS-Text oder ''.
+ */
+function awm_renew_test($url) {
+    $ics = awm_http_get($url, 25);
+    if ($ics !== false && strpos($ics, 'BEGIN:VCALENDAR') !== false
+        && substr_count($ics, 'BEGIN:VEVENT') > 0) {
+        return $ics;
+    }
+    return '';
+}
+
+/* ---------------- Kandidaten je Entsorger ---------------- */
+
+/**
+ * AWM Muenchen: das Jahr steht als eigener Parameter im Link
+ *   ...tx_awmabfuhrkalender_abfuhrkalender[year]=2026...
+ * (in der Regel URL-kodiert als %5Byear%5D bzw. year%5D=).
+ */
+function awm_renew_kand_awm($url) {
+    if (!preg_match('/year%5D=(\d{4})|year\]=(\d{4})/i', $url, $my)) {
+        return array();
+    }
+    $year = (int) ($my[1] !== '' ? $my[1] : $my[2]);
+    $neu = preg_replace('/(year(?:%5D|\])=)' . $year . '/i', '${1}' . ($year + 1), $url);
+    return $neu === $url ? array() : array($neu);
+}
+
+/**
+ * Abfallplus / abfall.io: das Jahr steckt als Zeitfenster im Link
+ *   ...&timeperiod=20260101-20261231&...
+ * Geprueft wird dort der 'key', nicht das Fenster - Ersetzen genuegt,
+ * ein Abruf der Website ist nicht noetig.
+ */
+function awm_renew_kand_jahresfenster($url) {
+    if (!preg_match('/timeperiod=(\d{4})0101-(\d{4})1231/i', $url, $m)) {
+        return array();
+    }
+    $von = (int) $m[1];
+    $neu = str_replace($m[0], 'timeperiod=' . ($von + 1) . '0101-' . ($von + 1) . '1231', $url);
+    return $neu === $url ? array() : array($neu);
+}
+
+/**
+ * Rueckfallebene fuer Entsorger, deren Link-Aufbau (noch) nicht bekannt
+ * ist - etwa Jumomind/MyMuell oder ATURIS.
+ *
+ * Kommt das laufende oder das vergangene Jahr GENAU EINMAL in der URL
+ * vor, wird es hochgezaehlt. "Genau einmal" ist Absicht: taucht die Zahl
+ * mehrfach auf, ist nicht zu entscheiden, welche das Kalenderjahr ist,
+ * und Raten waere schlimmer als Nichtstun. Uebernommen wird ohnehin nur,
+ * was awm_renew_test() als Kalender mit Terminen bestaetigt.
+ */
+function awm_renew_kand_jahreszahl($url) {
+    $out = array();
+    foreach (array((int) date('Y'), (int) date('Y') - 1) as $year) {
+        if (substr_count($url, (string) $year) !== 1) {
+            continue;
+        }
+        $neu = str_replace((string) $year, (string) ($year + 1), $url);
+        if ($neu !== $url) {
+            $out[] = $neu;
+        }
+    }
+    return $out;
+}
+
+/* ---------------- Rueckfallebene AWM: Website lesen ---------------- */
+
+/**
+ * Stufe 2 fuer AWM, unveraendert aus 1.1.0: Ergebnisseite mit denselben
+ * Parametern (ohne cHash/section) laden und den frischen ICS-Link
+ * herauslesen. Rueckgabe: array(URL, ICS-Text) oder array('', '').
+ */
+function awm_renew_scrape_awm($url, $cal = 1) {
+    if (!preg_match('/year%5D=(\d{4})|year\]=(\d{4})/i', $url, $my)) {
+        return array('', '');
     }
     $year = (int) ($my[1] !== '' ? $my[1] : $my[2]);
     $newyear = $year + 1;
-    awm_log('Jahres-Erneuerung Kalender ' . $cal . ': versuche ' . $year . ' -> ' . $newyear);
-    // Stufe 1: Jahr tauschen
-    $try = preg_replace('/(year(?:%5D|\])=)' . $year . '/i', '${1}' . $newyear, $c['url']);
-    $ics = awm_http_get($try, 25);
-    $neu = '';
-    if ($ics !== false && strpos($ics, 'BEGIN:VCALENDAR') !== false && substr_count($ics, 'BEGIN:VEVENT') > 0) {
-        $neu = $try;
-        awm_log('Jahres-Erneuerung: Jahr-Tausch erfolgreich');
-    } else {
-        // Stufe 2: Ergebnisseite scrapen (ohne cHash/section)
-        $base = preg_replace('/[?&]cHash=[0-9a-f]+/i', '', $c['url']);
-        $base = preg_replace('/([?&])tx_awmabfuhrkalender_abfuhrkalender(?:%5B|\[)section(?:%5D|\])=ics&?/i', '$1', $base);
-        $base = preg_replace('/(year(?:%5D|\])=)' . $year . '/i', '${1}' . $newyear, $base);
-        $html = awm_http_get($base, 25);
-        if ($html !== false) {
-            $html = html_entity_decode($html, ENT_QUOTES, 'UTF-8');
-            if (preg_match_all('#https?://www\.awm-muenchen\.de/[^"\'\s]*section(?:%5D|\])=ics[^"\'\s]*#i', $html, $mm)) {
-                foreach ($mm[0] as $cand) {
-                    if (strpos($cand, (string) $newyear) === false) {
-                        continue;
-                    }
-                    $ics = awm_http_get($cand, 25);
-                    if ($ics !== false && strpos($ics, 'BEGIN:VCALENDAR') !== false) {
-                        $neu = $cand;
-                        awm_log('Jahres-Erneuerung: Link per Website-Scraping gefunden');
-                        break;
-                    }
-                }
-            }
+    $base = preg_replace('/[?&]cHash=[0-9a-f]+/i', '', $url);
+    $base = preg_replace('/([?&])tx_awmabfuhrkalender_abfuhrkalender(?:%5B|\[)section(?:%5D|\])=ics&?/i', '$1', $base);
+    $base = preg_replace('/(year(?:%5D|\])=)' . $year . '/i', '${1}' . $newyear, $base);
+    $html = awm_http_get($base, 25);
+    if ($html === false) {
+        return array('', '');
+    }
+    $html = html_entity_decode($html, ENT_QUOTES, 'UTF-8');
+    if (!preg_match_all('#https?://www\.awm-muenchen\.de/[^"\'\s]*section(?:%5D|\])=ics[^"\'\s]*#i', $html, $mm)) {
+        return array('', '');
+    }
+    foreach ($mm[0] as $cand) {
+        if (strpos($cand, (string) $newyear) === false) {
+            continue;
+        }
+        $ics = awm_renew_test($cand);
+        if ($ics !== '') {
+            awm_log('Jahres-Erneuerung: Link per Website-Scraping gefunden');
+            return array($cand, $ics);
         }
     }
-    if ($neu === '') {
-        awm_log('Jahres-Erneuerung: FEHLGESCHLAGEN - bitte neuen iCal-Link von der AWM-Website holen');
+    return array('', '');
+}
+
+/* ---------------- Ablauf ---------------- */
+
+/**
+ * Link eines Kalenders aufs Folgejahr erneuern.
+ * Bei Erfolg wird die Konfiguration aktualisiert (inkl. Sicherungskopie)
+ * und der frische Kalender gleich abgelegt.
+ */
+function awm_renew($cal = 1) {
+    $p = awm_paths();
+    $c = awm_cal($cal);
+    if ($c === null) {
         return false;
     }
+    $s = awm_renew_strategie($c['url']);
+    if ($s === null) {
+        awm_log('Jahres-Erneuerung Kalender ' . $cal . ': keine Strategie fuer diesen Link');
+        return false;
+    }
+    awm_log('Jahres-Erneuerung Kalender ' . $cal . ': Strategie "' . $s['name'] . '"');
+
+    $neu = '';
+    $ics = '';
+    foreach (call_user_func($s['kand'], $c['url']) as $kandidat) {
+        $t = awm_renew_test($kandidat);
+        if ($t !== '') {
+            $neu = $kandidat;
+            $ics = $t;
+            awm_log('Jahres-Erneuerung: Link-Umschreibung erfolgreich');
+            break;
+        }
+    }
+    if ($neu === '' && $s['fallback'] !== '') {
+        list($neu, $ics) = call_user_func($s['fallback'], $c['url'], $cal);
+    }
+    if ($neu === '' || $ics === '') {
+        awm_log('Jahres-Erneuerung: FEHLGESCHLAGEN - bitte neuen Kalender-Link beim Entsorger holen');
+        return false;
+    }
+
     // Konfiguration aktualisieren
     $raw = json_decode((string) @file_get_contents($p['config']), true);
     if (!is_array($raw)) {
@@ -617,8 +757,19 @@ function awm_renew($cal = 1) {
     @copy($p['config'], $p['backup']);
     file_put_contents(awm_icsfile($cal), $ics);
     @unlink(awm_tmpdir() . '/state_' . (int) $cal . '.json');
-    awm_log('Jahres-Erneuerung: neuer Link fuer Kalender ' . $cal . ' gespeichert (' . $newyear . ')');
+    awm_log('Jahres-Erneuerung: neuer Link fuer Kalender ' . $cal . ' gespeichert');
     return true;
+}
+
+/** Nennt der Link ein Jahr, das schon vorbei ist? */
+function awm_renew_veraltet($url) {
+    if (preg_match('/year(?:%5D|\])=(\d{4})/i', $url, $m)) {
+        return (int) $m[1] < (int) date('Y');
+    }
+    if (preg_match('/timeperiod=(\d{4})0101/i', $url, $m)) {
+        return (int) $m[1] < (int) date('Y');
+    }
+    return false;
 }
 
 /** Cron: Erneuerung hoechstens einmal taeglich versuchen, wenn noetig. */
@@ -629,10 +780,7 @@ function awm_renew_check() {
     }
     foreach (awm_cals() as $n => $c) {
         $st = awm_state(false, $n);
-        $need = $st['warnung'] === 1;
-        if (!$need && preg_match('/year(?:%5D|\])=(\d{4})/i', $c['url'], $my)) {
-            $need = (int) $my[1] < (int) date('Y');
-        }
+        $need = $st['warnung'] === 1 || awm_renew_veraltet($c['url']);
         if (!$need) {
             continue;
         }
@@ -643,4 +791,137 @@ function awm_renew_check() {
         @file_put_contents($flag, '1');
         awm_renew($n);
     }
+}
+
+/* ==================================================================
+ * Selbstpruefung der Erneuerung
+ *
+ * Prueft nur die Textarbeit an den Links - ohne Netz, damit sie in der
+ * Oberflaeche jederzeit laufen kann. Der erste Block ist der wichtige:
+ * er weist nach, dass der AWM-Link genauso umgeschrieben wird wie
+ * bisher.
+ * ================================================================== */
+
+function awm_selbstpruefung_erneuerung()
+{
+    $e = array();
+    $p = function ($ok, $text) use (&$e) { $e[] = array($ok ? 1 : 0, $text); };
+
+    /* --- 1. AWM bleibt unveraendert --- */
+    $awm = 'https://www.awm-muenchen.de/entsorgen/abfuhrkalender'
+         . '?tx_awmabfuhrkalender_abfuhrkalender%5Bhausnummer%5D=1'
+         . '&tx_awmabfuhrkalender_abfuhrkalender%5Byear%5D=2026'
+         . '&tx_awmabfuhrkalender_abfuhrkalender%5Bsection%5D=ics'
+         . '&cHash=abc123';
+    $k = awm_renew_kand_awm($awm);
+    $p(count($k) === 1 && strpos($k[0], 'year%5D=2027') !== false,
+       'AWM: Jahr im Link wird hochgezaehlt (2026 -> 2027)');
+    $p(count($k) === 1 && strpos($k[0], 'hausnummer%5D=1') !== false
+                       && strpos($k[0], 'cHash=abc123') !== false,
+       'AWM: alle uebrigen Parameter bleiben unangetastet');
+    $p(awm_renew_strategie($awm) !== null
+       && awm_renew_strategie($awm)['kand'] === 'awm_renew_kand_awm',
+       'AWM-Link waehlt die AWM-Strategie');
+    $p(awm_renew_kand_awm('https://www.awm-muenchen.de/ohne-jahr.ics') === array(),
+       'AWM ohne Jahresangabe: kein Kandidat, kein Schaden');
+
+    /* --- 2. Abfallplus / abfall.io --- */
+    $aio = 'https://api.abfall.io/?key=f35bd08b&mode=export&idhousenumber=2859'
+         . '&wastetypes=20,17&timeperiod=20260101-20261231&type=ics';
+    $k = awm_renew_kand_jahresfenster($aio);
+    $p(count($k) === 1 && strpos($k[0], 'timeperiod=20270101-20271231') !== false,
+       'abfall.io: Zeitfenster wird aufs Folgejahr gesetzt');
+    $p(count($k) === 1 && strpos($k[0], 'key=f35bd08b') !== false,
+       'abfall.io: Schluessel bleibt unangetastet');
+    $s = awm_renew_strategie($aio);
+    $p($s !== null && $s['kand'] === 'awm_renew_kand_jahresfenster',
+       'abfall.io-Link waehlt die abfall.io-Strategie');
+
+    /* --- 3. Allgemeine Rueckfallebene --- */
+    $j = (int) date('Y');
+    $p(awm_renew_kand_jahreszahl('https://beispiel.de/kalender_' . $j . '.ics')
+       === array('https://beispiel.de/kalender_' . ($j + 1) . '.ics'),
+       'Allgemein: einzelne Jahreszahl wird hochgezaehlt');
+    $p(awm_renew_kand_jahreszahl('https://beispiel.de/' . $j . '/kalender_' . $j . '.ics') === array(),
+       'Allgemein: mehrdeutige Jahreszahl wird in Ruhe gelassen');
+    $p(awm_renew_kand_jahreszahl('https://beispiel.de/kalender.ics') === array(),
+       'Allgemein: Link ohne Jahreszahl liefert keinen Kandidaten');
+    $s = awm_renew_strategie('https://mymuell.jumomind.com/webmodul/beispiel/ical');
+    $p($s !== null && $s['kand'] === 'awm_renew_kand_jahreszahl',
+       'Unbekannter Entsorger landet in der Rueckfallebene');
+
+    /* --- 4. Veraltet-Erkennung --- */
+    $p(awm_renew_veraltet(str_replace('2026', (string) ($j - 1), $awm)),
+       'Veraltet: AWM-Link aus dem Vorjahr wird erkannt');
+    $p(!awm_renew_veraltet(str_replace('2026', (string) $j, $awm)),
+       'Veraltet: AWM-Link des laufenden Jahres gilt als aktuell');
+    $p(awm_renew_veraltet(str_replace('2026', (string) ($j - 1), $aio)),
+       'Veraltet: abfall.io-Fenster aus dem Vorjahr wird erkannt');
+
+    return $e;
+}
+
+/* ==================================================================
+ * Sprache (Pflicht: Deutsch und Englisch)
+ *
+ * Englisch ist die Rueckfallebene, nicht Deutsch: wer eine dritte Sprache
+ * eingestellt hat, versteht eher Englisch. Deshalb muss language_en.ini
+ * immer vollstaendig sein.
+ * ================================================================== */
+
+function awm_sprache()
+{
+    $sprache = 'de';
+    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'lblanguage')) {
+        $sprache = LBSystem::lblanguage();
+    } elseif (getenv('LBLANG')) {
+        $sprache = getenv('LBLANG');
+    }
+    $sprache = strtolower(substr((string) $sprache, 0, 2));
+    return in_array($sprache, array('de', 'en'), true) ? $sprache : 'en';
+}
+
+/**
+ * Text zu einem Schluessel "ABSCHNITT.SCHLUESSEL".
+ *
+ * Ist der Schluessel unbekannt, wird er selbst zurueckgegeben - so faellt
+ * beim Durchsehen sofort auf, was noch fehlt, statt dass die Seite leer
+ * bleibt.
+ */
+function awm_t($schluessel)
+{
+    static $texte = null;
+    if ($texte === null) {
+        // Installiert liegen die Dateien unter
+        // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
+        // sich aus dem Ablageort dieser Datei.
+        $home = getenv('LBHOMEDIR');
+        if (!$home || !is_dir($home)) {
+            foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+                if (is_dir($k)) { $home = $k; break; }
+            }
+        }
+        $ordner = basename(dirname(__FILE__));
+        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
+        if (!is_dir($pfad)) {
+            // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
+            $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
+        }
+        $texte = @parse_ini_file($pfad . '/language_' . awm_sprache() . '.ini',
+                                 true, INI_SCANNER_RAW);
+        if (!is_array($texte)) { $texte = array(); }
+        $rueck = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);
+        if (is_array($rueck)) { $texte = array_replace_recursive($rueck, $texte); }
+        // parse_ini_file mit INI_SCANNER_RAW liefert die Werte samt der
+        // Anfuehrungszeichen zurueck, in die sie in der Datei stehen muessen.
+        // Die gehoeren nicht in die Ausgabe.
+        foreach ($texte as $ab => $paare) {
+            if (!is_array($paare)) { continue; }
+            foreach ($paare as $s => $w) {
+                $texte[$ab][$s] = trim((string) $w, '"');
+            }
+        }
+    }
+    list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
 }

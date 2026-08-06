@@ -56,13 +56,62 @@ if ((!is_file($aw_cfgfile) || trim((string) @file_get_contents($aw_cfgfile)) ===
 $aw_saved = false;
 $aw_err = '';
 $aw_note = '';
-$aw_tab = preg_match('/^tab-(settings|loxone|test|log)$/', (string) (isset($_POST['activetab']) ? $_POST['activetab'] : '')) ? $_POST['activetab'] : 'tab-settings';
+$aw_tab = preg_match('/^tab-(settings|bins|loxone|test|log)$/', (string) (isset($_POST['activetab']) ? $_POST['activetab'] : '')) ? $_POST['activetab'] : 'tab-settings';
 
 // ---------- Protokoll leeren ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
     @mkdir(dirname($aw_logfile), 0775, true);
     @file_put_contents($aw_logfile, '[' . date('Y-m-d H:i:s') . "] Protokoll geleert (Admin-Oberflaeche)\n");
     $aw_tab = 'tab-log';
+}
+
+// ---------- Tonnenzuordnung speichern (ab 1.1.0) ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_bins'])) {
+    $aw_cfg2 = awm_config();
+    $aw_cl = isset($aw_cfg2['cals']) && is_array($aw_cfg2['cals']) ? array_values($aw_cfg2['cals']) : array();
+    $aw_cn = max(1, min(count($aw_cl), (int) (isset($_POST['bins_cal']) ? $_POST['bins_cal'] : 1)));
+    $aw_arten = awm_tonnenarten();
+    $aw_titel = isset($_POST['bin_titel']) ? (array) $_POST['bin_titel'] : array();
+    $aw_tonne = isset($_POST['bin_tonne']) ? (array) $_POST['bin_tonne'] : array();
+    $aw_art = isset($_POST['bin_art']) ? (array) $_POST['bin_art'] : array();
+    $aw_regeln_neu = array();
+    foreach ($aw_titel as $aw_k => $aw_tt) {
+        $aw_tt = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', (string) $aw_tt));
+        $aw_zz = (string) (isset($aw_tonne[$aw_k]) ? $aw_tonne[$aw_k] : '');
+        if ($aw_tt === '' || $aw_zz === '') {
+            continue;                    // leere Zeile = keine Zuordnung
+        }
+        if (!isset($aw_arten[$aw_zz])) {
+            $aw_err = 'Unbekannte Tonnenart: ' . htmlspecialchars($aw_zz, ENT_QUOTES, 'UTF-8');
+            continue;
+        }
+        $aw_aa = (string) (isset($aw_art[$aw_k]) ? $aw_art[$aw_k] : 'enthaelt');
+        if (!in_array($aw_aa, array('enthaelt', 'beginnt', 'genau'), true)) {
+            $aw_err = 'Unbekannte Vergleichsart bei "' . htmlspecialchars($aw_tt, ENT_QUOTES, 'UTF-8') . '".';
+            continue;
+        }
+        $aw_regeln_neu[] = array('muster' => $aw_tt, 'tonne' => $aw_zz, 'art' => $aw_aa);
+    }
+    if ($aw_err === '') {
+        if (!isset($aw_cl[$aw_cn - 1])) {
+            $aw_err = 'Diesen Kalender gibt es nicht.';
+        } else {
+            $aw_cl[$aw_cn - 1]['regeln'] = $aw_regeln_neu;
+            $aw_cfg2['cals'] = $aw_cl;
+            if (!is_dir($aw_cfgdir)) { @mkdir($aw_cfgdir, 0775, true); }
+            $aw_j = json_encode($aw_cfg2, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if (@file_put_contents($aw_cfgfile, $aw_j) !== false) {
+                @copy($aw_cfgfile, $aw_bkfile);
+                // Der Zwischenspeicher haelt 10 Minuten - ohne Auffrischen
+                // sieht man die neue Zuordnung erst danach.
+                if (function_exists('awm_state')) { awm_state(true, $aw_cn); }
+                $aw_note = 'Die Tonnenzuordnung wurde gespeichert (' . count($aw_regeln_neu) . ' Regeln).';
+            } else {
+                $aw_err = 'Konfiguration konnte nicht gespeichert werden: ' . $aw_cfgfile;
+            }
+        }
+    }
+    $aw_tab = 'tab-bins';
 }
 
 // ---------- Jetzt abrufen ----------
@@ -91,9 +140,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             $aw_err = 'Kalender ' . ($aw_i + 1) . ': Die iCal-URL muss mit http:// oder https:// beginnen.';
             continue;
         }
+        // Die Zuordnungstabelle haengt am selben Eintrag und wird hier NICHT
+        // mitgeschickt - sie muss deshalb aus der bestehenden Konfiguration
+        // uebernommen werden. Ohne das loescht ein Klick auf 'Speichern' in
+        // den Einstellungen die gesamte Tonnenzuordnung.
+        $aw_alt = awm_config();
+        $aw_alte_cals = isset($aw_alt['cals']) && is_array($aw_alt['cals'])
+            ? array_values($aw_alt['cals']) : array();
+        $aw_regeln_alt = isset($aw_alte_cals[$aw_i]['regeln']) && is_array($aw_alte_cals[$aw_i]['regeln'])
+            ? $aw_alte_cals[$aw_i]['regeln'] : array();
         $aw_new['cals'][] = array(
             'name' => trim((string) (isset($aw_names[$aw_i]) ? $aw_names[$aw_i] : '')),
             'url' => $aw_u,
+            'regeln' => $aw_regeln_alt,
         );
     }
     $aw_new['fetch_days'] = max(1, min(60, (int) (isset($_POST['fetch_days']) ? $_POST['fetch_days'] : 14)));
@@ -160,98 +219,107 @@ if ($aw_frame) {
 $aw_host = aw_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 ?>
 <style>
-.aw-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
-.aw-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
-.aw-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
-.aw-wrap input[type=text], .aw-wrap input[type=number], .aw-wrap select, .aw-wrap textarea {
+.sm-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
+.sm-wrap h2 { color: #6dac20; margin: 24px 0 10px; font-size: 1.15em; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px; }
+.sm-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
+.sm-wrap input[type=text], .sm-wrap input[type=number], .sm-wrap select, .sm-wrap textarea {
   width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95em; box-sizing: border-box; }
-.aw-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
-.aw-row { display: flex; gap: 12px; }
-.aw-row > div { flex: 1; }
-.aw-btn { background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 1em; cursor: pointer; margin-top: 18px; font-weight: 600; }
-.aw-alert { border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
-.aw-ok { background: #e8f5e9; border: 1px solid #a5d6a7; }
-.aw-err { background: #ffebee; border: 1px solid #ef9a9a; }
-.aw-warn { background: #fff8e1; border: 1px solid #ffe082; }
-.aw-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
-.aw-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
-.aw-small { font-size: 0.82em; color: #666; margin-top: 3px; }
-.aw-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
-.aw-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
-.aw-tab.aw-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
-.aw-pane { display: none; padding-top: 4px; }
-.aw-pane.aw-active { display: block; }
-.aw-log { text-shadow: none !important; background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
-.aw-step { margin: 10px 0; padding: 10px 14px; background: #fafafa; border-left: 4px solid #6dac20; border-radius: 0 8px 8px 0; }
-.aw-tbl { border-collapse: collapse; margin: 8px 0; }
-.aw-tbl th, .aw-tbl td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; }
-.aw-tbl th { background: #f0f0f0; }
-.aw-wrap .aw-btn, .aw-wrap a.aw-btn, .aw-wrap button { text-shadow: none !important; box-shadow: none !important; }
-.aw-wrap a.aw-btn, .aw-wrap a.aw-btn:visited, .aw-wrap a.aw-btn:hover { color: #fff !important; text-decoration: none; }
+.sm-wrap input[type=checkbox] { width: 17px; height: 17px; margin: 0; vertical-align: middle; }
+.sm-row { display: flex; gap: 12px; }
+.sm-row > div { flex: 1; }
+.sm-btn { background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 1em; cursor: pointer; margin-top: 18px; font-weight: 600; }
+.sm-alert { border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
+.sm-ok { background: #e8f5e9; border: 1px solid #a5d6a7; }
+.sm-err { background: #ffebee; border: 1px solid #ef9a9a; }
+.sm-warn { background: #fff8e1; border: 1px solid #ffe082; }
+.sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
+.sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
+.sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
+.sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
+.sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
+.sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
+.sm-pane { display: none; padding-top: 4px; }
+.sm-pane.sm-active { display: block; }
+.sm-log { text-shadow: none !important; background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
+.sm-step { margin: 10px 0; padding: 10px 14px; background: #fafafa; border-left: 4px solid #6dac20; border-radius: 0 8px 8px 0; }
+.sm-tbl { border-collapse: collapse; margin: 8px 0; }
+.sm-tbl th, .sm-tbl td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; }
+.sm-tbl th { background: #f0f0f0; }
+.sm-wrap .sm-btn, .sm-wrap a.sm-btn, .sm-wrap button { text-shadow: none !important; box-shadow: none !important; }
+.sm-wrap a.sm-btn, .sm-wrap a.sm-btn:visited, .sm-wrap a.sm-btn:hover { color: #fff !important; text-decoration: none; }
+/* Zeigefinger drauf: nur abdunkeln, Beschriftung bleibt weiss.
+   Ohne diese Regel faerbt das jQuery-Mobile-Thema von LoxBerry den
+   Hintergrund beim Ueberfahren weiss - zusammen mit color:#fff war die
+   Beschriftung dann unlesbar. Getroffen hatte es "Zuordnung speichern"
+   im Reiter Tonnen, den einzigen Knopf ohne data-role='none'.
+   brightness() statt fester Farben, damit jede Knopfvariante ihre
+   eigene behaelt. */
+.sm-wrap .sm-btn:hover, .sm-wrap .sm-btn:focus, .sm-wrap .sm-btn:active,
+.sm-wrap button.sm-btn:hover, .sm-wrap button.sm-btn:focus, .sm-wrap button.sm-btn:active {
+    color: #fff !important; filter: brightness(0.92); background-image: none !important; }
 
-/* --- Einheitliches Kachel-Raster im Reiter Test (Standard aller Plugins) --- */
-.aw-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
-.aw-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
-.aw-knopfreihe form { margin: 0; display: flex; }
-.aw-knopfreihe .aw-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
+/* --- Einheitliches Kachel-Raster im Reiter <?php echo awm_t('TEXT.TEST'); ?> (Standard aller Plugins) --- */
+.sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; text-shadow: none !important; }
+.sm-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
+.sm-knopfreihe form { margin: 0; display: flex; }
+.sm-knopfreihe .sm-btn { flex: 0 0 auto; min-width: 250px; text-align: center;
     display: inline-flex; align-items: center; justify-content: center; line-height: 1.25; }
-.aw-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
-.aw-legende span { display: inline-flex; align-items: center; gap: 6px; }
-.aw-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
-.aw-btn.aw-b-lesen   { background: #6dac20; }
-.aw-btn.aw-b-technik { background: #546e7a; }
-.aw-btn.aw-b-aktion  { background: #e0620d; }
-.aw-punkt.aw-b-lesen   { background: #6dac20; }
-.aw-punkt.aw-b-technik { background: #546e7a; }
-.aw-punkt.aw-b-aktion  { background: #e0620d; }
+.sm-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
+.sm-legende span { display: inline-flex; align-items: center; gap: 6px; }
+.sm-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.sm-btn.sm-b-lesen   { background: #6dac20; }
+.sm-btn.sm-b-technik { background: #546e7a; }
+.sm-btn.sm-b-aktion  { background: #e0620d; }
+.sm-punkt.sm-b-lesen   { background: #6dac20; }
+.sm-punkt.sm-b-technik { background: #546e7a; }
+.sm-punkt.sm-b-aktion  { background: #e0620d; }
 </style>
-<div class="aw-wrap">
+<div class="sm-wrap">
 
-<?php if ($aw_saved) { ?><div class="aw-alert aw-ok"><b>Konfiguration gespeichert</b> (inkl. Sicherungskopie f&uuml;r Updates).</div><?php } ?>
-<?php if ($aw_note !== '') { ?><div class="aw-alert aw-ok"><?= aw_e($aw_note) ?></div><?php } ?>
-<?php if ($aw_err !== '') { ?><div class="aw-alert aw-err"><b>Fehler:</b> <?= aw_e($aw_err) ?></div><?php } ?>
+<?php if ($aw_saved) { ?><div class="sm-alert sm-ok"><b><?php echo awm_t('TEXT.KONFIGURATION_GESPEICHERT'); ?></b> <?php echo awm_t('TEXT.INKL_SICHERUNGSKOPIE_FR_UPDATES'); ?></div><?php } ?>
+<?php if ($aw_note !== '') { ?><div class="sm-alert sm-ok"><?= aw_e($aw_note) ?></div><?php } ?>
+<?php if ($aw_err !== '') { ?><div class="sm-alert sm-err"><b><?php echo awm_t('TEXT.FEHLER'); ?></b> <?= aw_e($aw_err) ?></div><?php } ?>
 
 <?php if (!$aw_cals) { ?>
-<div class="aw-alert aw-info"><b>Noch kein Kalender eingerichtet.</b> Bitte unten die iCal-URL eintragen, speichern und &bdquo;Jetzt abrufen&ldquo; klicken.</div>
+<div class="sm-alert sm-info"><b><?php echo awm_t('TEXT.NOCH_KEIN_KALENDER_EINGERICHTET'); ?></b> <?php echo awm_t('TEXT.BITTE_UNTEN_DIE_ICAL_URL_EINTRAGEN'); ?></div>
 <?php } ?>
 <?php foreach ($aw_states as $aw_n => $aw_st) { ?>
-<div class="aw-alert aw-info"><b><?= aw_e($aw_cals[$aw_n]['name']) ?></b>:
+<div class="sm-alert sm-info"><b><?= aw_e($aw_cals[$aw_n]['name']) ?></b>:
 <?php if ($aw_st['ok']) { ?>
-<?= (int) $aw_st['ereignisse'] ?> Serien/Termine &middot;
-Morgen: <?= $aw_st['morgen']['rest'] ? '<b>Restm&uuml;ll</b> ' : '' ?><?= $aw_st['morgen']['bio'] ? '<b>Bio</b> ' : '' ?><?= $aw_st['morgen']['papier'] ? '<b>Papier</b> ' : '' ?><?= $aw_st['morgen']['wert'] ? '<b>Wertstoff</b> ' : '' ?><?= ($aw_st['morgen']['rest'] || $aw_st['morgen']['bio'] || $aw_st['morgen']['papier'] || $aw_st['morgen']['wert']) ? '' : 'keine Abholung' ?> &middot;
-N&auml;chste: Rest <?= $aw_st['tage']['rest'] >= 0 ? 'in ' . (int) $aw_st['tage']['rest'] . ' T.' : '-' ?>,
+<?= (int) $aw_st['ereignisse'] ?> <?php echo awm_t('TEXT.SERIEN_TERMINE_MORGEN'); ?> <?= $aw_st['morgen']['rest'] ? '<b>Restm&uuml;ll</b> ' : '' ?><?= $aw_st['morgen']['bio'] ? '<b>Bio</b> ' : '' ?><?= $aw_st['morgen']['papier'] ? '<b>Papier</b> ' : '' ?><?= $aw_st['morgen']['wert'] ? '<b>Wertstoff</b> ' : '' ?><?= ($aw_st['morgen']['rest'] || $aw_st['morgen']['bio'] || $aw_st['morgen']['papier'] || $aw_st['morgen']['wert']) ? '' : 'keine Abholung' ?> <?php echo awm_t('TEXT.NCHSTE_REST'); ?> <?= $aw_st['tage']['rest'] >= 0 ? 'in ' . (int) $aw_st['tage']['rest'] . ' T.' : '-' ?>,
 Bio <?= $aw_st['tage']['bio'] >= 0 ? 'in ' . (int) $aw_st['tage']['bio'] . ' T.' : '-' ?>,
-Papier <?= $aw_st['tage']['papier'] >= 0 ? 'in ' . (int) $aw_st['tage']['papier'] . ' T.' : '-' ?>
+<?php echo awm_t('TEXT.PAPIER'); ?> <?= $aw_st['tage']['papier'] >= 0 ? 'in ' . (int) $aw_st['tage']['papier'] . ' T.' : '-' ?>
 <?php if (!empty($aw_st['termine'])) { ?>
-<table class="aw-tbl"><tr><th>Datum</th><th>Abholung</th></tr>
+<table class="sm-tbl"><tr><th><?php echo awm_t('TEXT.DATUM'); ?></th><th><?php echo awm_t('TEXT.ABHOLUNG'); ?></th></tr>
 <?php foreach (array_slice($aw_st['termine'], 0, 6) as $aw_t) { ?>
 <tr><td><?= aw_e(aw_d($aw_t[0])) ?></td><td><?= aw_e($aw_t[1]) ?></td></tr>
 <?php } ?></table>
 <?php } ?>
 <?php } else { ?>
-<b>Noch keine Termine geladen</b> &mdash; bitte &bdquo;Jetzt abrufen&ldquo; klicken (Reiter Einstellungen).
+<b><?php echo awm_t('TEXT.NOCH_KEINE_TERMINE_GELADEN'); ?></b> <?php echo awm_t('TEXT.BITTE_JETZT_ABRUFEN_KLICKEN_REITER'); ?>
 <?php } ?>
-<?php if (!empty($aw_st['hinweis'])) { ?><br><b>Hinweis vom Entsorger:</b> <?= aw_e($aw_st['hinweis']) ?><?php } ?>
-<?php if (!empty($aw_st['warnung'])) { ?><br><b style="color:#c62828;">Achtung:</b> Kalender endet in &lt;30 Tagen (Jahreswechsel). Die automatische Erneuerung l&auml;uft &mdash; falls sie fehlschl&auml;gt (Protokoll), bitte neuen iCal-Link eintragen.<?php } ?>
+<?php if (!empty($aw_st['hinweis'])) { ?><br><b><?php echo awm_t('TEXT.HINWEIS_VOM_ENTSORGER'); ?></b> <?= aw_e($aw_st['hinweis']) ?><?php } ?>
+<?php if (!empty($aw_st['warnung'])) { ?><br><b style="color:#c62828;"><?php echo awm_t('TEXT.ACHTUNG'); ?></b> <?php echo awm_t('TEXT.KALENDER_ENDET_IN_30_TAGEN_JAHRESW'); ?><?php } ?>
 </div>
 <?php } ?>
 
-<div class="aw-tabs">
-    <div class="aw-tab" data-pane="tab-settings">Einstellungen</div>
-    <div class="aw-tab" data-pane="tab-loxone">Einbindung in Loxone</div>
-    <div class="aw-tab" data-pane="tab-test">Test</div>
-    <div class="aw-tab" data-pane="tab-log">Protokoll</div>
+<div class="sm-tabs">
+    <div class="sm-tab" data-pane="tab-settings"><?php echo awm_t('REITER.EINSTELLUNGEN'); ?></div>
+    <div class="sm-tab" data-pane="tab-bins"><?php echo awm_t('REITER.TONNEN'); ?></div>
+    <div class="sm-tab" data-pane="tab-loxone"><?php echo awm_t('REITER.LOXONE'); ?></div>
+    <div class="sm-tab" data-pane="tab-test"><?php echo awm_t('REITER.TEST'); ?></div>
+    <div class="sm-tab" data-pane="tab-log"><?php echo awm_t('REITER.LOG'); ?></div>
 </div>
 
-<!-- ================= Reiter: Einstellungen ================= -->
-<div class="aw-pane" id="tab-settings">
-<form method="post" autocomplete="off">
+<!-- ================= Reiter: <?php echo awm_t('TEXT.EINSTELLUNG'); ?>en ================= -->
+<div class="sm-pane" id="tab-settings">
+<form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
-<h2>Datenquellen (bis zu 2 Kalender)</h2>
-<table class="aw-tbl" style="width:100%;">
-<tr><th style="width:36px;">Nr.</th><th style="width:180px;">Name (frei)</th><th>iCal-Kalender-URL</th></tr>
+<h2><?php echo awm_t('TEXT.DATENQUELLEN_BIS_ZU_2_KALENDER'); ?></h2>
+<table class="sm-tbl" style="width:100%;">
+<tr><th style="width:36px;">Nr.</th><th style="width:180px;"><?php echo awm_t('TEXT.NAME_FREI'); ?></th><th><?php echo awm_t('TEXT.ICAL_KALENDER_URL'); ?></th></tr>
 <?php for ($aw_i = 0; $aw_i < 2; $aw_i++) {
     $aw_c = isset($aw_cfg['cals'][$aw_i]) ? (array) $aw_cfg['cals'][$aw_i] : array();
     $aw_c += array('name' => '', 'url' => ''); ?>
@@ -262,226 +330,337 @@ Papier <?= $aw_st['tage']['papier'] >= 0 ? 'in ' . (int) $aw_st['tage']['papier'
 </tr>
 <?php } ?>
 </table>
-<div class="aw-small">Kalender 1 ist der Standard (alle Loxone-Aufrufe ohne <span class="aw-mono">&amp;cal=</span>);
-Kalender 2 wird mit <span class="aw-mono">&amp;cal=2</span> abgefragt (MQTT: <span class="aw-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/2/...</span>).
-Ansage/Push-Fenster beziehen sich auf Kalender 1.</div>
+<div class="sm-small"><?php echo awm_t('TEXT.KALENDER_1_IST_DER_STANDARD_ALLE_L'); ?> <span class="sm-mono"><?php echo awm_t('TEXT.CAL'); ?></span><?php echo awm_t('TEXT.KALENDER_2_WIRD_MIT'); ?> <span class="sm-mono"><?php echo awm_t('TEXT.CAL_2'); ?></span> <?php echo awm_t('TEXT.ABGEFRAGT_MQTT'); ?> <span class="sm-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/2/...</span><?php echo awm_t('TEXT.ANSAGE_PUSH_FENSTER_BEZIEHEN_SICH_'); ?></div>
 
-<div class="aw-step"><b>Abfuhrkalender AWM M&uuml;nchen einrichten</b><br>
-1. <a href="https://www.awm-muenchen.de/abfall-entsorgen/muelltonnen/abfuhrkalender" target="_blank">AWM-Abfuhrkalender &ouml;ffnen</a>,
-dort Stra&szlig;e und Hausnummer eingeben und auf &bdquo;Weiter&ldquo; klicken.<br>
-2. Auf der Ergebnisseite den iCal-Export-Link (&bdquo;Termine als iCal/ICS&ldquo;) mit der <b>rechten Maustaste</b> anklicken
-und &bdquo;Link-Adresse kopieren&ldquo; w&auml;hlen.<br>
-3. Den kopierten Link oben in das Feld &bdquo;iCal-Kalender-URL&ldquo; einf&uuml;gen und unten &bdquo;Speichern&ldquo; klicken.<br>
-4. Danach einmal &bdquo;Jetzt abrufen&ldquo; klicken &mdash; der Kalender wird geladen und ab dann automatisch aktuell gehalten.<br>
-<span class="aw-small"><b>Hinweis:</b> Der AWM-Link enth&auml;lt das Kalenderjahr. Das Plugin erneuert den Link zum
-Jahreswechsel automatisch (siehe unten); falls das fehlschl&auml;gt, warnt es rechtzeitig (oben, per
-<span class="aw-mono">WARN=1</span> in Loxone und per MQTT) &mdash; dann einfach einen neuen Link holen und einf&uuml;gen.
-Funktioniert auch mit iCal-Exporten anderer Entsorger, solange die Termin-Titel die Tonnen-Namen enthalten.</span>
+<div class="sm-step"><b><?php echo awm_t('TEXT.ABFUHRKALENDER_AWM_MNCHEN_EINRICHT'); ?></b><br>
+1. <a href="https://www.awm-muenchen.de/abfall-entsorgen/muelltonnen/abfuhrkalender" target="_blank"><?php echo awm_t('TEXT.AWM_ABFUHRKALENDER_FFNEN'); ?></a><?php echo awm_t('TEXT.DORT_STRAE_UND_HAUSNUMMER_EINGEBEN'); ?><br>
+<?php echo awm_t('TEXT.2_AUF_DER_ERGEBNISSEITE_DEN_ICAL_E'); ?> <b><?php echo awm_t('TEXT.RECHTEN_MAUSTASTE'); ?></b> <?php echo awm_t('TEXT.ANKLICKEN_UND_LINK_ADRESSE_KOPIERE'); ?><br>
+<?php echo awm_t('TEXT.3_DEN_KOPIERTEN_LINK_OBEN_IN_DAS_F'); ?><br>
+<?php echo awm_t('TEXT.4_DANACH_EINMAL_JETZT_ABRUFEN_KLIC'); ?><br>
+<span class="sm-small"><b><?php echo awm_t('TEXT.HINWEIS'); ?></b> <?php echo awm_t('TEXT.DER_AWM_LINK_ENTHLT_DAS_KALENDERJA'); ?>
+<span class="sm-mono"><?php echo awm_t('TEXT.WARN_1'); ?></span> <?php echo awm_t('TEXT.IN_LOXONE_UND_PER_MQTT_DANN_EINFAC'); ?></span>
 </div>
 
-<div class="aw-row">
+<div class="sm-step"><b><?php echo awm_t('QUELLEN.H_WEITERE'); ?></b><br>
+<?php echo awm_t('QUELLEN.EINLEITUNG'); ?>
+<?php
+// Kurzanleitungen je Kalendersystem. Eine neue Quelle kommt an ZWEI Stellen
+// dazu: hier und in beiden Sprachdateien ([QUELLEN]) - und falls der Link
+// ein Jahr traegt, zusaetzlich in awm_renew_strategien() in awm_lib.php.
+//
+// BEWUSST OHNE VERWEIS auf die Anbieterseiten (mymuell.de, abfallplus.de,
+// abfallkalender.info): das sind Verkaufsseiten fuer Kommunen, dort laesst
+// sich keine Adresse eingeben. Einstieg ist immer der eigene Entsorger.
+// Die Namen enthalten HTML-Entitaeten und werden deshalb nicht escaped.
+$aw_quellen = array(
+    array('name' => 'Abfallplus / abfall.io', 'key' => 'QUELLEN.ABFALLIO'),
+    array('name' => 'Jumomind / MyM&uuml;ll',  'key' => 'QUELLEN.JUMOMIND'),
+    array('name' => 'ATURIS AbfallKalenderSystem', 'key' => 'QUELLEN.ATURIS'),
+);
+foreach ($aw_quellen as $aw_q) { ?>
+<div class="sm-small" style="margin-top:8px;">
+<b><?= $aw_q['name'] ?></b><br>
+<?php echo awm_t($aw_q['key']); ?>
+</div>
+<?php } ?>
+<div class="sm-small" style="margin-top:8px;"><?php echo awm_t('QUELLEN.SONST'); ?></div>
+<div class="sm-small" style="margin-top:8px;"><b><?php echo awm_t('TEXT.HINWEIS'); ?></b> <?php echo awm_t('QUELLEN.HINWEIS_JAHR'); ?></div>
+</div>
+
+<div class="sm-row">
     <div>
-        <label>Abruf-Intervall (Tage)</label>
+        <label><?php echo awm_t('TEXT.ABRUF_INTERVALL_TAGE'); ?></label>
         <input data-role="none" type="number" name="fetch_days" value="<?= (int) $aw_cfg['fetch_days'] ?>" min="1" max="60">
-        <div class="aw-small">Abfuhrkalender &auml;ndern sich selten &mdash; Standard <b>14 Tage</b> reicht v&ouml;llig und schont den Entsorger-Server.</div>
+        <div class="sm-small"><?php echo awm_t('TEXT.ABFUHRKALENDER_NDERN_SICH_SELTEN_S'); ?> <b><?php echo awm_t('TEXT.14_TAGE'); ?></b> <?php echo awm_t('TEXT.REICHT_VLLIG_UND_SCHONT_DEN_ENTSOR'); ?></div>
     </div>
     <div>
-        <label>Vorschau-Fenster (Tage)</label>
+        <label><?php echo awm_t('TEXT.VORSCHAU_FENSTER_TAGE'); ?></label>
         <input data-role="none" type="number" name="lookahead" value="<?= (int) $aw_cfg['lookahead'] ?>" min="7" max="90">
-        <div class="aw-small">F&uuml;r Terminliste, Tage-Z&auml;hler und Debug-Ansicht. Empfehlung 35.</div>
+        <div class="sm-small"><?php echo awm_t('TEXT.FR_TERMINLISTE_TAGE_ZHLER_UND_DEBU'); ?></div>
     </div>
     <div>
-        <label style="margin-top:10px;">&nbsp;</label>
+        <label style="margin-top:10px;"><?php echo awm_t('TEXT.TEXT'); ?></label>
         <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
-            <input data-role="none" type="checkbox" name="autorenew" <?= !empty($aw_cfg['autorenew']) ? 'checked' : '' ?>> AWM-Link zum Jahreswechsel automatisch erneuern
+            <input data-role="none" type="checkbox" name="autorenew" <?= !empty($aw_cfg['autorenew']) ? 'checked' : '' ?><?php echo awm_t('TEXT.AWM_LINK_ZUM_JAHRESWECHSEL_AUTOMAT'); ?>
         </label>
-        <div class="aw-small">Versucht Jahr-Tausch und Website-Scraping (h&ouml;chstens 1x t&auml;glich, Ergebnis im Protokoll).</div>
+        <div class="sm-small"><?php echo awm_t('TEXT.VERSUCHT_JAHR_TAUSCH_UND_WEBSITE_S'); ?></div>
     </div>
 </div>
 
-<h2>Benachrichtigungen</h2>
+<h2><?php echo awm_t('TEXT.BENACHRICHTIGUNGEN'); ?></h2>
 <div style="margin-bottom:10px;">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($aw_notify['audio']) ? 'checked' : '' ?>> Audioausgabe aktiv
+        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($aw_notify['audio']) ? 'checked' : '' ?><?php echo awm_t('TEXT.AUDIOAUSGABE_AKTIV'); ?>
     </label>
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($aw_notify['push']) ? 'checked' : '' ?>> Push-Nachricht aktiv
+        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($aw_notify['push']) ? 'checked' : '' ?><?php echo awm_t('TEXT.PUSH_NACHRICHT_AKTIV'); ?>
     </label>
-    <div class="aw-small">Beides an = Ansage + Push. Nur eines an = nur diese Ausgabe. Beides aus = keine Meldung.
-    Die Ansage spricht das Plugin selbst; die Freigaben werden zus&auml;tzlich als <span class="aw-mono">AUDIO=</span>/<span class="aw-mono">PUSH=</span>
-    an Loxone &uuml;bergeben (den Push verschickt der Miniserver, Anleitung Schritt 3).</div>
+    <div class="sm-small"><?php echo awm_t('TEXT.BEIDES_AN_ANSAGE_PUSH_NUR_EINES_AN'); ?> <span class="sm-mono"><?php echo awm_t('TEXT.AUDIO'); ?></span>/<span class="sm-mono"><?php echo awm_t('TEXT.PUSH'); ?></span>
+    <?php echo awm_t('TEXT.AN_LOXONE_BERGEBEN_DEN_PUSH_VERSCH'); ?></div>
 </div>
-<div class="aw-row">
+<div class="sm-row">
     <div>
-        <label>Erinnerungs-Uhrzeit (am Vorabend)</label>
+        <label><?php echo awm_t('TEXT.ERINNERUNGS_UHRZEIT_AM_VORABEND'); ?></label>
         <input data-role="none" type="text" name="notify_time" value="<?= aw_e($aw_notify['time']) ?>" placeholder="18:00">
-        <div class="aw-small">Zu dieser Zeit spricht das Plugin die Ansage und &ouml;ffnet das Push-Fenster (<span class="aw-mono">ANN=1</span> f&uuml;r 10 Minuten).</div>
+        <div class="sm-small"><?php echo awm_t('TEXT.ZU_DIESER_ZEIT_SPRICHT_DAS_PLUGIN_'); ?><span class="sm-mono"><?php echo awm_t('TEXT.ANN_1'); ?></span> <?php echo awm_t('TEXT.FR_10_MINUTEN'); ?></div>
     </div>
 </div>
 
-<h2>Sprachausgabe</h2>
-<div class="aw-row">
+<h2><?php echo awm_t('TEXT.SPRACHAUSGABE'); ?></h2>
+<div class="sm-row">
     <div>
-        <label>Audio-Ausgabe</label>
+        <label><?php echo awm_t('TEXT.AUDIO_AUSGABE'); ?></label>
         <select data-role="none" name="tts_mode" id="tts_mode" onchange="awTtsMode()">
-            <option value="musicserver"<?= $aw_tts['mode'] === 'musicserver' ? ' selected' : '' ?>>Loxone Music Server (klassisch)</option>
-            <option value="ms4h"<?= $aw_tts['mode'] === 'ms4h' ? ' selected' : '' ?>>Audioserver4Home / MusicServer4Home</option>
-            <option value="audioserver"<?= $aw_tts['mode'] === 'audioserver' ? ' selected' : '' ?>>Original Loxone Audioserver (via Loxone Config)</option>
-            <option value="custom"<?= $aw_tts['mode'] === 'custom' ? ' selected' : '' ?>>Eigene URL-Vorlage</option>
+            <option value="musicserver"<?= $aw_tts['mode'] === 'musicserver' ? ' selected' : '' ?><?php echo awm_t('TEXT.LOXONE_MUSIC_SERVER_KLASSISCH'); ?></option>
+            <option value="ms4h"<?= $aw_tts['mode'] === 'ms4h' ? ' selected' : '' ?><?php echo awm_t('TEXT.AUDIOSERVER4HOME_MUSICSERVER4HOME'); ?></option>
+            <option value="audioserver"<?= $aw_tts['mode'] === 'audioserver' ? ' selected' : '' ?><?php echo awm_t('TEXT.ORIGINAL_LOXONE_AUDIOSERVER_VIA_LO'); ?></option>
+            <option value="custom"<?= $aw_tts['mode'] === 'custom' ? ' selected' : '' ?><?php echo awm_t('TEXT.EIGENE_URL_VORLAGE'); ?></option>
         </select>
     </div>
     <div>
-        <label>IP des Audio-Servers</label>
+        <label><?php echo awm_t('TEXT.IP_DES_AUDIO_SERVERS'); ?></label>
         <input data-role="none" type="text" name="tts_ip" value="<?= aw_e($aw_tts['ip']) ?>" placeholder="z. B. 192.168.1.50">
     </div>
     <div>
-        <label>Port</label>
+        <label><?php echo awm_t('TEXT.PORT'); ?></label>
         <input data-role="none" type="number" name="tts_port" value="<?= (int) $aw_tts['port'] ?>" min="1" max="65535">
     </div>
 </div>
-<div class="aw-row">
+<div class="sm-row">
     <div>
-        <label>Zonen</label>
+        <label><?php echo awm_t('TEXT.ZONEN'); ?></label>
         <input data-role="none" type="text" name="tts_zones" value="<?= aw_e($aw_tts['zones']) ?>" placeholder="z. B. 2,4,6">
-        <div class="aw-small">Zonennummern mit Komma (z.&nbsp;B. <span class="aw-mono">2,4,6</span>) &mdash; die Lautst&auml;rke kommt aus dem Feld daneben. Optional je Zone eigene Lautst&auml;rke: <span class="aw-mono">Zone~Lautst&auml;rke</span> (z.&nbsp;B. <span class="aw-mono">2~25,4~40</span>). Leerzeichen nach dem Komma sind erlaubt &mdash; <span class="aw-mono">2,4,6</span> und <span class="aw-mono">2, 4, 6</span> funktionieren beide.</div>
+        <div class="sm-small"><?php echo awm_t('TEXT.ZONENNUMMERN_MIT_KOMMA_Z_B'); ?> <span class="sm-mono">2,4,6</span><?php echo awm_t('TEXT.DIE_LAUTSTRKE_KOMMT_AUS_DEM_FELD_D'); ?> <span class="sm-mono"><?php echo awm_t('TEXT.ZONE_LAUTSTRKE'); ?></span> <?php echo awm_t('TEXT.Z_B'); ?> <span class="sm-mono">2~25,4~40</span><?php echo awm_t('TEXT.LEERZEICHEN_NACH_DEM_KOMMA_SIND_ER'); ?> <span class="sm-mono">2,4,6</span> und <span class="sm-mono">2, 4, 6</span> <?php echo awm_t('TEXT.FUNKTIONIEREN_BEIDE'); ?></div>
     </div>
     <div>
-        <label>Lautst&auml;rke (%)</label>
+        <label><?php echo awm_t('TEXT.LAUTSTRKE'); ?></label>
         <input data-role="none" type="number" name="tts_volume" value="<?= (int) $aw_tts['volume'] ?>" min="1" max="100">
     </div>
     <div>
-        <label>Sprache</label>
+        <label><?php echo awm_t('TEXT.SPRACHE'); ?></label>
         <input data-role="none" type="text" name="tts_lang" value="<?= aw_e($aw_tts['lang']) ?>" maxlength="2">
     </div>
 </div>
 <div id="tts_template_row">
-    <label>URL-Vorlage (f&uuml;r Audioserver4Home/MS4H bzw. eigene Ausgabe)</label>
-    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= aw_e($aw_tts['template']) ?></textarea>
-    <div class="aw-small">Platzhalter: <span class="aw-mono">{ip} {port} {zones} {vol} {lang} {text}</span>. Leer = Standard-Vorlage.</div>
+    <label><?php echo awm_t('TEXT.URL_VORLAGE_FR_AUDIOSERVER4HOME_MS'); ?></label>
+    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="<?php echo awm_t('TEXT.HTTP'); ?>{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= aw_e($aw_tts['template']) ?></textarea>
+    <div class="sm-small"><?php echo awm_t('TEXT.PLATZHALTER'); ?> <span class="sm-mono"><?php echo awm_t('TEXT.IP_PORT_ZONES_VOL_LANG_TEXT'); ?></span><?php echo awm_t('TEXT.LEER_STANDARD_VORLAGE'); ?></div>
 </div>
-<div id="tts_audioserver_hint" class="aw-alert aw-info" style="display:none;">
-    Der originale Loxone Audioserver bietet <b>keine HTTP-TTS-Schnittstelle</b>. In diesem Modus spricht das Plugin NICHT selbst;
-    die Sprachausgabe baut man in Loxone Config: Textgenerator &rarr; TTS-Eingang des Audioplayers, ausgel&ouml;st &uuml;ber
-    <span class="aw-mono">ANN=1</span> (Anleitung Schritt 3).
+<div id="tts_audioserver_hint" class="sm-alert sm-info" style="display:none;">
+    <?php echo awm_t('TEXT.DER_ORIGINALE_LOXONE_AUDIOSERVER_B'); ?> <b><?php echo awm_t('TEXT.KEINE_HTTP_TTS_SCHNITTSTELLE'); ?></b><?php echo awm_t('TEXT.IN_DIESEM_MODUS_SPRICHT_DAS_PLUGIN'); ?>
+    <span class="sm-mono">ANN=1</span> <?php echo awm_t('TEXT.ANLEITUNG_SCHRITT_3'); ?>
 </div>
 
-<h2>MQTT (optional)</h2>
+<h2><?php echo awm_t('TEXT.MQTT_OPTIONAL'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($aw_cfg['mqtt_enabled']) ? 'checked' : '' ?>> Zustand per MQTT ver&ouml;ffentlichen
+    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($aw_cfg['mqtt_enabled']) ? 'checked' : '' ?><?php echo awm_t('TEXT.ZUSTAND_PER_MQTT_VERFFENTLICHEN'); ?>
 </label>
-<div class="aw-row" style="margin-top:6px;">
+<div class="sm-row" style="margin-top:6px;">
     <div>
-        <label>Topic-Pr&auml;fix</label>
+        <label><?php echo awm_t('TEXT.TOPIC_PRFIX'); ?></label>
         <input data-role="none" type="text" name="mqtt_topic" value="<?= aw_e($aw_cfg['mqtt_topic']) ?>" placeholder="awm">
-        <div class="aw-small">Nutzt das <b>LoxBerry MQTT Gateway</b>. Ver&ouml;ffentlicht bei &Auml;nderung und alle 30 min:
-        <span class="aw-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/rest_morgen</span>, <span class="aw-mono">/bio_morgen</span>,
-        <span class="aw-mono">/papier_morgen</span>, <span class="aw-mono">/wert_morgen</span>, dieselben mit <span class="aw-mono">_heute</span>,
-        <span class="aw-mono">/tage_rest</span> usw., <span class="aw-mono">/datum_rest</span> usw.,
-        <span class="aw-mono">/ok</span>, <span class="aw-mono">/warnung</span>, <span class="aw-mono">/hinweis</span>
-        (Kalender 2: <span class="aw-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/2/...</span>).</div>
+        <div class="sm-small"><?php echo awm_t('TEXT.NUTZT_DAS'); ?> <b><?php echo awm_t('TEXT.LOXBERRY_MQTT_GATEWAY'); ?></b><?php echo awm_t('TEXT.VERFFENTLICHT_BEI_AUML_NDERUNG_UND'); ?>
+        <span class="sm-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?><?php echo awm_t('TEXT.REST_MORGEN'); ?></span>, <span class="sm-mono"><?php echo awm_t('TEXT.BIO_MORGEN'); ?></span>,
+        <span class="sm-mono"><?php echo awm_t('TEXT.PAPIER_MORGEN'); ?></span>, <span class="sm-mono"><?php echo awm_t('TEXT.WERT_MORGEN'); ?></span><?php echo awm_t('TEXT.DIESELBEN_MIT'); ?> <span class="sm-mono"><?php echo awm_t('TEXT.HEUTE'); ?></span>,
+        <span class="sm-mono"><?php echo awm_t('TEXT.TAGE_REST'); ?></span> <?php echo awm_t('TEXT.USW'); ?> <span class="sm-mono"><?php echo awm_t('TEXT.DATUM_REST'); ?></span> <?php echo awm_t('TEXT.USW_2'); ?>,
+        <span class="sm-mono">/ok</span>, <span class="sm-mono"><?php echo awm_t('TEXT.WARNUNG'); ?></span>, <span class="sm-mono"><?php echo awm_t('TEXT.HINWEIS_2'); ?></span>
+        <?php echo awm_t('TEXT.KALENDER_2'); ?> <span class="sm-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/2/...</span>).</div>
     </div>
 </div>
 
-<button data-role="none" class="aw-btn" type="submit">Speichern</button>
+<button data-role="none" class="sm-btn" type="submit"><?php echo awm_t('TEXT.SPEICHERN'); ?></button>
 </form>
-<form method="post" style="margin-top:8px;">
+<form action="index.php" method="post" style="margin-top:8px;">
     <input data-role="none" type="hidden" name="fetchnow" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="aw-btn" type="submit" style="background:#607d8b;margin-top:0;">Jetzt abrufen</button>
+    <button data-role="none" class="sm-btn" type="submit" style="background:#607d8b;margin-top:0;"><?php echo awm_t('TEXT.JETZT_ABRUFEN'); ?></button>
 </form>
 </div>
 
-<!-- ================= Reiter: Einbindung in Loxone ================= -->
-<div class="aw-pane" id="tab-loxone">
-<h2>Einbindung in Loxone &mdash; Schritt f&uuml;r Schritt</h2>
-<p>Der Miniserver fragt das Plugin regelm&auml;&szlig;ig ab und bekommt fertig ausgewertete Werte:
-Welche Tonne ist <b>morgen</b> f&auml;llig, welche <b>heute</b>, in wie vielen Tagen kommt die n&auml;chste Leerung &mdash;
-plus das Erinnerungsfenster <span class="aw-mono">ANN</span>, mit dem der Miniserver den Push verschickt.
-Die <b>Ansage</b> spricht das Plugin selbst (Reiter Einstellungen).</p>
+<!-- ================= Reiter: Tonnen ================= -->
+<div class="sm-pane" id="tab-bins">
+<h2><?php echo awm_t('TONNEN.H_TITEL'); ?></h2>
+<div class="sm-alert sm-info"><?php echo awm_t('TONNEN.ERKLAERUNG'); ?></div>
+<?php
+$aw_bcal = max(1, min(max(1, count($aw_cals)), (int) (isset($_GET['bcal']) ? $_GET['bcal'] : 1)));
+$aw_titel_liste = function_exists('awm_titel_der_datei') ? awm_titel_der_datei($aw_bcal) : array();
+$aw_arten_anz = awm_tonnenarten();
+$aw_regeln_anz = awm_regeln($aw_bcal);
+// Zu welchem gefundenen Titel gibt es schon eine Regel?
+$aw_regel_zu = array();
+foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
+?>
+<?php if (count($aw_cals) > 1) { ?>
+<div class="sm-knopfreihe">
+<?php foreach ($aw_cals as $aw_n => $aw_c) { ?>
+<a class="sm-btn <?= $aw_n === $aw_bcal ? 'sm-b-aktion' : 'sm-b-lesen' ?>"
+   href="index.php?form=bins&amp;bcal=<?= (int) $aw_n ?>"><?= aw_e($aw_c['name']) ?></a>
+<?php } ?>
+</div>
+<?php } ?>
 
-<div class="aw-step"><b>Schritt 1: Virtueller HTTP-Eingang &bdquo;Abfuhrkalender&ldquo;</b> (Abfrage alle 300 s)
-<table class="aw-tbl">
-<tr><th>Eigenschaft</th><th>Wert</th></tr>
-<tr><td>URL</td><td><span class="aw-mono">http://<?= $aw_host ?>/plugins/<?= aw_e($aw_plugin) ?>/awm.php</span> (Kalender 2: <span class="aw-mono">?cal=2</span>)</td></tr>
-<tr><td>Abfragezyklus</td><td>300 Sekunden</td></tr>
+<?php if (!$aw_titel_liste) { ?>
+<div class="sm-alert sm-warn"><?php echo awm_t('TONNEN.KEINE_TITEL'); ?></div>
+<?php // Der Knopf gehoert hierher: wer diese Meldung liest, braucht genau ihn.
+      // Bis 1.1.0 verwies der Text auf den Reiter Test - dort gab es ihn nie. ?>
+<form action="index.php" method="post" style="margin-top:8px;">
+    <input data-role="none" type="hidden" name="fetchnow" value="1">
+    <input data-role="none" type="hidden" name="activetab" value="tab-bins">
+    <button data-role="none" class="sm-btn" type="submit" style="background:#607d8b;margin-top:0;"><?php echo awm_t('TEXT.JETZT_ABRUFEN'); ?></button>
+</form>
+<?php } else { ?>
+<form method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-bins">
+<input data-role="none" type="hidden" name="bins_cal" value="<?= (int) $aw_bcal ?>">
+<table class="sm-tab2">
+<tr><th><?php echo awm_t('TONNEN.T_TITEL'); ?></th>
+    <th><?php echo awm_t('TONNEN.T_ANZAHL'); ?></th>
+    <th><?php echo awm_t('TONNEN.T_JETZT'); ?></th>
+    <th><?php echo awm_t('TONNEN.T_TONNE'); ?></th>
+    <th><?php echo awm_t('TONNEN.T_ART'); ?></th></tr>
+<?php $aw_k = 0; foreach ($aw_titel_liste as $aw_e2) {
+    $aw_g = awm_glatt($aw_e2['titel']);
+    $aw_hat = isset($aw_regel_zu[$aw_g]) ? $aw_regel_zu[$aw_g] : null; ?>
+<tr>
+  <td><code><?= aw_e($aw_e2['titel']) ?></code>
+      <input data-role="none" type="hidden" name="bin_titel[<?= $aw_k ?>]" value="<?= aw_e($aw_e2['titel']) ?>"></td>
+  <td><?= (int) $aw_e2['anzahl'] ?></td>
+  <td><?php
+      if (!$aw_e2['tonnen']) { echo '<span class="sm-aus">' . awm_t('TONNEN.NICHTS') . '</span>'; }
+      else {
+          $aw_n2 = array();
+          foreach ($aw_e2['tonnen'] as $aw_tk) { $aw_n2[] = aw_e($aw_arten_anz[$aw_tk]['text']); }
+          echo implode(' + ', $aw_n2);
+          echo ' <span class="sm-hint">(' . awm_t($aw_e2['quelle'] === 'regel' ? 'TONNEN.Q_REGEL' : 'TONNEN.Q_EINGEBAUT') . ')</span>';
+      } ?></td>
+  <td><select data-role="none" name="bin_tonne[<?= $aw_k ?>]">
+      <option value=""><?php echo awm_t('TONNEN.KEINE_ZUORDNUNG'); ?></option>
+      <?php foreach ($aw_arten_anz as $aw_tk => $aw_tv) { ?>
+      <option value="<?= aw_e($aw_tk) ?>"<?= ($aw_hat && $aw_hat['tonne'] === $aw_tk) ? ' selected' : '' ?>><?= aw_e($aw_tv['text']) ?></option>
+      <?php } ?></select></td>
+  <td><select data-role="none" name="bin_art[<?= $aw_k ?>]">
+      <?php foreach (array('genau', 'enthaelt', 'beginnt') as $aw_ak) { ?>
+      <option value="<?= $aw_ak ?>"<?= ($aw_hat && $aw_hat['art'] === $aw_ak) || (!$aw_hat && $aw_ak === 'genau') ? ' selected' : '' ?>><?php echo awm_t('TONNEN.ART_' . strtoupper($aw_ak)); ?></option>
+      <?php } ?></select></td>
+</tr>
+<?php $aw_k++; } ?>
 </table>
-Befehle (je ein &bdquo;Virtueller HTTP-Eingang Befehl&ldquo;; <span class="aw-mono">\i...\i</span> = Suchtext, <span class="aw-mono">\v</span> = Zahl dahinter):
-<table class="aw-tbl">
-<tr><th>Befehlserkennung</th><th>Bedeutung</th></tr>
-<tr><td><span class="aw-mono">\iREST=\i\v</span> / <span class="aw-mono">\iBIO=\i\v</span> / <span class="aw-mono">\iPAPIER=\i\v</span> / <span class="aw-mono">\iWERT=\i\v</span></td><td>1 = MORGEN wird diese Tonne abgeholt</td></tr>
-<tr><td><span class="aw-mono">\iHREST=\i\v</span> usw.</td><td>1 = HEUTE f&auml;llig (z. B. f&uuml;r &bdquo;Tonne wieder reinholen&ldquo;)</td></tr>
-<tr><td><span class="aw-mono">\iTREST=\i\v</span> usw.</td><td>Tage bis zur n&auml;chsten Leerung (0 = heute; &minus;1 = unbekannt) &mdash; als Kachel &bdquo;Restm&uuml;ll in X Tagen&ldquo;</td></tr>
-<tr><td><span class="aw-mono">\iANN=\i\v</span></td><td>1 = Erinnerungsfenster JETZT (10 min ab eingestellter Uhrzeit, wenn morgen etwas f&auml;llig ist) &mdash; Ausl&ouml;ser f&uuml;r den Push</td></tr>
-<tr><td><span class="aw-mono">\iPUSH=\i\v</span> / <span class="aw-mono">\iAUDIO=\i\v</span></td><td>Freigaben aus der Plugin-Konfiguration (Push nur senden, wenn PUSH=1)</td></tr>
-<tr><td><span class="aw-mono">\iPTEST=\i\v</span></td><td>1 = Test-Pushnachricht angefordert (Reiter Test; 5 min aktiv)</td></tr>
-<tr><td><span class="aw-mono">\iOK=\i\v</span></td><td>1 = Kalenderdaten vorhanden</td></tr>
-<tr><td><span class="aw-mono">\iWARN=\i\v</span></td><td>1 = Kalender endet in &lt;30 Tagen und Auto-Erneuerung ist (noch) nicht gelungen &mdash; idealer Ausl&ouml;ser f&uuml;r einen Admin-Push</td></tr>
-</table>
-Die Zeile beginnt mit <span class="aw-mono">MUELL;REST=..;BIO=..;PAPIER=..;DATUM=..</span> und ist damit
-<b>1:1 kompatibel</b> zu bestehenden Konfigurationen des klassischen muell.php-Skripts.
+<p class="sm-hint"><?php echo awm_t('TONNEN.FUSSNOTE'); ?></p>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save_bins" value="1"><?php echo awm_t('TONNEN.K_SPEICHERN'); ?></button>
+</div>
+</form>
+<?php } ?>
 </div>
 
-<div class="aw-step"><b>Schritt 2: Kacheln f&uuml;r die App</b><br>
-REST/BIO/PAPIER/WERT als Digitalanzeigen &bdquo;morgen f&auml;llig&ldquo;, die T-Werte als Analoganzeigen mit Einheit
-<span class="aw-mono">&lt;v.0&gt; Tage</span>. In den Eigenschaften &bdquo;Visualisierung&ldquo; freigeben und Raum/Kategorie zuordnen.
-</div>
+<div class="sm-pane" id="tab-loxone">
+<h2><?php echo awm_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
+<p><?php echo awm_t('TEXT.DER_MINISERVER_FRAGT_DAS_PLUGIN_RE'); ?> <b><?php echo awm_t('TEXT.MORGEN'); ?></b> <?php echo awm_t('TEXT.FLLIG_WELCHE'); ?> <b><?php echo awm_t('TEXT.HEUTE_2'); ?></b><?php echo awm_t('TEXT.IN_WIE_VIELEN_TAGEN_KOMMT_DIE_NCHS'); ?> <span class="sm-mono">ANN</span><?php echo awm_t('TEXT.MIT_DEM_DER_MINISERVER_DEN_PUSH_VE'); ?> <b><?php echo awm_t('TEXT.ANSAGE'); ?></b> <?php echo awm_t('TEXT.SPRICHT_DAS_PLUGIN_SELBST_REITER_E'); ?></p>
 
-<div class="aw-step"><b>Schritt 3: Push-Nachricht + Quittier-Taster &mdash; komplette Baustein-Liste</b>
-<table class="aw-tbl">
-<tr><th>Baustein</th><th>Name</th><th>Einstellung</th><th>Eing&auml;nge</th></tr>
-<tr><td>Schwellwertschalter S1</td><td>Erinnerungsfenster aktiv</td><td>Ein 0,5 / Aus 0,4</td><td>&larr; ANN</td></tr>
-<tr><td>Schwellwertschalter S2</td><td>Push freigegeben</td><td>Ein 0,5 / Aus 0,4</td><td>&larr; PUSH</td></tr>
-<tr><td>UND U1</td><td>M&uuml;ll-Push jetzt</td><td></td><td>S1 &amp; S2</td></tr>
-<tr><td>ODER O1</td><td>Push-Sammler</td><td>einzige Quelle des Benachrichtigungs-Bausteins!</td><td>U1</td></tr>
-<tr><td>Benachrichtigungs-Baustein</td><td>Push &bdquo;Tonne rausstellen&ldquo;</td><td>Text z. B. &bdquo;Morgen ist M&uuml;llabfuhr &mdash; Tonne rausstellen! (Details: App-Kacheln)&ldquo;</td><td>&larr; O1</td></tr>
-<tr><td>Taster (remanent, Visu)</td><td>Tonne steht drau&szlig;en</td><td>Quittierung durch die Familie</td><td></td></tr>
-<tr><td>Impulsgeber bei Uhrzeit</td><td>Impuls 21:00 Nachfass</td><td>21:00 Uhr</td><td></td></tr>
-<tr><td>UND U2 + NICHT N1</td><td>Nachfass n&ouml;tig</td><td>Erinnerung kam, aber nicht quittiert</td><td>U2: Impuls 21:00 &amp; Tages-Merker &amp; N1(&larr; Taster)</td></tr>
-<tr><td>Benachrichtigungs-Baustein 2</td><td>Push &bdquo;Tonne immer noch drin!&ldquo;</td><td></td><td>&larr; U2</td></tr>
-<tr><td>Merker (Taster remanent)</td><td>Tages-Merker Erinnerung</td><td>EIN durch U1, Reset 3:00 Uhr (setzt auch den Quittier-Taster zur&uuml;ck)</td><td></td></tr>
-<tr><td>Benachrichtigungs-Baustein 3</td><td>Test-Push</td><td>eigener Baustein NUR f&uuml;r den Test</td><td>&larr; Schwellwertschalter an PTEST (Ein 0,5/Aus 0,4)</td></tr>
+<div class="sm-step"><b><?php echo awm_t('TEXT.SCHRITT_1_VIRTUELLER_HTTP_EINGANG_'); ?></b> <?php echo awm_t('TEXT.ABFRAGE_ALLE_300_S'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo awm_t('TEXT.EIGENSCHAFT'); ?></th><th><?php echo awm_t('TEXT.WERT'); ?></th></tr>
+<tr><td>URL</td><td><span class="sm-mono">http://<?= $aw_host ?><?php echo awm_t('TEXT.PLUGINS'); ?><?= aw_e($aw_plugin) ?><?php echo awm_t('TEXT.AWM_PHP'); ?></span> (Kalender 2: <span class="sm-mono"><?php echo awm_t('TEXT.CAL_2_2'); ?></span>)</td></tr>
+<tr><td><?php echo awm_t('TEXT.ABFRAGEZYKLUS'); ?></td><td><?php echo awm_t('TEXT.300_SEKUNDEN'); ?></td></tr>
 </table>
-<b>Praxis-Erfahrungen zum Benachrichtigungs-Baustein</b> (erspart lange Fehlersuche):<br>
-&bull; Er sendet NUR bei einer 0&rarr;1-Flanke. NIEMALS mehrere Quellen direkt an den Eingang legen &mdash;
-eine dauerhaft aktive Quelle verschluckt alle weiteren Ausl&ouml;ser. Immer erst im ODER-Baustein sammeln.<br>
-&bull; F&uuml;r den Test (PTEST) einen EIGENEN Benachrichtigungs-Baustein verwenden.<br>
-&bull; WARN=1 eignet sich f&uuml;r einen vierten Baustein &bdquo;AWM-Link erneuern!&ldquo; an den Admin.
+<?php echo awm_t('TEXT.BEFEHLE_JE_EIN_VIRTUELLER_HTTP_EIN'); ?> <span class="sm-mono">\i...\i</span> <?php echo awm_t('TEXT.SUCHTEXT'); ?> <span class="sm-mono">\v</span> <?php echo awm_t('TEXT.ZAHL_DAHINTER'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo awm_t('TEXT.BEFEHLSERKENNUNG'); ?></th><th><?php echo awm_t('TEXT.BEDEUTUNG'); ?></th></tr>
+<tr><td><span class="sm-mono"><?php echo awm_t('TEXT.IREST_I_V'); ?></span> / <span class="sm-mono"><?php echo awm_t('TEXT.IBIO_I_V'); ?></span> / <span class="sm-mono"><?php echo awm_t('TEXT.IPAPIER_I_V'); ?></span> / <span class="sm-mono"><?php echo awm_t('TEXT.IWERT_I_V'); ?></span></td><td><?php echo awm_t('TEXT.1_MORGEN_WIRD_DIESE_TONNE_ABGEHOLT'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo awm_t('TEXT.IHREST_I_V'); ?></span> usw.</td><td><?php echo awm_t('TEXT.1_HEUTE_FLLIG_Z_B_FR_TONNE_WIEDER_'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo awm_t('TEXT.ITREST_I_V'); ?></span> usw.</td><td><?php echo awm_t('TEXT.TAGE_BIS_ZUR_NCHSTEN_LEERUNG_0_HEU'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo awm_t('TEXT.IANN_I_V'); ?></span></td><td><?php echo awm_t('TEXT.1_ERINNERUNGSFENSTER_JETZT_10_MIN_'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo awm_t('TEXT.IPUSH_I_V'); ?></span> / <span class="sm-mono"><?php echo awm_t('TEXT.IAUDIO_I_V'); ?></span></td><td><?php echo awm_t('TEXT.FREIGABEN_AUS_DER_PLUGIN_KONFIGURA'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo awm_t('TEXT.IPTEST_I_V'); ?></span></td><td><?php echo awm_t('TEXT.1_TEST_PUSHNACHRICHT_ANGEFORDERT_R'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo awm_t('TEXT.IOK_I_V'); ?></span></td><td><?php echo awm_t('TEXT.1_KALENDERDATEN_VORHANDEN'); ?></td></tr>
+<tr><td><span class="sm-mono"><?php echo awm_t('TEXT.IWARN_I_V'); ?></span></td><td><?php echo awm_t('TEXT.1_KALENDER_ENDET_IN_30_TAGEN_UND_A'); ?></td></tr>
+</table>
+<?php echo awm_t('TEXT.DIE_ZEILE_BEGINNT_MIT'); ?> <span class="sm-mono"><?php echo awm_t('TEXT.MUELL_REST_BIO_PAPIER_DATUM'); ?></span> <?php echo awm_t('TEXT.UND_IST_DAMIT'); ?>
+<b><?php echo awm_t('TEXT.1_1_KOMPATIBEL'); ?></b> <?php echo awm_t('TEXT.ZU_BESTEHENDEN_KONFIGURATIONEN_DES'); ?>
 </div>
 
-<div class="aw-step"><b>Schritt 4: MQTT-Alternative + JSON</b><br>
-Alle Werte gibt es auch &uuml;ber das LoxBerry MQTT Gateway (Reiter Einstellungen &rarr; MQTT) unter
-<span class="aw-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/...</span> &mdash; und als JSON f&uuml;r Drittsoftware:
-<span class="aw-mono">http://<?= $aw_host ?>/plugins/<?= aw_e($aw_plugin) ?>/awm.php?json=1</span>
+<div class="sm-step"><b><?php echo awm_t('TEXT.SCHRITT_2_KACHELN_FR_DIE_APP'); ?></b><br>
+<?php echo awm_t('TEXT.REST_BIO_PAPIER_WERT_ALS_DIGITALAN'); ?>
+<span class="sm-mono"><?php echo awm_t('TEXT.V_0_TAGE'); ?></span><?php echo awm_t('TEXT.IN_DEN_EIGENSCHAFTEN_VISUALISIERUN'); ?>
+</div>
+
+<div class="sm-step"><b><?php echo awm_t('TEXT.SCHRITT_3_PUSH_NACHRICHT_QUITTIER_'); ?></b>
+<table class="sm-tbl">
+<tr><th><?php echo awm_t('TEXT.BAUSTEIN'); ?></th><th><?php echo awm_t('TEXT.NAME'); ?></th><th>Einstellung</th><th><?php echo awm_t('TEXT.EINGNGE'); ?></th></tr>
+<tr><td><?php echo awm_t('TEXT.SCHWELLWERTSCHALTER_S1'); ?></td><td><?php echo awm_t('TEXT.ERINNERUNGSFENSTER_AKTIV'); ?></td><td><?php echo awm_t('TEXT.EIN_0_5_AUS_0_4'); ?></td><td><?php echo awm_t('TEXT.ANN'); ?></td></tr>
+<tr><td><?php echo awm_t('TEXT.SCHWELLWERTSCHALTER_S2'); ?></td><td><?php echo awm_t('TEXT.PUSH_FREIGEGEBEN'); ?></td><td>Ein 0,5 / Aus 0,4</td><td><?php echo awm_t('TEXT.PUSH_2'); ?></td></tr>
+<tr><td><?php echo awm_t('TEXT.UND_U1'); ?></td><td><?php echo awm_t('TEXT.MLL_PUSH_JETZT'); ?></td><td></td><td><?php echo awm_t('TEXT.S1_S2'); ?></td></tr>
+<tr><td><?php echo awm_t('TEXT.ODER_O1'); ?></td><td><?php echo awm_t('TEXT.PUSH_SAMMLER'); ?></td><td><?php echo awm_t('TEXT.EINZIGE_QUELLE_DES_BENACHRICHTIGUN'); ?></td><td>U1</td></tr>
+<tr><td><?php echo awm_t('TEXT.BENACHRICHTIGUNGS_BAUSTEIN'); ?></td><td><?php echo awm_t('TEXT.PUSH_TONNE_RAUSSTELLEN'); ?></td><td><?php echo awm_t('TEXT.TEXT_Z_B_MORGEN_IST_MLLABFUHR_TONN'); ?></td><td><?php echo awm_t('TEXT.O1'); ?></td></tr>
+<tr><td><?php echo awm_t('TEXT.TASTER_REMANENT_VISU'); ?></td><td><?php echo awm_t('TEXT.TONNE_STEHT_DRAUEN'); ?></td><td><?php echo awm_t('TEXT.QUITTIERUNG_DURCH_DIE_FAMILIE'); ?></td><td></td></tr>
+<tr><td><?php echo awm_t('TEXT.IMPULSGEBER_BEI_UHRZEIT'); ?></td><td><?php echo awm_t('TEXT.IMPULS_21_00_NACHFASS'); ?></td><td><?php echo awm_t('TEXT.21_00_UHR'); ?></td><td></td></tr>
+<tr><td><?php echo awm_t('TEXT.UND_U2_NICHT_N1'); ?></td><td><?php echo awm_t('TEXT.NACHFASS_NTIG'); ?></td><td><?php echo awm_t('TEXT.ERINNERUNG_KAM_ABER_NICHT_QUITTIER'); ?></td><td><?php echo awm_t('TEXT.U2_IMPULS_21_00_TAGES_MERKER_N1_TA'); ?></td></tr>
+<tr><td><?php echo awm_t('TEXT.BENACHRICHTIGUNGS_BAUSTEIN_2'); ?></td><td><?php echo awm_t('TEXT.PUSH_TONNE_IMMER_NOCH_DRIN'); ?></td><td></td><td><?php echo awm_t('TEXT.U2'); ?></td></tr>
+<tr><td><?php echo awm_t('TEXT.MERKER_TASTER_REMANENT'); ?></td><td><?php echo awm_t('TEXT.TAGES_MERKER_ERINNERUNG'); ?></td><td><?php echo awm_t('TEXT.EIN_DURCH_U1_RESET_3_00_UHR_SETZT_'); ?></td><td></td></tr>
+<tr><td><?php echo awm_t('TEXT.BENACHRICHTIGUNGS_BAUSTEIN_3'); ?></td><td><?php echo awm_t('TEXT.TEST_PUSH'); ?></td><td><?php echo awm_t('TEXT.EIGENER_BAUSTEIN_NUR_FR_DEN_TEST'); ?></td><td><?php echo awm_t('TEXT.SCHWELLWERTSCHALTER_AN_PTEST_EIN_0'); ?></td></tr>
+</table>
+<b><?php echo awm_t('TEXT.PRAXIS_ERFAHRUNGEN_ZUM_BENACHRICHT'); ?></b> <?php echo awm_t('TEXT.ERSPART_LANGE_FEHLERSUCHE'); ?><br>
+<?php echo awm_t('TEXT.ER_SENDET_NUR_BEI_EINER_01_FLANKE_'); ?><br>
+<?php echo awm_t('TEXT.FR_DEN_TEST_PTEST_EINEN_EIGENEN_BE'); ?><br>
+<?php echo awm_t('TEXT.WARN_1_EIGNET_SICH_FR_EINEN_VIERTE'); ?>
+</div>
+
+<div class="sm-step"><b><?php echo awm_t('TEXT.SCHRITT_4_MQTT_ALTERNATIVE_JSON'); ?></b><br>
+<?php echo awm_t('TEXT.ALLE_WERTE_GIBT_ES_AUCH_BER_DAS_LO'); ?>
+<span class="sm-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/...</span> <?php echo awm_t('TEXT.UND_ALS_JSON_FR_DRITTSOFTWARE'); ?>
+<span class="sm-mono">http://<?= $aw_host ?>/plugins/<?= aw_e($aw_plugin) ?><?php echo awm_t('TEXT.AWM_PHP_JSON_1'); ?></span>
 </div>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="aw-pane" id="tab-test">
+<div class="sm-pane" id="tab-test">
 <h2>Test</h2>
-<div class="aw-legende">
-<span><i class="aw-punkt aw-b-lesen"></i> Ansehen &mdash; fragt nur ab, ver&auml;ndert nichts</span>
-<span><i class="aw-punkt aw-b-technik"></i> Technische Auskunft &mdash; f&uuml;r die Fehlersuche</span>
-<span><i class="aw-punkt aw-b-aktion"></i> L&ouml;st etwas aus &mdash; sendet oder ver&auml;ndert</span>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?php echo awm_t('LEGENDE.LESEN'); ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?php echo awm_t('LEGENDE.TECHNIK'); ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo awm_t('LEGENDE.AKTION'); ?></span>
 </div>
 
-<h3 class="aw-h3">Ansehen</h3>
-<div class="aw-knopfreihe">
-<a class="aw-btn aw-b-lesen"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php" target="_blank">Loxone-Zeile abrufen</a>
-<a class="aw-btn aw-b-lesen"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?json=1" target="_blank">JSON-Ansicht</a>
+<h3 class="sm-h3"><?php echo awm_t('TEXT.ANSEHEN'); ?></h3>
+<div class="sm-knopfreihe">
+<a class="sm-btn sm-b-lesen"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php" target="_blank"><?php echo awm_t('TEXT.LOXONE_ZEILE_ABRUFEN'); ?></a>
+<a class="sm-btn sm-b-lesen"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?json=1" target="_blank"><?php echo awm_t('TEXT.JSON_ANSICHT'); ?></a>
 </div>
 
-<h3 class="aw-h3">Technische Auskunft</h3>
-<div class="aw-knopfreihe">
-<a class="aw-btn aw-b-technik"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?debug=1" target="_blank">Debug (alle Termine)</a>
-<a class="aw-btn aw-b-technik"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?refresh=1&amp;debug=1" target="_blank">Neu abrufen + Debug</a>
-<a class="aw-btn aw-b-technik" style="margin-left:8px;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?debug=1&amp;cal=2" target="_blank">Debug Kalender 2</a>
+<h3 class="sm-h3"><?php echo awm_t('TONNEN.H_SELBSTTEST'); ?></h3>
+<p class="sm-hint"><?php echo awm_t('TONNEN.SELBSTTEST_TEXT'); ?></p>
+<?php
+$aw_pruef = function_exists('awm_selbstpruefung_regeln') ? awm_selbstpruefung_regeln() : array();
+// Ab 1.2.0 gehoert die Link-Erneuerung mit in den Selbsttest: sie prueft,
+// dass der AWM-Link genauso umgeschrieben wird wie bisher.
+if (function_exists('awm_selbstpruefung_erneuerung')) {
+    $aw_pruef = array_merge($aw_pruef, awm_selbstpruefung_erneuerung());
+}
+$aw_pf = 0;
+foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { $aw_pf++; } }
+?>
+<div class="sm-alert <?= $aw_pf ? 'sm-warn' : 'sm-info' ?>">
+<?= sprintf(awm_t($aw_pf ? 'TONNEN.SELBSTTEST_FEHL' : 'TONNEN.SELBSTTEST_OK'),
+            count($aw_pruef) - $aw_pf, count($aw_pruef)) ?>
+</div>
+<?php if ($aw_pf) { ?>
+<ul>
+<?php foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { ?><li><?= aw_e($aw_z[1]) ?></li><?php } } ?>
+</ul>
+<?php } ?>
+
+<h3 class="sm-h3"><?php echo awm_t('TEXT.TECHNISCHE_AUSKUNFT'); ?></h3>
+<div class="sm-knopfreihe">
+<a class="sm-btn sm-b-technik"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?debug=1" target="_blank"><?php echo awm_t('TEXT.DEBUG_ALLE_TERMINE'); ?></a>
+<a class="sm-btn sm-b-technik"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?refresh=1&amp;debug=1" target="_blank"><?php echo awm_t('TEXT.NEU_ABRUFEN_DEBUG'); ?></a>
+<a class="sm-btn sm-b-technik" style="margin-left:8px;" href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?debug=1&amp;cal=2" target="_blank"><?php echo awm_t('TEXT.DEBUG_KALENDER_2'); ?></a>
 </div>
 
-<h3 class="aw-h3">L&ouml;st etwas aus</h3>
-<div class="aw-knopfreihe">
-<a class="aw-btn aw-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?say=1" target="_blank">Test-Ansage jetzt</a>
-<a class="aw-btn aw-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?ptest=1" target="_blank">Test-Pushnachricht</a>
-<a class="aw-btn aw-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?renew=1" target="_blank">Jahres-Erneuerung testen</a>
+<h3 class="sm-h3"><?php echo awm_t('TEXT.LST_ETWAS_AUS'); ?></h3>
+<div class="sm-knopfreihe">
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?say=1" target="_blank"><?php echo awm_t('TEXT.TEST_ANSAGE_JETZT'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?ptest=1" target="_blank"><?php echo awm_t('TEXT.TEST_PUSHNACHRICHT_2'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?renew=1" target="_blank"><?php echo awm_t('TEXT.JAHRES_ERNEUERUNG_TESTEN'); ?></a>
 </div>
 
 
@@ -491,28 +670,27 @@ Alle Werte gibt es auch &uuml;ber das LoxBerry MQTT Gateway (Reiter Einstellunge
 
 <?php } ?>
 </p>
-<div class="aw-small">
-&bull; <b>Loxone-Zeile</b> zeigt genau das, was der Miniserver bekommt.<br>
-&bull; <b>Test-Ansage</b> spricht sofort in den konfigurierten Zonen (Demo-Text, falls morgen nichts f&auml;llig ist).<br>
-&bull; <b>Test-Pushnachricht</b> setzt <span class="aw-mono">PTEST=1</span> f&uuml;r 5 Minuten &mdash; der Push kommt &uuml;ber den
-Test-Benachrichtigungsbaustein in Loxone (Schritt 3) innerhalb des 300-s-Abfragetakts.<br>
-&bull; <b>Jahres-Erneuerung</b> versucht sofort, einen frischen AWM-Link f&uuml;rs Folgejahr zu beschaffen (Ergebnis im Protokoll).
+<div class="sm-small">
+<?php echo awm_t('TEXT.TEXT_2'); ?> <b><?php echo awm_t('TEXT.LOXONE_ZEILE'); ?></b> <?php echo awm_t('TEXT.ZEIGT_GENAU_DAS_WAS_DER_MINISERVER'); ?><br>
+&bull; <b><?php echo awm_t('TEXT.TEST_ANSAGE'); ?></b> <?php echo awm_t('TEXT.SPRICHT_SOFORT_IN_DEN_KONFIGURIERT'); ?><br>
+&bull; <b><?php echo awm_t('TEXT.TEST_PUSHNACHRICHT'); ?></b> <?php echo awm_t('TEXT.SETZT'); ?> <span class="sm-mono"><?php echo awm_t('TEXT.PTEST_1'); ?></span> <?php echo awm_t('TEXT.FR_5_MINUTEN_DER_PUSH_KOMMT_BER_DE'); ?><br>
+&bull; <b><?php echo awm_t('TEXT.JAHRES_ERNEUERUNG'); ?></b> <?php echo awm_t('TEXT.VERSUCHT_SOFORT_EINEN_FRISCHEN_AWM'); ?>
 </div>
 </div>
 
-<!-- ================= Reiter: Protokoll ================= -->
-<div class="aw-pane" id="tab-log">
+<!-- ================= Reiter: <?php echo awm_t('TEXT.PROTOKOLL'); ?> ================= -->
+<div class="sm-pane" id="tab-log">
 <h2>Protokoll</h2>
-<div class="aw-small" style="margin-bottom:8px;">Protokolliert werden Kalender-Abrufe, Zustands&auml;nderungen, Ansagen, Jahres-Erneuerungen und Fehler. Neueste Eintr&auml;ge oben (max. 300 angezeigt).<br>Datei: <span class="aw-mono"><?= aw_e($aw_logfile) ?></span></div>
+<div class="sm-small" style="margin-bottom:8px;"><?php echo awm_t('TEXT.PROTOKOLLIERT_WERDEN_KALENDER_ABRU'); ?><br><?php echo awm_t('TEXT.DATEI'); ?> <span class="sm-mono"><?= aw_e($aw_logfile) ?></span></div>
 <?php if ($aw_loglines) { ?>
-<div class="aw-log"><?= aw_e(implode("\n", $aw_loglines)) ?></div>
+<div class="sm-log"><?= aw_e(implode("\n", $aw_loglines)) ?></div>
 <?php } else { ?>
-<div class="aw-alert aw-info">Noch keine Protokoll-Eintr&auml;ge vorhanden.</div>
+<div class="sm-alert sm-info"><?php echo awm_t('TEXT.NOCH_KEINE_PROTOKOLL_EINTRGE_VORHA'); ?></div>
 <?php } ?>
-<form method="post" style="margin-top:10px;">
+<form action="index.php" method="post" style="margin-top:10px;">
     <input data-role="none" type="hidden" name="clearlog" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
-    <button data-role="none" class="aw-btn" type="submit" style="background:#c62828;">Protokoll leeren</button>
+    <button data-role="none" class="sm-btn" type="submit" style="background:#c62828;"><?php echo awm_t('TEXT.PROTOKOLL_LEEREN'); ?></button>
 </form>
 </div>
 
@@ -526,10 +704,10 @@ function awTtsMode() {
     if (m === 'musicserver' && (!port.value || port.value === '80')) { port.value = 7091; }
 }
 (function () {
-    var tabs = document.querySelectorAll('.aw-tab');
+    var tabs = document.querySelectorAll('.sm-tab');
     function activate(id) {
-        tabs.forEach(function (t) { t.classList.toggle('aw-active', t.dataset.pane === id); });
-        document.querySelectorAll('.aw-pane').forEach(function (p) { p.classList.toggle('aw-active', p.id === id); });
+        tabs.forEach(function (t) { t.classList.toggle('sm-active', t.dataset.pane === id); });
+        document.querySelectorAll('.sm-pane').forEach(function (p) { p.classList.toggle('sm-active', p.id === id); });
     }
     tabs.forEach(function (t) { t.addEventListener('click', function () { activate(t.dataset.pane); }); });
     activate(<?= json_encode($aw_tab) ?>);
