@@ -753,7 +753,10 @@ function awm_renew($cal = 1) {
             break;
         }
     }
-    @file_put_contents($p['config'], json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+    // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
+    $json_neu = json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json_neu !== false) { @file_put_contents($p['config'], $json_neu); }
     @copy($p['config'], $p['backup']);
     file_put_contents(awm_icsfile($cal), $ics);
     @unlink(awm_tmpdir() . '/state_' . (int) $cal . '.json');

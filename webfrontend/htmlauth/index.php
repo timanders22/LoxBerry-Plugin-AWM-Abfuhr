@@ -100,7 +100,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_bins'])) {
             $aw_cfg2['cals'] = $aw_cl;
             if (!is_dir($aw_cfgdir)) { @mkdir($aw_cfgdir, 0775, true); }
             $aw_j = json_encode($aw_cfg2, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            if (@file_put_contents($aw_cfgfile, $aw_j) !== false) {
+            // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+            // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
+            if ($aw_j !== false && @file_put_contents($aw_cfgfile, $aw_j) !== false) {
                 @copy($aw_cfgfile, $aw_bkfile);
                 // Der Zwischenspeicher haelt 10 Minuten - ohne Auffrischen
                 // sieht man die neue Zuordnung erst danach.
@@ -180,7 +182,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             @mkdir($aw_cfgdir, 0775, true);
         }
         $aw_json = json_encode($aw_new, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if (@file_put_contents($aw_cfgfile, $aw_json) !== false) {
+        // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+        // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
+        if ($aw_json !== false && @file_put_contents($aw_cfgfile, $aw_json) !== false) {
             $aw_saved = true;
             @copy($aw_cfgfile, $aw_bkfile); // Sicherung ausserhalb des Plugin-Ordners
         } else {
@@ -509,7 +513,7 @@ foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
     <button data-role="none" class="sm-btn" type="submit" style="background:#607d8b;margin-top:0;"><?php echo awm_t('TEXT.JETZT_ABRUFEN'); ?></button>
 </form>
 <?php } else { ?>
-<form method="post">
+<form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-bins">
 <input data-role="none" type="hidden" name="bins_cal" value="<?= (int) $aw_bcal ?>">
 <table class="sm-tab2">
