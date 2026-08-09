@@ -268,6 +268,64 @@ function awm_rrule_lesen($rrule)
     return $r;
 }
 
+/* ==================================================================
+ * Datumsrechnung ohne DateTime
+ *
+ * awm_state() fragt jede Serie fuer jeden Tag des Vorschau-Fensters ab.
+ * Bei 35 Tagen und einem Kalender mit 200 Terminen sind das 7000 Aufrufe
+ * von awm_trifft() - und bis 1.2.0 legte JEDER davon zwei DateTime-Objekte
+ * an und liess ein DateInterval berechnen. Das sind 14000 Objekte fuer
+ * eine Rechnung, deren Ergebnis sich auf 36 verschiedene Datumswerte
+ * beschraenkt.
+ *
+ * awm_tagnummer() gibt die Tage seit dem 01.01.1970 zurueck und merkt sich
+ * jedes Datum. Damit bleiben je Durchlauf so viele Umrechnungen uebrig,
+ * wie es verschiedene Datumswerte gibt - beim obigen Beispiel 36 statt
+ * 14000.
+ *
+ * gmmktime() statt mktime(): die Sommerzeit-Umstellung darf hier nicht
+ * hineinspielen. Am 30.03. wuerde mktime() sonst einen Tag mit 23 Stunden
+ * liefern, und die Division durch 86400 landete auf dem Vortag.
+ * ================================================================== */
+
+/** Tage seit dem 01.01.1970 fuer ein Datum im Format Ymd. -1 = ungueltig. */
+function awm_tagnummer($ymd)
+{
+    static $merker = array();
+    $ymd = (string) $ymd;
+    if (isset($merker[$ymd])) {
+        return $merker[$ymd];
+    }
+    if (!preg_match('/^\d{8}$/', $ymd)) {
+        return $merker[$ymd] = -1;
+    }
+    $j = (int) substr($ymd, 0, 4);
+    $m = (int) substr($ymd, 4, 2);
+    $t = (int) substr($ymd, 6, 2);
+    if ($m < 1 || $m > 12 || $t < 1 || $t > 31 || !checkdate($m, $t, $j)) {
+        return $merker[$ymd] = -1;
+    }
+    return $merker[$ymd] = (int) floor(gmmktime(0, 0, 0, $m, $t, $j) / 86400);
+}
+
+/** Wochentag 1 (Montag) bis 7 (Sonntag) aus einer Tagnummer.
+ *  Tag 0 (01.01.1970) war ein Donnerstag - daher die 3. */
+function awm_wochentag_aus_tagnummer($tagnr)
+{
+    return (int) ((($tagnr % 7) + 7 + 3) % 7) + 1;
+}
+
+/** Wie viele Tage hat der Monat dieses Datums? */
+function awm_tage_im_monat($ymd)
+{
+    static $merker = array();
+    $k = substr((string) $ymd, 0, 6);
+    if (isset($merker[$k])) {
+        return $merker[$k];
+    }
+    return $merker[$k] = (int) date('t', mktime(0, 0, 0, (int) substr($ymd, 4, 2), 1, (int) substr($ymd, 0, 4)));
+}
+
 /** Der wievielte Wochentag seiner Art ist dieses Datum im Monat? (1..5) */
 function awm_wochentag_position($ymd)
 {
@@ -277,9 +335,7 @@ function awm_wochentag_position($ymd)
 /** Wie viele dieses Wochentags hat der Monat? */
 function awm_wochentage_im_monat($ymd)
 {
-    $jahr = (int) substr($ymd, 0, 4);
-    $monat = (int) substr($ymd, 4, 2);
-    $tage = (int) date('t', mktime(0, 0, 0, $monat, 1, $jahr));
+    $tage = awm_tage_im_monat($ymd);
     $tag = (int) substr($ymd, 6, 2);
     $rest = $tage - $tag;
     return awm_wochentag_position($ymd) + (int) floor($rest / 7);
@@ -309,13 +365,14 @@ function awm_trifft($s, $ymd)
     $byday = isset($s['byday']) && is_array($s['byday']) ? $s['byday'] : array();
     $bymonthday = isset($s['bymonthday']) && is_array($s['bymonthday']) ? $s['bymonthday'] : array();
 
-    $a = DateTime::createFromFormat('Ymd', $start);
-    $b = DateTime::createFromFormat('Ymd', $ymd);
-    if (!$a || !$b) { return false; }
-    $a->setTime(0, 0, 0);
-    $b->setTime(0, 0, 0);
-    $tage = (int) $a->diff($b)->format('%a');
-    $wtag = (int) $b->format('N');
+    // Bis 1.2.0 standen hier zwei DateTime-Objekte und ein diff() - je
+    // Aufruf, also zehntausendfach je Vorschau. Das Ergebnis ist dasselbe,
+    // siehe awm_tagnummer().
+    $na = awm_tagnummer($start);
+    $nb = awm_tagnummer($ymd);
+    if ($na < 0 || $nb < 0) { return false; }
+    $tage = $nb - $na;                       // $ymd >= $start ist oben geprueft
+    $wtag = awm_wochentag_aus_tagnummer($nb);
 
     if ($freq === 'DAILY') {
         if ($tage % $interval !== 0) { return false; }
@@ -334,9 +391,8 @@ function awm_trifft($s, $ymd)
         foreach ($byday as $d) { if ($d['tag'] === $wtag) { $erlaubt = true; break; } }
         if (!$erlaubt) { return false; }
         // Wochennummer seit dem Wochenbeginn des Starttermins
-        $wochenanfang = clone $a;
-        $wochenanfang->modify('-' . ((int) $a->format('N') - 1) . ' day');
-        $wochen = (int) floor(((int) $wochenanfang->diff($b)->format('%a')) / 7);
+        $wochenanfang = $na - (awm_wochentag_aus_tagnummer($na) - 1);
+        $wochen = (int) floor(($nb - $wochenanfang) / 7);
         if ($wochen % $interval !== 0) { return false; }
         return awm_count_ok($s, (int) ($wochen / $interval));
     }
@@ -347,7 +403,7 @@ function awm_trifft($s, $ymd)
         if ($monate < 0 || $monate % $interval !== 0) { return false; }
         if ($bymonthday) {
             $tag = (int) substr($ymd, 6, 2);
-            $letzter = (int) date('t', $b->getTimestamp());
+            $letzter = awm_tage_im_monat($ymd);
             $ok = false;
             foreach ($bymonthday as $t) {
                 if ($t > 0 && $t === $tag) { $ok = true; break; }
@@ -509,6 +565,40 @@ function awm_selbstpruefung_regeln()
     // Unbekannte Frequenz wird nicht geraten
     $p($w('FREQ=HOURLY', '20260105', '20260105') && !$w('FREQ=HOURLY', '20260105', '20260106'),
        'Unbekannte Frequenz: nur der Basistermin, nichts geraten');
+
+    /* --- 4. Die Datumsrechnung ohne DateTime (ab 1.3.0) ---
+     *
+     * Der Ersatz von DateTime durch awm_tagnummer() darf am Ergebnis
+     * NICHTS aendern. Deshalb wird hier gegen PHP selbst geprueft, und
+     * zwar ueber die beiden Zeitumstellungen hinweg - genau dort waere
+     * ein Rechenfehler zu erwarten. */
+    $abweichung = 0;
+    $wtagfehler = 0;
+    foreach (array('20260325', '20261024', '20260101', '20260228', '20240229') as $anker) {
+        $ts = mktime(12, 0, 0, (int) substr($anker, 4, 2), (int) substr($anker, 6, 2), (int) substr($anker, 0, 4));
+        for ($i = 0; $i <= 20; $i++) {
+            $tag = date('Ymd', $ts + $i * 86400);
+            // Gegenprobe: Abstand zum Anker, einmal gerechnet, einmal von PHP
+            $soll = (int) round((strtotime(date('Y-m-d', $ts + $i * 86400) . ' 12:00:00')
+                               - strtotime(date('Y-m-d', $ts) . ' 12:00:00')) / 86400);
+            if (awm_tagnummer($tag) - awm_tagnummer($anker) !== $soll) { $abweichung++; }
+            if (awm_wochentag_aus_tagnummer(awm_tagnummer($tag)) !== (int) date('N', $ts + $i * 86400)) { $wtagfehler++; }
+        }
+    }
+    $p($abweichung === 0, 'Tagesabstand ohne DateTime: 105 Vergleiche, auch ueber beide Zeitumstellungen');
+    $p($wtagfehler === 0, 'Wochentag ohne DateTime: 105 Vergleiche gegen date(N)');
+    $p(awm_tagnummer('20260230') === -1 && awm_tagnummer('nonsens') === -1,
+       'Unmoegliches Datum wird als ungueltig gemeldet, nicht geraten');
+    $p(awm_tage_im_monat('20240201') === 29 && awm_tage_im_monat('20230201') === 28,
+       'Schaltjahr wird erkannt');
+    // Der Fall, an dem eine Umstellung sich raechen wuerde: WEEKLY ueber
+    // den letzten Maerzsonntag hinweg.
+    $p($w('FREQ=WEEKLY', '20260323', '20260330') && $w('FREQ=WEEKLY', '20260323', '20260406'),
+       'WEEKLY ueber die Sommerzeit-Umstellung hinweg');
+    $p($w('FREQ=WEEKLY', '20261019', '20261026'), 'WEEKLY ueber die Winterzeit-Umstellung hinweg');
+    $p($w('FREQ=WEEKLY;INTERVAL=2', '20260323', '20260406')
+       && !$w('FREQ=WEEKLY;INTERVAL=2', '20260323', '20260330'),
+       'WEEKLY INTERVAL=2 ueber die Umstellung: nur jede zweite Woche');
 
     $p(awm_wochentag_nr('2TH') === 4 && awm_wochentag_nr('SU') === 7, 'Wochentagskuerzel richtig gelesen');
     $r = awm_rrule_lesen('FREQ=MONTHLY;INTERVAL=2;BYDAY=1MO,3WE;UNTIL=20261231;COUNT=5');

@@ -30,7 +30,17 @@ if (isset($_GET['json'])) {
     awm_fetch(isset($_GET['refresh']), $cal);
     $st = awm_state(isset($_GET['refresh']), $cal);
     $st['ann'] = $cal === 1 ? awm_ann_active($st) : 0;
-    echo json_encode($st, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+    $js = json_encode($st, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+    if ($js === false) {
+        // Passiert nur bei ungueltigem UTF-8 aus dem Kalender. Ein leerer
+        // Rumpf mit Status 200 waere das Schlimmste: die Gegenstelle haelt
+        // ihn fuer eine gueltige Antwort.
+        http_response_code(500);
+        echo json_encode(array('ok' => 0, 'fehler' => json_last_error_msg()));
+        awm_log('JSON-Ausgabe fehlgeschlagen: ' . json_last_error_msg());
+        exit;
+    }
+    echo $js;
     exit;
 }
 
@@ -85,6 +95,25 @@ if (isset($_GET['debug'])) {
     echo "\n";
 }
 
+/* DIE REIHENFOLGE DIESER FELDER DARF SICH NICHT AENDERN.
+ *
+ * Nicht nur wegen der 1:1-Kompatibilitaet zum alten muell.php, sondern aus
+ * einem zweiten, weniger offensichtlichen Grund: Loxone sucht bei einem
+ * "Virtuellen HTTP-Eingang Befehl" den Suchtext WOERTLICH und nimmt den
+ * ERSTEN Treffer in der Zeile. Der Suchtext \iREST=\i\v steckt aber auch
+ * in HREST= und TREST=, \iBIO=\i\v in HBIO= und TBIO=, und so weiter.
+ *
+ * Dass trotzdem jeder Baustein den richtigen Wert bekommt, liegt einzig
+ * daran, dass REST, BIO, PAPIER und WERT VOR ihren H- und T-Varianten
+ * stehen. Wer die Reihenfolge umstellt - etwa um die Zeile "aufzuraeumen"
+ * - liefert stillschweigend falsche Zahlen an bestehende Loxone-Projekte,
+ * ohne dass irgendwo ein Fehler auftaucht.
+ *
+ * Neue Felder deshalb immer HINTEN anhaengen. Wer einen Namen braucht, der
+ * ein bestehendes Feld als Anfangsstueck enthaelt, muss ihn vor die
+ * kuerzere Variante setzen - oder den Baustein mit fuehrendem Semikolon
+ * suchen lassen (\i;FELD=\i\v).
+ */
 printf("MUELL;REST=%d;BIO=%d;PAPIER=%d;DATUM=%s;WERT=%d;OK=%d;WARN=%d;HREST=%d;HBIO=%d;HPAPIER=%d;HWERT=%d;TREST=%d;TBIO=%d;TPAPIER=%d;TWERT=%d;ANN=%d;AUDIO=%d;PUSH=%d;PTEST=%d\n",
     $st['morgen']['rest'], $st['morgen']['bio'], $st['morgen']['papier'],
     date('Ymd', strtotime('+1 day')),

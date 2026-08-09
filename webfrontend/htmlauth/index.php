@@ -56,7 +56,18 @@ if ((!is_file($aw_cfgfile) || trim((string) @file_get_contents($aw_cfgfile)) ===
 $aw_saved = false;
 $aw_err = '';
 $aw_note = '';
-$aw_tab = preg_match('/^tab-(settings|bins|loxone|test|log)$/', (string) (isset($_POST['activetab']) ? $_POST['activetab'] : '')) ? $_POST['activetab'] : 'tab-settings';
+// Der aktive Reiter kommt aus dem abgeschickten Formular ODER aus der
+// Adresse (die Reiter sind echte Verweise). Beides wird gegen dieselbe
+// Positivliste geprueft - sie muss Zeichen fuer Zeichen zu den fuenf
+// id-Werten der Bereiche weiter unten passen.
+$aw_tabliste = array('tab-settings', 'tab-bins', 'tab-loxone', 'tab-test', 'tab-log');
+$aw_tab = 'tab-settings';
+if (in_array((string) (isset($_GET['tab']) ? $_GET['tab'] : ''), $aw_tabliste, true)) {
+    $aw_tab = $_GET['tab'];
+}
+if (in_array((string) (isset($_POST['activetab']) ? $_POST['activetab'] : ''), $aw_tabliste, true)) {
+    $aw_tab = $_POST['activetab'];
+}
 
 // ---------- Protokoll leeren ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
@@ -99,10 +110,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_bins'])) {
             $aw_cl[$aw_cn - 1]['regeln'] = $aw_regeln_neu;
             $aw_cfg2['cals'] = $aw_cl;
             if (!is_dir($aw_cfgdir)) { @mkdir($aw_cfgdir, 0775, true); }
-            $aw_j = json_encode($aw_cfg2, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
-            // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-            if ($aw_j !== false && @file_put_contents($aw_cfgfile, $aw_j) !== false) {
+            // Nebendatei + rename: haelt sowohl ungueltiges UTF-8 als auch
+            // einen Stromausfall mitten im Schreiben von der Konfiguration fern.
+            if (function_exists('awm_json_schreiben')
+                ? awm_json_schreiben($aw_cfgfile, $aw_cfg2, 0664, true)
+                : false) {
                 @copy($aw_cfgfile, $aw_bkfile);
                 // Der Zwischenspeicher haelt 10 Minuten - ohne Auffrischen
                 // sieht man die neue Zuordnung erst danach.
@@ -160,6 +172,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $aw_new['fetch_days'] = max(1, min(60, (int) (isset($_POST['fetch_days']) ? $_POST['fetch_days'] : 14)));
     $aw_new['lookahead'] = max(7, min(90, (int) (isset($_POST['lookahead']) ? $_POST['lookahead'] : 35)));
     $aw_new['autorenew'] = isset($_POST['autorenew']) ? 1 : 0;
+    // Stichwoerter fuer Feiertagsverschiebungen. Leer = Standardliste,
+    // die "achtung" enthaelt - Muenchen bleibt damit unveraendert.
+    $aw_hw = trim((string) (isset($_POST['hinweis_woerter']) ? $_POST['hinweis_woerter'] : ''));
+    $aw_hw = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', $aw_hw));
+    $aw_new['hinweis_woerter'] = $aw_hw !== '' ? $aw_hw : AWM_HINWEIS_STANDARD;
     $aw_new['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
     $aw_new['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'awm')) ?: 'awm';
     $aw_new['notify'] = array(
@@ -181,10 +198,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         if (!is_dir($aw_cfgdir)) {
             @mkdir($aw_cfgdir, 0775, true);
         }
-        $aw_json = json_encode($aw_new, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
-        // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-        if ($aw_json !== false && @file_put_contents($aw_cfgfile, $aw_json) !== false) {
+        // Siehe oben: unteilbar schreiben, sonst kann ein Abbruch die
+        // Konfiguration halb hinterlassen.
+        if (function_exists('awm_json_schreiben')
+            ? awm_json_schreiben($aw_cfgfile, $aw_new, 0664, true)
+            : false) {
             $aw_saved = true;
             @copy($aw_cfgfile, $aw_bkfile); // Sicherung ausserhalb des Plugin-Ordners
         } else {
@@ -215,6 +233,22 @@ if (is_file($aw_logfile)) {
 
 function aw_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 function aw_d($ymd) { return strlen((string) $ymd) === 8 ? substr($ymd, 6, 2) . '.' . substr($ymd, 4, 2) . '.' . substr($ymd, 0, 4) : '-'; }
+
+/**
+ * Farblegende der Knoepfe.
+ *
+ * Hausregel: je Reiter EINE Legende, und zwar ueber den Knopfreihen. Bis
+ * 1.2.0 stand sie nur im Reiter Test - in den uebrigen drei Reitern gab es
+ * Knoepfe in denselben Farben, aber nichts, was sie erklaerte.
+ */
+function aw_legende()
+{
+    echo '<div class="sm-legende">'
+       . '<span><i class="sm-punkt sm-b-lesen"></i> ' . awm_t('LEGENDE.LESEN') . '</span>'
+       . '<span><i class="sm-punkt sm-b-technik"></i> ' . awm_t('LEGENDE.TECHNIK') . '</span>'
+       . '<span><i class="sm-punkt sm-b-aktion"></i> ' . awm_t('LEGENDE.AKTION') . '</span>'
+       . '</div>';
+}
 
 $aw_frame = class_exists('LBWeb', false);
 if ($aw_frame) {
@@ -277,6 +311,23 @@ $aw_host = aw_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 .sm-punkt.sm-b-lesen   { background: #6dac20; }
 .sm-punkt.sm-b-technik { background: #546e7a; }
 .sm-punkt.sm-b-aktion  { background: #e0620d; }
+
+/* Die Zuordnungstabelle im Reiter Tonnen. Sie trug bis 1.2.0 die Klasse
+   sm-tab2, zu der es nie eine Regel gab - die Tabelle stand also ohne
+   Rahmen und ohne Abstaende da, mitten zwischen gestalteten Elementen.
+   Dasselbe galt fuer sm-hint und sm-aus. */
+.sm-tbl2 { border-collapse: collapse; margin: 8px 0; width: 100%; }
+.sm-tbl2 th, .sm-tbl2 td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; vertical-align: middle; }
+.sm-tbl2 th { background: #f0f0f0; }
+.sm-tbl2 code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, monospace; }
+.sm-tbl2 select { min-width: 150px; }
+.sm-hint { font-size: 0.82em; color: #666; }
+.sm-aus { color: #999; font-style: italic; }
+
+/* Reiter sind echte Verweise - sie muessen aussehen wie zuvor die
+   Bereiche, und der Browser darf sie nicht unterstreichen. */
+.sm-wrap a.sm-tab, .sm-wrap a.sm-tab:visited { text-decoration: none; display: inline-block; }
+.sm-wrap a.sm-tab.sm-active, .sm-wrap a.sm-tab.sm-active:visited { color: #fff !important; }
 </style>
 <div class="sm-wrap">
 
@@ -290,9 +341,22 @@ $aw_host = aw_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 <?php foreach ($aw_states as $aw_n => $aw_st) { ?>
 <div class="sm-alert sm-info"><b><?= aw_e($aw_cals[$aw_n]['name']) ?></b>:
 <?php if ($aw_st['ok']) { ?>
-<?= (int) $aw_st['ereignisse'] ?> <?php echo awm_t('TEXT.SERIEN_TERMINE_MORGEN'); ?> <?= $aw_st['morgen']['rest'] ? '<b>Restm&uuml;ll</b> ' : '' ?><?= $aw_st['morgen']['bio'] ? '<b>Bio</b> ' : '' ?><?= $aw_st['morgen']['papier'] ? '<b>Papier</b> ' : '' ?><?= $aw_st['morgen']['wert'] ? '<b>Wertstoff</b> ' : '' ?><?= ($aw_st['morgen']['rest'] || $aw_st['morgen']['bio'] || $aw_st['morgen']['papier'] || $aw_st['morgen']['wert']) ? '' : 'keine Abholung' ?> <?php echo awm_t('TEXT.NCHSTE_REST'); ?> <?= $aw_st['tage']['rest'] >= 0 ? 'in ' . (int) $aw_st['tage']['rest'] . ' T.' : '-' ?>,
-Bio <?= $aw_st['tage']['bio'] >= 0 ? 'in ' . (int) $aw_st['tage']['bio'] . ' T.' : '-' ?>,
-<?php echo awm_t('TEXT.PAPIER'); ?> <?= $aw_st['tage']['papier'] >= 0 ? 'in ' . (int) $aw_st['tage']['papier'] . ' T.' : '-' ?>
+<?php
+// Die Tonnennamen und die Tagesangabe standen bis 1.2.0 fest auf Deutsch
+// in der Vorlage - in der englischen Oberflaeche stand mitten im Satz
+// "Restmuell" und "in 3 T.". Beides kommt jetzt aus den Sprachdateien.
+$aw_faellig = array();
+if ($aw_st['morgen']['rest'])   { $aw_faellig[] = '<b>' . awm_t('TEXT.RESTMLL') . '</b>'; }
+if ($aw_st['morgen']['bio'])    { $aw_faellig[] = '<b>' . awm_t('TEXT.BIO') . '</b>'; }
+if ($aw_st['morgen']['papier']) { $aw_faellig[] = '<b>' . awm_t('TEXT.PAPIER') . '</b>'; }
+if ($aw_st['morgen']['wert'])   { $aw_faellig[] = '<b>' . awm_t('TEXT.WERTSTOFF') . '</b>'; }
+$aw_tagetext = function ($n) {
+    return $n >= 0 ? sprintf(awm_t('TEXT.IN_X_TAGEN'), (int) $n) : '-';
+};
+?>
+<?= (int) $aw_st['ereignisse'] ?> <?php echo awm_t('TEXT.SERIEN_TERMINE_MORGEN'); ?> <?= $aw_faellig ? implode(' ', $aw_faellig) : awm_t('TEXT.KEINE_ABHOLUNG') ?> <?php echo awm_t('TEXT.NCHSTE_REST'); ?> <?= $aw_tagetext($aw_st['tage']['rest']) ?>,
+<?php echo awm_t('TEXT.BIO'); ?> <?= $aw_tagetext($aw_st['tage']['bio']) ?>,
+<?php echo awm_t('TEXT.PAPIER'); ?> <?= $aw_tagetext($aw_st['tage']['papier']) ?>
 <?php if (!empty($aw_st['termine'])) { ?>
 <table class="sm-tbl"><tr><th><?php echo awm_t('TEXT.DATUM'); ?></th><th><?php echo awm_t('TEXT.ABHOLUNG'); ?></th></tr>
 <?php foreach (array_slice($aw_st['termine'], 0, 6) as $aw_t) { ?>
@@ -307,16 +371,30 @@ Bio <?= $aw_st['tage']['bio'] >= 0 ? 'in ' . (int) $aw_st['tage']['bio'] . ' T.'
 </div>
 <?php } ?>
 
+<?php
+// Reiter sind ECHTE Verweise, nicht nur anklickbare Bereiche. Ohne
+// JavaScript - oder wenn ein Skript weiter oben abbricht - blieb bis
+// 1.2.0 jeder Reiter ausser dem ersten unerreichbar, und die Seite sah
+// aus, als fehle der halbe Inhalt. Mit href funktioniert sie auch dann,
+// nur eben mit einem Seitenaufbau je Klick. Das Skript unten faengt den
+// Klick ab, solange es laeuft.
+$aw_reiter = array(
+    'tab-settings' => awm_t('REITER.EINSTELLUNGEN'),
+    'tab-bins'     => awm_t('REITER.TONNEN'),
+    'tab-loxone'   => awm_t('REITER.LOXONE'),
+    'tab-test'     => awm_t('REITER.TEST'),
+    'tab-log'      => awm_t('REITER.LOG'),
+);
+?>
 <div class="sm-tabs">
-    <div class="sm-tab" data-pane="tab-settings"><?php echo awm_t('REITER.EINSTELLUNGEN'); ?></div>
-    <div class="sm-tab" data-pane="tab-bins"><?php echo awm_t('REITER.TONNEN'); ?></div>
-    <div class="sm-tab" data-pane="tab-loxone"><?php echo awm_t('REITER.LOXONE'); ?></div>
-    <div class="sm-tab" data-pane="tab-test"><?php echo awm_t('REITER.TEST'); ?></div>
-    <div class="sm-tab" data-pane="tab-log"><?php echo awm_t('REITER.LOG'); ?></div>
+<?php foreach ($aw_reiter as $aw_id => $aw_titel) { ?>
+    <a class="sm-tab<?= $aw_id === $aw_tab ? ' sm-active' : '' ?>" data-pane="<?= $aw_id ?>"
+       href="index.php?tab=<?= $aw_id ?><?= $aw_id === 'tab-bins' ? '&amp;bcal=' . (int) (isset($_GET['bcal']) ? $_GET['bcal'] : 1) : '' ?>"><?= $aw_titel ?></a>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: <?php echo awm_t('TEXT.EINSTELLUNG'); ?>en ================= -->
-<div class="sm-pane" id="tab-settings">
+<div class="sm-pane<?= $aw_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -383,21 +461,31 @@ foreach ($aw_quellen as $aw_q) { ?>
         <div class="sm-small"><?php echo awm_t('TEXT.FR_TERMINLISTE_TAGE_ZHLER_UND_DEBU'); ?></div>
     </div>
     <div>
-        <label style="margin-top:10px;"><?php echo awm_t('TEXT.TEXT'); ?></label>
+        <label style="margin-top:10px;">&nbsp;</label>
         <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
-            <input data-role="none" type="checkbox" name="autorenew" <?= !empty($aw_cfg['autorenew']) ? 'checked' : '' ?><?php echo awm_t('TEXT.AWM_LINK_ZUM_JAHRESWECHSEL_AUTOMAT'); ?>
+            <input data-role="none" type="checkbox" name="autorenew" <?= !empty($aw_cfg['autorenew']) ? 'checked' : '' ?>> <?php echo awm_t('TEXT.AWM_LINK_ZUM_JAHRESWECHSEL_AUTOMAT'); ?>
         </label>
         <div class="sm-small"><?php echo awm_t('TEXT.VERSUCHT_JAHR_TAUSCH_UND_WEBSITE_S'); ?></div>
+    </div>
+</div>
+
+<div class="sm-row">
+    <div>
+        <label><?php echo awm_t('HINWEIS.LABEL'); ?></label>
+        <input data-role="none" type="text" name="hinweis_woerter"
+               value="<?= aw_e(isset($aw_cfg['hinweis_woerter']) && trim((string) $aw_cfg['hinweis_woerter']) !== '' ? $aw_cfg['hinweis_woerter'] : AWM_HINWEIS_STANDARD) ?>"
+               placeholder="<?= aw_e(AWM_HINWEIS_STANDARD) ?>">
+        <div class="sm-small"><?php echo awm_t('HINWEIS.ERKLAERUNG'); ?></div>
     </div>
 </div>
 
 <h2><?php echo awm_t('TEXT.BENACHRICHTIGUNGEN'); ?></h2>
 <div style="margin-bottom:10px;">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($aw_notify['audio']) ? 'checked' : '' ?><?php echo awm_t('TEXT.AUDIOAUSGABE_AKTIV'); ?>
+        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($aw_notify['audio']) ? 'checked' : '' ?>> <?php echo awm_t('TEXT.AUDIOAUSGABE_AKTIV'); ?>
     </label>
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($aw_notify['push']) ? 'checked' : '' ?><?php echo awm_t('TEXT.PUSH_NACHRICHT_AKTIV'); ?>
+        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($aw_notify['push']) ? 'checked' : '' ?>> <?php echo awm_t('TEXT.PUSH_NACHRICHT_AKTIV'); ?>
     </label>
     <div class="sm-small"><?php echo awm_t('TEXT.BEIDES_AN_ANSAGE_PUSH_NUR_EINES_AN'); ?> <span class="sm-mono"><?php echo awm_t('TEXT.AUDIO'); ?></span>/<span class="sm-mono"><?php echo awm_t('TEXT.PUSH'); ?></span>
     <?php echo awm_t('TEXT.AN_LOXONE_BERGEBEN_DEN_PUSH_VERSCH'); ?></div>
@@ -415,10 +503,10 @@ foreach ($aw_quellen as $aw_q) { ?>
     <div>
         <label><?php echo awm_t('TEXT.AUDIO_AUSGABE'); ?></label>
         <select data-role="none" name="tts_mode" id="tts_mode" onchange="awTtsMode()">
-            <option value="musicserver"<?= $aw_tts['mode'] === 'musicserver' ? ' selected' : '' ?><?php echo awm_t('TEXT.LOXONE_MUSIC_SERVER_KLASSISCH'); ?></option>
-            <option value="ms4h"<?= $aw_tts['mode'] === 'ms4h' ? ' selected' : '' ?><?php echo awm_t('TEXT.AUDIOSERVER4HOME_MUSICSERVER4HOME'); ?></option>
-            <option value="audioserver"<?= $aw_tts['mode'] === 'audioserver' ? ' selected' : '' ?><?php echo awm_t('TEXT.ORIGINAL_LOXONE_AUDIOSERVER_VIA_LO'); ?></option>
-            <option value="custom"<?= $aw_tts['mode'] === 'custom' ? ' selected' : '' ?><?php echo awm_t('TEXT.EIGENE_URL_VORLAGE'); ?></option>
+            <option value="musicserver"<?= $aw_tts['mode'] === 'musicserver' ? ' selected' : '' ?>><?php echo awm_t('TEXT.LOXONE_MUSIC_SERVER_KLASSISCH'); ?></option>
+            <option value="ms4h"<?= $aw_tts['mode'] === 'ms4h' ? ' selected' : '' ?>><?php echo awm_t('TEXT.AUDIOSERVER4HOME_MUSICSERVER4HOME'); ?></option>
+            <option value="audioserver"<?= $aw_tts['mode'] === 'audioserver' ? ' selected' : '' ?>><?php echo awm_t('TEXT.ORIGINAL_LOXONE_AUDIOSERVER_VIA_LO'); ?></option>
+            <option value="custom"<?= $aw_tts['mode'] === 'custom' ? ' selected' : '' ?>><?php echo awm_t('TEXT.EIGENE_URL_VORLAGE'); ?></option>
         </select>
     </div>
     <div>
@@ -457,7 +545,7 @@ foreach ($aw_quellen as $aw_q) { ?>
 
 <h2><?php echo awm_t('TEXT.MQTT_OPTIONAL'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($aw_cfg['mqtt_enabled']) ? 'checked' : '' ?><?php echo awm_t('TEXT.ZUSTAND_PER_MQTT_VERFFENTLICHEN'); ?>
+    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($aw_cfg['mqtt_enabled']) ? 'checked' : '' ?>> <?php echo awm_t('TEXT.ZUSTAND_PER_MQTT_VERFFENTLICHEN'); ?>
 </label>
 <div class="sm-row" style="margin-top:6px;">
     <div>
@@ -472,17 +560,22 @@ foreach ($aw_quellen as $aw_q) { ?>
     </div>
 </div>
 
-<button data-role="none" class="sm-btn" type="submit"><?php echo awm_t('TEXT.SPEICHERN'); ?></button>
+<?php aw_legende(); ?>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:0;"><?php echo awm_t('TEXT.SPEICHERN'); ?></button>
+</div>
 </form>
-<form action="index.php" method="post" style="margin-top:8px;">
+<div class="sm-knopfreihe">
+<form action="index.php" method="post">
     <input data-role="none" type="hidden" name="fetchnow" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn" type="submit" style="background:#607d8b;margin-top:0;"><?php echo awm_t('TEXT.JETZT_ABRUFEN'); ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" style="margin-top:0;"><?php echo awm_t('TEXT.JETZT_ABRUFEN'); ?></button>
 </form>
+</div>
 </div>
 
 <!-- ================= Reiter: Tonnen ================= -->
-<div class="sm-pane" id="tab-bins">
+<div class="sm-pane<?= $aw_tab === 'tab-bins' ? ' sm-active' : '' ?>" id="tab-bins">
 <h2><?php echo awm_t('TONNEN.H_TITEL'); ?></h2>
 <div class="sm-alert sm-info"><?php echo awm_t('TONNEN.ERKLAERUNG'); ?></div>
 <?php
@@ -494,11 +587,12 @@ $aw_regeln_anz = awm_regeln($aw_bcal);
 $aw_regel_zu = array();
 foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
 ?>
+<?php aw_legende(); ?>
 <?php if (count($aw_cals) > 1) { ?>
 <div class="sm-knopfreihe">
 <?php foreach ($aw_cals as $aw_n => $aw_c) { ?>
 <a class="sm-btn <?= $aw_n === $aw_bcal ? 'sm-b-aktion' : 'sm-b-lesen' ?>"
-   href="index.php?form=bins&amp;bcal=<?= (int) $aw_n ?>"><?= aw_e($aw_c['name']) ?></a>
+   href="index.php?tab=tab-bins&amp;bcal=<?= (int) $aw_n ?>"><?= aw_e($aw_c['name']) ?></a>
 <?php } ?>
 </div>
 <?php } ?>
@@ -507,16 +601,18 @@ foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
 <div class="sm-alert sm-warn"><?php echo awm_t('TONNEN.KEINE_TITEL'); ?></div>
 <?php // Der Knopf gehoert hierher: wer diese Meldung liest, braucht genau ihn.
       // Bis 1.1.0 verwies der Text auf den Reiter Test - dort gab es ihn nie. ?>
-<form action="index.php" method="post" style="margin-top:8px;">
+<div class="sm-knopfreihe">
+<form action="index.php" method="post">
     <input data-role="none" type="hidden" name="fetchnow" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-bins">
-    <button data-role="none" class="sm-btn" type="submit" style="background:#607d8b;margin-top:0;"><?php echo awm_t('TEXT.JETZT_ABRUFEN'); ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" style="margin-top:0;"><?php echo awm_t('TEXT.JETZT_ABRUFEN'); ?></button>
 </form>
+</div>
 <?php } else { ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-bins">
 <input data-role="none" type="hidden" name="bins_cal" value="<?= (int) $aw_bcal ?>">
-<table class="sm-tab2">
+<table class="sm-tbl2">
 <tr><th><?php echo awm_t('TONNEN.T_TITEL'); ?></th>
     <th><?php echo awm_t('TONNEN.T_ANZAHL'); ?></th>
     <th><?php echo awm_t('TONNEN.T_JETZT'); ?></th>
@@ -557,7 +653,7 @@ foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
 <?php } ?>
 </div>
 
-<div class="sm-pane" id="tab-loxone">
+<div class="sm-pane<?= $aw_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?php echo awm_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
 <p><?php echo awm_t('TEXT.DER_MINISERVER_FRAGT_DAS_PLUGIN_RE'); ?> <b><?php echo awm_t('TEXT.MORGEN'); ?></b> <?php echo awm_t('TEXT.FLLIG_WELCHE'); ?> <b><?php echo awm_t('TEXT.HEUTE_2'); ?></b><?php echo awm_t('TEXT.IN_WIE_VIELEN_TAGEN_KOMMT_DIE_NCHS'); ?> <span class="sm-mono">ANN</span><?php echo awm_t('TEXT.MIT_DEM_DER_MINISERVER_DEN_PUSH_VE'); ?> <b><?php echo awm_t('TEXT.ANSAGE'); ?></b> <?php echo awm_t('TEXT.SPRICHT_DAS_PLUGIN_SELBST_REITER_E'); ?></p>
 
@@ -617,13 +713,9 @@ foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="sm-pane" id="tab-test">
-<h2>Test</h2>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?php echo awm_t('LEGENDE.LESEN'); ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?php echo awm_t('LEGENDE.TECHNIK'); ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?php echo awm_t('LEGENDE.AKTION'); ?></span>
-</div>
+<div class="sm-pane<?= $aw_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
+<h2><?php echo awm_t('REITER.TEST'); ?></h2>
+<?php aw_legende(); ?>
 
 <h3 class="sm-h3"><?php echo awm_t('TEXT.ANSEHEN'); ?></h3>
 <div class="sm-knopfreihe">
@@ -639,6 +731,12 @@ $aw_pruef = function_exists('awm_selbstpruefung_regeln') ? awm_selbstpruefung_re
 // dass der AWM-Link genauso umgeschrieben wird wie bisher.
 if (function_exists('awm_selbstpruefung_erneuerung')) {
     $aw_pruef = array_merge($aw_pruef, awm_selbstpruefung_erneuerung());
+}
+// Ab 1.3.0 zusaetzlich die vier Stellen, an denen das Plugin bis 1.2.0
+// stillschweigend das Falsche tat: Zeichensatz, Sprachausgabe-Vorlage,
+// Stichwoerter fuer Verschiebungen, unteilbares Schreiben.
+if (function_exists('awm_selbstpruefung_robust')) {
+    $aw_pruef = array_merge($aw_pruef, awm_selbstpruefung_robust());
 }
 $aw_pf = 0;
 foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { $aw_pf++; } }
@@ -668,12 +766,6 @@ foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { $aw_pf++; } }
 </div>
 
 
-<p>
-
-<?php if (isset($aw_cals[2])) { ?>
-
-<?php } ?>
-</p>
 <div class="sm-small">
 <?php echo awm_t('TEXT.TEXT_2'); ?> <b><?php echo awm_t('TEXT.LOXONE_ZEILE'); ?></b> <?php echo awm_t('TEXT.ZEIGT_GENAU_DAS_WAS_DER_MINISERVER'); ?><br>
 &bull; <b><?php echo awm_t('TEXT.TEST_ANSAGE'); ?></b> <?php echo awm_t('TEXT.SPRICHT_SOFORT_IN_DEN_KONFIGURIERT'); ?><br>
@@ -683,19 +775,22 @@ foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { $aw_pf++; } }
 </div>
 
 <!-- ================= Reiter: <?php echo awm_t('TEXT.PROTOKOLL'); ?> ================= -->
-<div class="sm-pane" id="tab-log">
-<h2>Protokoll</h2>
+<div class="sm-pane<?= $aw_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
+<h2><?php echo awm_t('REITER.LOG'); ?></h2>
 <div class="sm-small" style="margin-bottom:8px;"><?php echo awm_t('TEXT.PROTOKOLLIERT_WERDEN_KALENDER_ABRU'); ?><br><?php echo awm_t('TEXT.DATEI'); ?> <span class="sm-mono"><?= aw_e($aw_logfile) ?></span></div>
 <?php if ($aw_loglines) { ?>
 <div class="sm-log"><?= aw_e(implode("\n", $aw_loglines)) ?></div>
 <?php } else { ?>
 <div class="sm-alert sm-info"><?php echo awm_t('TEXT.NOCH_KEINE_PROTOKOLL_EINTRGE_VORHA'); ?></div>
 <?php } ?>
-<form action="index.php" method="post" style="margin-top:10px;">
+<?php aw_legende(); ?>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post">
     <input data-role="none" type="hidden" name="clearlog" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
-    <button data-role="none" class="sm-btn" type="submit" style="background:#c62828;"><?php echo awm_t('TEXT.PROTOKOLL_LEEREN'); ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?php echo awm_t('TEXT.PROTOKOLL_LEEREN'); ?></button>
 </form>
+</div>
 </div>
 
 </div>
@@ -713,7 +808,19 @@ function awTtsMode() {
         tabs.forEach(function (t) { t.classList.toggle('sm-active', t.dataset.pane === id); });
         document.querySelectorAll('.sm-pane').forEach(function (p) { p.classList.toggle('sm-active', p.id === id); });
     }
-    tabs.forEach(function (t) { t.addEventListener('click', function () { activate(t.dataset.pane); }); });
+    // Die Reiter sind echte Verweise. Solange dieses Skript laeuft, wird
+    // der Klick abgefangen und nur umgeschaltet - ohne Skript folgt der
+    // Browser dem Verweis und baut die Seite neu auf. Beides fuehrt zum
+    // selben Reiter, und die Adresszeile stimmt in beiden Faellen.
+    tabs.forEach(function (t) {
+        t.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            activate(t.dataset.pane);
+            if (window.history && window.history.replaceState) {
+                window.history.replaceState(null, '', t.getAttribute('href'));
+            }
+        });
+    });
     activate(<?= json_encode($aw_tab) ?>);
     awTtsMode();
 })();

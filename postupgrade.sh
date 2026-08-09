@@ -1,21 +1,63 @@
 #!/bin/bash
-# Abfuhrkalender AWM - postupgrade: Konfiguration + Log wiederherstellen
+# Abfuhrkalender AWM - postupgrade: Konfiguration, Protokoll und Kalender
+# wiederherstellen
 ARGV1=$1
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-awmabfuhr}"
 BASE="${ARGV5:-$LBHOMEDIR}"
 TMPF="$ARGV1"
-mkdir -p "$BASE/config/plugins/$PFOLDER" "$BASE/log/plugins/$PFOLDER" "$BASE/data/plugins/$PFOLDER" 2>/dev/null
-[ -f "$TMPF/awm.json" ] && cp -p "$TMPF/awm.json" "$BASE/config/plugins/$PFOLDER/awm.json"
-[ -f "$TMPF/awm.log" ] && cp -p "$TMPF/awm.log" "$BASE/log/plugins/$PFOLDER/awm.log"
-[ -f "$TMPF/kalender.ics" ] && cp -p "$TMPF/kalender.ics" "$BASE/data/plugins/$PFOLDER/kalender.ics"
-# Fallback: externe Sicherung
+
+CFGDIR="$BASE/config/plugins/$PFOLDER"
+LOGDIR="$BASE/log/plugins/$PFOLDER"
+DATDIR="$BASE/data/plugins/$PFOLDER"
+mkdir -p "$CFGDIR" "$LOGDIR" "$DATDIR" 2>/dev/null
+
+[ -f "$TMPF/awm.json" ] && cp -p "$TMPF/awm.json" "$CFGDIR/awm.json"
+[ -f "$TMPF/awm.log" ] && cp -p "$TMPF/awm.log" "$LOGDIR/awm.log"
+
+# Kalender zurueckspielen - alle, die gesichert wurden.
+for f in "$TMPF"/kalender_*.ics; do
+    [ -f "$f" ] || continue
+    cp -p "$f" "$DATDIR/$(basename "$f")"
+done
+
+# Rueckfallebene Konfiguration: die dauerhafte Sicherung.
+#
+# Die Pruefung auf einen leeren Rumpf war bis 1.2.0 ein Textvergleich gegen
+# genau "{}". Eine Datei mit "{ }", einem Zeilenumbruch davor oder auch nur
+# einem Leerzeichen dahinter galt damit als brauchbar. Jetzt entscheidet,
+# ob ueberhaupt ein Schluessel darin steht.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
-CF="$BASE/config/plugins/$PFOLDER/awm.json"
+CF="$CFGDIR/awm.json"
 if [ -f "$BK" ]; then
-    if [ ! -s "$CF" ] || [ "$(cat "$CF" 2>/dev/null)" = "{}" ]; then
+    if [ ! -s "$CF" ] || ! grep -q '"' "$CF" 2>/dev/null; then
         cp -p "$BK" "$CF"
     fi
 fi
+
+# Rueckfallebene Kalender: nur, wenn wirklich keiner da ist. Ein
+# vorhandener Kalender ist immer aktueller als die Sicherung.
+BKDIR="$BASE/config/plugins/$PFOLDER.backup.ics"
+if [ -d "$BKDIR" ] && [ -z "$(ls -A "$DATDIR"/kalender_*.ics 2>/dev/null)" ]; then
+    for f in "$BKDIR"/kalender_*.ics; do
+        [ -f "$f" ] && [ -s "$f" ] || continue
+        cp -p "$f" "$DATDIR/$(basename "$f")"
+    done
+fi
+
+# Eigentuemer richtigstellen.
+#
+# cp -p uebernimmt Rechte und Zeitstempel, aber der Eigentuemer richtet sich
+# danach, wer das Skript ausfuehrt. Laeuft das Update als root - und das tut
+# es bei LoxBerry - gehoeren die zurueckgespielten Dateien anschliessend
+# root. Der Webserver und der Cron-Lauf arbeiten als loxberry und koennten
+# dann weder Konfiguration noch Kalender schreiben: das Plugin liesse sich
+# nicht mehr speichern, und die Jahres-Erneuerung schluege stumm fehl.
+if id loxberry >/dev/null 2>&1; then
+    chown -R loxberry:loxberry "$CFGDIR" "$LOGDIR" "$DATDIR" 2>/dev/null
+    [ -f "$BK" ] && chown loxberry:loxberry "$BK" 2>/dev/null
+    [ -d "$BKDIR" ] && chown -R loxberry:loxberry "$BKDIR" 2>/dev/null
+fi
+
 exit 0

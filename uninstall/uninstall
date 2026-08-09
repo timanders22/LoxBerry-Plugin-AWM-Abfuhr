@@ -1,0 +1,23 @@
+#!/bin/bash
+# Abfuhrkalender AWM - uninstall
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# LoxBerry raeumt config/, log/ und data/ des Plugins selbst weg. Was hier
+# bleibt, sind die beiden Sicherungen ausserhalb dieser Ordner und die
+# Arbeitsdateien unter /tmp.
+#
+# Die Konfigurations-Sicherung wird ABSICHTLICH stehen gelassen: sie ist
+# genau dafuer da, eine Neuinstallation zu ueberleben, und enthaelt nichts
+# als die eigenen iCal-Adressen. Wer sie los werden will, loescht
+#   <loxberry>/config/plugins/awmabfuhr.backup.json
+#   <loxberry>/config/plugins/awmabfuhr.backup.ics/
+# von Hand.
+ARGV3=$3
+PFOLDER="${ARGV3:-awmabfuhr}"
+
+rm -rf "/tmp/$PFOLDER" 2>/dev/null
+rm -rf /tmp/awmabfuhr 2>/dev/null
+
+echo "<OK> Arbeitsdateien entfernt."
+echo "<INFO> Die Sicherungen der Konfiguration und der Kalender bleiben erhalten, damit eine Neuinstallation sie wiederfindet."
+exit 0

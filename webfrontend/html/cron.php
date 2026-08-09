@@ -17,13 +17,21 @@ foreach (awm_cals() as $n => $c) {
     $st = awm_state(false, $n);
     $sigall[$n] = array($st['morgen'], $st['heute'], $st['tage'], $st['ok'], $st['warnung']);
     // MQTT je Kalender: bei Aenderung sofort, sonst alle 30 Minuten als Lebenszeichen
+    //
+    // Die Signatur enthaelt nur Zahlen, ist also nie von einem Zeichensatz
+    // abhaengig. Trotzdem wird das Ergebnis geprueft: waere es false,
+    // stimmte es mit keinem gespeicherten Stand ueberein und das Plugin
+    // schickte jede Minute dieselben Werte ans MQTT-Gateway.
     $sig = json_encode($sigall[$n]);
+    if ($sig === false) {
+        $sig = 'unlesbar';
+    }
     $sigf = awm_tmpdir() . '/mqtt_sig_' . $n . '.txt';
     $beat = awm_tmpdir() . '/mqtt_beat_' . $n;
     $old = is_file($sigf) ? (string) file_get_contents($sigf) : '';
     if ($sig !== $old || !is_file($beat) || time() - filemtime($beat) > 1800) {
         awm_mqtt_publish($st, $n);
-        @file_put_contents($sigf, $sig);
+        awm_datei_schreiben($sigf, $sig);
         @touch($beat);
     }
 }

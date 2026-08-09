@@ -20,6 +20,19 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 date_default_timezone_set('Europe/Berlin');
 
+/** Wartezeit bis zum naechsten Versuch, wenn der Entsorger nicht antwortet. */
+define('AWM_WIEDERHOLUNG', 3600);
+
+/**
+ * Stichwoerter, an denen eine Feiertagsverschiebung zu erkennen ist.
+ *
+ * "achtung" steht zuerst und bleibt: so schreibt es der AWM Muenchen, und
+ * daran darf sich nichts aendern. Die uebrigen decken die Formulierungen
+ * anderer Entsorger ab. Der Anwender kann die Liste in den Einstellungen
+ * ueberschreiben.
+ */
+define('AWM_HINWEIS_STANDARD', 'achtung, verschiebung, verschoben, feiertag, ersatztermin, ausnahme');
+
 // Tonnenzuordnung und Wiederholungsregeln (ab 1.1.0). Liegt in einer eigenen
 // Datei, damit die Aenderung gegenueber 1.0.2 an einer Stelle nachlesbar ist.
 require_once __DIR__ . '/awm_regeln.php';
@@ -66,6 +79,7 @@ function awm_config() {
         'fetch_days' => 14,        // Abruf-Intervall in TAGEN (Kalender aendern sich selten)
         'lookahead' => 35,         // Vorschau-Fenster in Tagen
         'autorenew' => 1,          // AWM-Link zum Jahreswechsel automatisch erneuern (Best-Effort)
+        'hinweis_woerter' => AWM_HINWEIS_STANDARD,  // Stichwoerter fuer Feiertagsverschiebungen
         'mqtt_enabled' => 0,
         'mqtt_topic' => 'awm',
         'notify' => array(),
@@ -91,6 +105,21 @@ function awm_config() {
     $cfg['tts'] += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
                          'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
     return $cfg;
+}
+
+/** Stichwoerter fuer Feiertagsverschiebungen, bereinigt. Nie leer. */
+function awm_hinweis_woerter() {
+    $cfg = awm_config();
+    $roh = trim((string) (isset($cfg['hinweis_woerter']) ? $cfg['hinweis_woerter'] : ''));
+    if ($roh === '') {
+        $roh = AWM_HINWEIS_STANDARD;
+    }
+    $out = array();
+    foreach (explode(',', $roh) as $w) {
+        $w = trim($w);
+        if ($w !== '') { $out[] = $w; }
+    }
+    return $out ? $out : array('achtung');
 }
 
 /** Kalenderliste (nur Eintraege mit URL), 1-basiert. */
@@ -132,6 +161,66 @@ function awm_datadir() {
         @mkdir($p['data'], 0775, true);
     }
     return $p['data'];
+}
+
+/* ==================================================================
+ * Unteilbares Schreiben
+ *
+ * Zwei Dinge gehen beim geradeaus geschriebenen file_put_contents schief:
+ *
+ * 1. Wer die Datei liest, waehrend sie geschrieben wird, sieht die Haelfte.
+ *    Das betrifft hier den Zwischenspeicher state_N.json: cron.php schreibt
+ *    ihn jede Minute, awm.php liest ihn im 300-s-Takt des Miniservers, und
+ *    die Oberflaeche liest ihn auch. Ein halb geschriebenes JSON faellt
+ *    beim Einlesen durch - der Miniserver bekommt dann eine Zeile aus
+ *    frisch gerechneten, aber nicht gespeicherten Werten, oder im
+ *    schlimmsten Fall Nullen.
+ * 2. Ein Stromausfall mitten im Schreiben hinterlaesst eine Ruine.
+ *
+ * Nebendatei schreiben und umbenennen loest beides: rename() ist auf
+ * demselben Dateisystem unteilbar. Wer liest, sieht entweder den alten
+ * oder den neuen Stand, nie etwas dazwischen.
+ * ================================================================== */
+
+function awm_datei_schreiben($pfad, $inhalt, $rechte = 0664)
+{
+    $dir = dirname($pfad);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    $neben = $pfad . '.neu' . getmypid();
+    $laenge = strlen((string) $inhalt);
+    if (@file_put_contents($neben, (string) $inhalt) !== $laenge) {
+        @unlink($neben);
+        return false;
+    }
+    @chmod($neben, $rechte);
+    if (!@rename($neben, $pfad)) {
+        @unlink($neben);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * JSON unteilbar schreiben.
+ *
+ * json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+ * macht daraus eine LEERE Datei - und meldet das mit der Rueckgabe 0 auch
+ * noch als Erfolg. Deshalb wird das Ergebnis hier geprueft, bevor
+ * ueberhaupt etwas geschrieben wird.
+ */
+function awm_json_schreiben($pfad, $daten, $rechte = 0664, $huebsch = false)
+{
+    $flaggen = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+    if ($huebsch) { $flaggen |= JSON_PRETTY_PRINT; }
+    $js = json_encode($daten, $flaggen);
+    if ($js === false || $js === '' || $js === 'null') {
+        awm_log('Schreibfehler ' . basename($pfad) . ': ' . json_last_error_msg()
+                . ' - Datei bleibt unveraendert');
+        return false;
+    }
+    return awm_datei_schreiben($pfad, $js, $rechte);
 }
 
 /* ---------------- Protokoll ---------------- */
@@ -190,18 +279,76 @@ function awm_fetch($force = false, $cal = 1) {
     }
     $neu = awm_http_get($c['url']);
     if ($neu !== false && strpos($neu, 'BEGIN:VCALENDAR') !== false) {
-        file_put_contents($f, $neu);
+        $neu = awm_utf8($neu);
+        awm_datei_schreiben($f, $neu);
         @unlink(awm_tmpdir() . '/state_' . (int) $cal . '.json');
         awm_log('Kalender ' . $cal . ' (' . $c['name'] . ') abgerufen: ' . strlen($neu) . ' Bytes, ' . substr_count($neu, 'BEGIN:VEVENT') . ' Ereignisse');
         return array(1, 'frisch');
     }
     if (is_file($f)) {
-        @touch($f); // nicht jede Minute erneut versuchen
-        awm_log('Kalender ' . $cal . ': Abruf fehlgeschlagen - nutze letzten gespeicherten Stand');
+        // Nicht jede Minute erneut versuchen - aber auch nicht erst in
+        // 14 Tagen wieder. Bis 1.2.0 stand hier ein blankes touch(), das
+        // die Datei auf JETZT setzte: ein Server, der eine Minute lang
+        // nicht erreichbar war, wurde damit fuer das volle Abruf-Intervall
+        // nicht mehr gefragt. Beim Jahreswechsel ist das genau der Fall,
+        // in dem man den frischen Kalender braucht.
+        @touch($f, max(0, time() - $maxage + AWM_WIEDERHOLUNG));
+        awm_log('Kalender ' . $cal . ': Abruf fehlgeschlagen - nutze letzten gespeicherten Stand, naechster Versuch in '
+                . (int) (AWM_WIEDERHOLUNG / 60) . ' Minuten');
         return array(1, 'cache-fallback');
     }
     awm_log('Kalender ' . $cal . ': Abruf FEHLGESCHLAGEN und kein Stand gespeichert');
     return array(0, 'FEHLGESCHLAGEN');
+}
+
+/* ==================================================================
+ * Zeichensatz
+ *
+ * Der Standard schreibt UTF-8 vor, aber nicht jeder Entsorger haelt sich
+ * daran - ISO-8859-1 und Windows-1252 kommen vor, teils mit
+ * "CHARSET=ISO-8859-1" im Kopf, teils ohne jede Angabe.
+ *
+ * Das ist kein Schoenheitsfehler. Ein einzelnes Latin-1-Byte in einem
+ * Termin-Titel wandert durch awm_series() in den Zustand, und dort scheitert
+ * json_encode() daran: der Zwischenspeicher liesse sich nicht mehr
+ * schreiben, ?json=1 lieferte einen leeren Rumpf. Deshalb wird schon beim
+ * Abruf umgewandelt - und beim Einlesen noch einmal, damit auch die
+ * Kalender heil werden, die vor 1.3.0 schon auf der Platte lagen.
+ * ================================================================== */
+
+function awm_utf8($text)
+{
+    $text = (string) $text;
+    // Angabe im Kalender selbst hat Vorrang.
+    $von = '';
+    if (preg_match('/CHARSET=["\']?([A-Za-z0-9_-]+)/i', $text, $m)) {
+        $von = strtoupper($m[1]);
+    }
+    if ($von === 'UTF-8' || $von === 'UTF8') {
+        $von = '';
+    }
+    // Ohne Angabe: nur eingreifen, wenn es wirklich kein UTF-8 ist.
+    if ($von === '') {
+        if (preg_match('//u', $text)) {
+            return $text;              // gueltiges UTF-8, nichts zu tun
+        }
+        $von = 'WINDOWS-1252';         // deckt ISO-8859-1 mit ab
+    }
+    $neu = false;
+    if (function_exists('iconv')) {
+        $neu = @iconv($von, 'UTF-8//TRANSLIT', $text);
+    }
+    if ($neu === false && function_exists('mb_convert_encoding')) {
+        $neu = @mb_convert_encoding($text, 'UTF-8', $von);
+    }
+    if ($neu === false || $neu === '') {
+        // Letzte Rueckfallebene: alles Ungueltige entfernen. Lieber ein
+        // fehlendes Zeichen als eine Datei, die kein JSON mehr wird.
+        $neu = preg_replace('/[\x80-\xFF]/', '?', $text);
+    }
+    // Die Angabe im Kopf stimmt jetzt nicht mehr - sonst wandelt der
+    // naechste Aufruf ein zweites Mal um.
+    return preg_replace('/CHARSET=["\']?[A-Za-z0-9_-]+/i', 'CHARSET=UTF-8', (string) $neu);
 }
 
 /* ---------------- ICS auswerten ---------------- */
@@ -212,7 +359,9 @@ function awm_series($cal = 1) {
     if (!is_file($f)) {
         return array();
     }
-    $ics = (string) file_get_contents($f);
+    // Zeichensatz auch beim Einlesen pruefen: Kalender, die vor 1.3.0
+    // abgerufen wurden, liegen noch so auf der Platte, wie sie kamen.
+    $ics = awm_utf8((string) file_get_contents($f));
     $ics = preg_replace("/\r?\n[ \t]/", '', $ics); // Zeilenfaltung entfalten
     $serien = array();
     $parts = explode('BEGIN:VEVENT', $ics);
@@ -327,14 +476,32 @@ function awm_state($force = false, $cal = 1) {
             $lastterm = $ymd;
         }
     }
-    // Feiertags-/Verschiebungs-Hinweis ("Achtung"-Termine der naechsten 14 Tage)
+    // Feiertags-/Verschiebungs-Hinweis der naechsten 14 Tage.
+    //
+    // Bis 1.2.0 stand hier das Wort "achtung" fest im Code. Das ist die
+    // Formulierung des AWM Muenchen; andere Entsorger schreiben
+    // "Verschiebung", "Feiertagsregelung" oder "Ersatztermin", und deren
+    // Anwender bekamen den Hinweis nie zu sehen. Die Woerter stehen jetzt
+    // in der Konfiguration - mit "achtung" an erster Stelle, damit
+    // Muenchen sich nicht aendert.
+    $woerter = awm_hinweis_woerter();
+    $heute_nr = awm_tagnummer(date('Ymd'));
     foreach ($serien as $s) {
-        if (stripos($s['summary'], 'achtung') !== false && $s['freq'] === null) {
-            $diff = (strtotime(substr($s['start'], 0, 4) . '-' . substr($s['start'], 4, 2) . '-' . substr($s['start'], 6, 2)) - strtotime('today')) / 86400;
-            if ($diff >= 0 && $diff <= 14) {
-                $st['hinweis'] = trim($s['summary']) . ($s['desc'] !== '' ? ' - ' . $s['desc'] : '');
-                break;
-            }
+        if ($s['freq'] !== null && $s['freq'] !== '') {
+            continue;                 // nur Einzeltermine sind Verschiebungen
+        }
+        $text = $s['summary'] . ' ' . $s['desc'];
+        $treffer = false;
+        foreach ($woerter as $wort) {
+            if (stripos($text, $wort) !== false) { $treffer = true; break; }
+        }
+        if (!$treffer) {
+            continue;
+        }
+        $diff = awm_tagnummer($s['start']) - $heute_nr;
+        if (awm_tagnummer($s['start']) >= 0 && $diff >= 0 && $diff <= 14) {
+            $st['hinweis'] = trim($s['summary']) . ($s['desc'] !== '' ? ' - ' . $s['desc'] : '');
+            break;
         }
     }
     // Jahreswechsel-Warnung: Kalender liefert bald keine Termine mehr
@@ -350,7 +517,8 @@ function awm_state($force = false, $cal = 1) {
     if ($st['ok'] && !$future) {
         $st['warnung'] = 1; // in <30 Tagen keine Termine mehr -> Link erneuern (Jahreswechsel)
     }
-    file_put_contents($cache, json_encode($st));
+    // Unteilbar, damit awm.php nie eine halb geschriebene Datei liest.
+    awm_json_schreiben($cache, $st);
     awm_log_if_changed('zustand_' . $cal, 'morgen R=' . $st['morgen']['rest'] . ' B=' . $st['morgen']['bio'] . ' P=' . $st['morgen']['papier'] . ' W=' . $st['morgen']['wert'] . ' | Warnung=' . $st['warnung']);
     return $st;
 }
@@ -436,8 +604,8 @@ function awm_tts_url($text) {
     if ($mode === 'audioserver') {
         return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
     }
-    if ((string) $tts['ip'] === '') {
-        return '';
+    if ($mode === 'musicserver' && (string) $tts['ip'] === '') {
+        return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
     }
     if ($mode === 'musicserver') {
         // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~8,4~8,6~8".
@@ -459,6 +627,13 @@ function awm_tts_url($text) {
     if ($tpl === '') {
         // Standard-Vorlage MusicServer4Home
         $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}';
+    }
+    // Die IP wird nur verlangt, wenn die Vorlage sie auch verwendet. Bis
+    // 1.2.0 stand die Pruefung weiter oben und galt fuer alle Modi: eine
+    // eigene Vorlage wie "http://sprich.local/say?text={text}" liess sich
+    // damit gar nicht benutzen, obwohl sie keine IP braucht.
+    if ((string) $tts['ip'] === '' && strpos($tpl, '{ip}') !== false) {
+        return '';
     }
     return str_replace(
         array('{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'),
@@ -682,10 +857,23 @@ function awm_renew_scrape_awm($url, $cal = 1) {
         return array('', '');
     }
     $html = html_entity_decode($html, ENT_QUOTES, 'UTF-8');
-    if (!preg_match_all('#https?://www\.awm-muenchen\.de/[^"\'\s]*section(?:%5D|\])=ics[^"\'\s]*#i', $html, $mm)) {
+    // Absolute Adressen - der Fall, den 1.1.0 und 1.2.0 abgedeckt haben.
+    preg_match_all('#https?://www\.awm-muenchen\.de/[^"\'\s]*section(?:%5D|\])=ics[^"\'\s]*#i', $html, $mm);
+    $kandidaten = $mm[0];
+    // Und die relativen: TYPO3 schreibt Verweise auf die eigene Seite je
+    // nach Einstellung als "/entsorgen/..." statt mit vollem Namen. Bis
+    // 1.2.0 fand der Ausdruck davon nichts, und die Rueckfallebene lief
+    // ins Leere, obwohl der Link auf der Seite stand.
+    if (preg_match_all('#(?:href=["\']|["\'\s])(/[^"\'\s]*section(?:%5D|\])=ics[^"\'\s]*)#i', $html, $mr)) {
+        foreach ($mr[1] as $rel) {
+            $kandidaten[] = 'https://www.awm-muenchen.de' . $rel;
+        }
+    }
+    if (!$kandidaten) {
         return array('', '');
     }
-    foreach ($mm[0] as $cand) {
+    $kandidaten = array_values(array_unique($kandidaten));
+    foreach ($kandidaten as $cand) {
         if (strpos($cand, (string) $newyear) === false) {
             continue;
         }
@@ -753,12 +941,15 @@ function awm_renew($cal = 1) {
             break;
         }
     }
-    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
-    // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-    $json_neu = json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($json_neu !== false) { @file_put_contents($p['config'], $json_neu); }
+    // Erst die Konfiguration, dann die Sicherung - und nur, wenn das
+    // Schreiben wirklich geklappt hat. Andernfalls stuende in der Sicherung
+    // gleich mit, was in der Konfiguration schon fehlt.
+    if (!awm_json_schreiben($p['config'], $raw, 0664, true)) {
+        awm_log('Jahres-Erneuerung: neuer Link gefunden, liess sich aber NICHT speichern - alter Link bleibt gueltig');
+        return false;
+    }
     @copy($p['config'], $p['backup']);
-    file_put_contents(awm_icsfile($cal), $ics);
+    awm_datei_schreiben(awm_icsfile($cal), awm_utf8($ics));
     @unlink(awm_tmpdir() . '/state_' . (int) $cal . '.json');
     awm_log('Jahres-Erneuerung: neuer Link fuer Kalender ' . $cal . ' gespeichert');
     return true;
@@ -862,6 +1053,98 @@ function awm_selbstpruefung_erneuerung()
        'Veraltet: abfall.io-Fenster aus dem Vorjahr wird erkannt');
 
     return $e;
+}
+
+/* ==================================================================
+ * Selbstpruefung der Robustheit (ab 1.3.0)
+ *
+ * Vier Stellen, an denen das Plugin bis 1.2.0 stillschweigend das
+ * Falsche tat. Sie laufen alle ohne Netz und ohne Schreibzugriff auf die
+ * Konfiguration.
+ * ================================================================== */
+
+function awm_selbstpruefung_robust()
+{
+    $e = array();
+    $p = function ($ok, $text) use (&$e) { $e[] = array($ok ? 1 : 0, $text); };
+
+    /* --- 1. Zeichensatz --- */
+    $latin = "BEGIN:VCALENDAR\r\nSUMMARY:Restm\xFClltonne gr\xFCn\r\nEND:VCALENDAR";
+    $u = awm_utf8($latin);
+    $p(preg_match('//u', $u) === 1, 'Latin-1-Kalender wird zu gueltigem UTF-8');
+    $p(json_encode(array('s' => $u)) !== false,
+       'Umgewandelter Kalender laesst sich als JSON schreiben');
+    $p(strpos($u, "Restm\u{00fc}lltonne") !== false, 'Der Umlaut ueberlebt die Umwandlung');
+    $schon = "BEGIN:VCALENDAR\r\nSUMMARY:Restm\u{00fc}lltonne\r\nEND:VCALENDAR";
+    $p(awm_utf8($schon) === $schon, 'Gueltiges UTF-8 wird nicht angefasst');
+    $mit = "BEGIN:VCALENDAR\r\nX-WR-CALNAME;CHARSET=ISO-8859-1:M\xFCll\r\nEND:VCALENDAR";
+    $p(preg_match('//u', awm_utf8($mit)) === 1, 'Angabe CHARSET=ISO-8859-1 im Kopf wird befolgt');
+    $p(preg_match('//u', awm_utf8(awm_utf8($mit))) === 1
+       && strpos(awm_utf8(awm_utf8($mit)), 'M') !== false,
+       'Zweimaliges Umwandeln schadet nicht');
+
+    /* --- 2. Sprachausgabe: eigene Vorlage ohne IP --- */
+    // Bis 1.2.0 gab awm_tts_url() bei leerer IP fuer JEDEN Modus ''
+    // zurueck. Eine Vorlage wie "http://sprich.local/say?text={text}"
+    // braucht aber gar keine IP - sie war damit unbenutzbar.
+    $cfg = awm_config();
+    $sicher = $cfg['tts'];
+    $p(function_exists('awm_tts_url'), 'Sprachausgabe-Funktion vorhanden');
+    $p(strpos((string) awm_tts_url_test('custom', '', 'http://sprich.local/say?text={text}', 'Hallo'),
+              'sprich.local') !== false,
+       'Eigene Vorlage ohne IP wird gebaut, nicht verworfen');
+    $p(awm_tts_url_test('musicserver', '', '', 'Hallo') === '',
+       'Music Server ohne IP liefert weiterhin nichts');
+    $p(strpos((string) awm_tts_url_test('musicserver', '192.168.1.50', '', 'Hallo'),
+              '192.168.1.50:') !== false,
+       'Music Server mit IP unveraendert');
+    $p(awm_tts_url_test('audioserver', '', '', 'Hallo') === null,
+       'Original Loxone Audioserver liefert weiterhin null');
+    unset($sicher);
+
+    /* --- 3. Stichwoerter fuer Verschiebungen --- */
+    $w = awm_hinweis_woerter();
+    $p(in_array('achtung', array_map('strtolower', $w), true),
+       'Muenchen unveraendert: "achtung" ist immer dabei');
+    $p(count($w) > 1, 'Weitere Stichwoerter fuer andere Entsorger sind hinterlegt');
+
+    /* --- 4. Unteilbares Schreiben --- */
+    $probe = awm_tmpdir() . '/selbsttest.json';
+    $ok = awm_json_schreiben($probe, array('a' => 1, 'b' => "\u{00fc}"));
+    $gelesen = $ok ? json_decode((string) @file_get_contents($probe), true) : null;
+    $p($ok && is_array($gelesen) && $gelesen['a'] === 1, 'Unteilbares Schreiben und Lesen klappt');
+    $p(!awm_json_schreiben($probe, array('a' => "\xFF\xFE ungueltig")),
+       'Ungueltiges UTF-8 wird abgelehnt, statt die Datei zu leeren');
+    $nachher = json_decode((string) @file_get_contents($probe), true);
+    $p(is_array($nachher) && isset($nachher['a']) && $nachher['a'] === 1,
+       'Nach dem abgelehnten Schreiben steht der alte Inhalt noch da');
+    @unlink($probe);
+
+    return $e;
+}
+
+/**
+ * Sprachausgabe-Adresse mit vorgegebenen Werten bauen - nur fuer die
+ * Selbstpruefung. Die Konfiguration wird dabei NICHT angefasst.
+ */
+function awm_tts_url_test($mode, $ip, $template, $text)
+{
+    if ($mode === 'audioserver') {
+        return null;
+    }
+    if ($mode === 'musicserver') {
+        return $ip === '' ? '' : 'http://' . $ip . ':7091/audio/grouped/tts/1~8/'
+                                 . rawurlencode('de|' . $text);
+    }
+    $tpl = trim((string) $template);
+    if ($tpl === '') {
+        $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}';
+    }
+    if ($ip === '' && strpos($tpl, '{ip}') !== false) {
+        return '';
+    }
+    return str_replace(array('{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'),
+                       array($ip, 7091, '1', 8, 'de', rawurlencode($text)), $tpl);
 }
 
 /* ==================================================================

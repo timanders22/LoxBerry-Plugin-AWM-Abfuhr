@@ -36,6 +36,45 @@ Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 u
 - Konfiguration, Log und Kalender überleben Plugin-Updates und Neuinstallation
   (Sicherungskopie außerhalb des Plugin-Ordners)
 
+## Neu in 1.3.0
+
+- **Der Kalender überlebt das Update jetzt wirklich.** `preupgrade.sh` sicherte
+  eine Datei namens `kalender.ics`, die es seit 1.1.0 nicht mehr gibt — seit der
+  Mehrkalender-Fähigkeit heißen sie `kalender_1.ics` und `kalender_2.ics`. Der
+  Befehl lief lautlos ins Leere. Zusätzlich gibt es jetzt eine dauerhafte
+  Sicherung außerhalb des Plugin-Ordners, wie sie die Konfiguration längst hat.
+- **Wiederholversuch nach einem Ausfall des Entsorger-Servers.** Ein
+  fehlgeschlagener Abruf setzte den Zeitstempel der vorhandenen Datei auf jetzt
+  und verschob den nächsten Versuch damit um das volle Abruf-Intervall — bei der
+  Voreinstellung also um 14 Tage. Jetzt wird nach einer Stunde erneut gefragt.
+- **Zeichensätze außer UTF-8.** Kalender in ISO-8859-1 oder Windows-1252 werden
+  beim Abruf und beim Einlesen umgewandelt. Vorher scheiterte `json_encode` an
+  einem einzelnen Umlaut: der Zwischenspeicher ließ sich nicht schreiben und
+  `?json=1` lieferte einen leeren Rumpf mit Status 200.
+- **Eigene TTS-Vorlagen ohne IP-Feld** funktionieren. Die Prüfung auf eine
+  gesetzte IP galt für alle Ausgabearten und machte Vorlagen wie
+  `http://sprich.local/say?text={text}` unbenutzbar.
+- **Stichwörter für Feiertagsverschiebungen sind einstellbar.** Fest verdrahtet
+  war „Achtung“ — die Formulierung des AWM München. Andere Entsorger schreiben
+  „Verschiebung“, „Feiertagsregelung“ oder „Ersatztermin“. „Achtung“ steht
+  weiterhin an erster Stelle der Standardliste.
+- **Unteilbares Schreiben** (Nebendatei + `rename`) für Konfiguration,
+  Kalender und Zwischenspeicher. Der Zwischenspeicher wird jede Minute vom
+  Cron-Lauf geschrieben und im 300-s-Takt vom Miniserver gelesen — ein halb
+  geschriebenes JSON konnte dort als Nullwert ankommen.
+- **Rechnung ohne `DateTime`.** Die Terminprüfung legte je Aufruf zwei
+  Datumsobjekte an; bei 35 Vorschautagen und 200 Terminen waren das 14.000
+  Objekte für eine Rechnung mit 36 verschiedenen Datumswerten. 677.817
+  Vergleiche gegen die alte Fassung, über beide Zeitumstellungen hinweg: kein
+  einziger Unterschied.
+- **Relative Links** werden beim AWM-Website-Scraping mitgelesen.
+- `PRERELEASECFG` war leer — wer den Vorab-Kanal eingestellt hatte, bekam gar
+  keine Aktualisierungen mehr. Es gibt jetzt eine `prerelease.cfg`.
+- Oberfläche nach Hausstandard: Reiter als echte Verweise (funktionieren auch
+  ohne JavaScript), Farblegende in jedem Reiter mit Knöpfen, kein roter Knopf
+  mehr, Tonnennamen und Tagesangaben aus den Sprachdateien statt fest auf
+  Deutsch.
+
 ## Endpunkte
 
 | Aufruf | Zweck |
