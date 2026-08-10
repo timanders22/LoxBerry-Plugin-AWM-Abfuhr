@@ -252,7 +252,7 @@ function aw_legende()
 
 $aw_frame = class_exists('LBWeb', false);
 if ($aw_frame) {
-    LBWeb::lbheader('Abfuhrkalender AWM M&uuml;nchen', 'https://wiki.loxberry.de/', '');
+    LBWeb::lbheader('Abfuhrkalender AWM M&uuml;nchen', 'https://wiki.loxberry.de/', 'help.html');
 }
 $aw_host = aw_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 ?>
@@ -561,6 +561,10 @@ foreach ($aw_quellen as $aw_q) { ?>
 </div>
 
 <?php aw_legende(); ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i>' . awm_t('LEGENDE.TECHNIK') . '</span>
+<span><i class="sm-punkt sm-b-aktion"></i>' . awm_t('LEGENDE.AKTION') . '</span>
+</div>
 <div class="sm-knopfreihe">
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:0;"><?php echo awm_t('TEXT.SPEICHERN'); ?></button>
 </div>
@@ -589,6 +593,11 @@ foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
 ?>
 <?php aw_legende(); ?>
 <?php if (count($aw_cals) > 1) { ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i>' . awm_t('LEGENDE.LESEN') . '</span>
+<span><i class="sm-punkt sm-b-technik"></i>' . awm_t('LEGENDE.TECHNIK') . '</span>
+<span><i class="sm-punkt sm-b-aktion"></i>' . awm_t('LEGENDE.AKTION') . '</span>
+</div>
 <div class="sm-knopfreihe">
 <?php foreach ($aw_cals as $aw_n => $aw_c) { ?>
 <a class="sm-btn <?= $aw_n === $aw_bcal ? 'sm-b-aktion' : 'sm-b-lesen' ?>"
@@ -718,6 +727,11 @@ foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
 <?php aw_legende(); ?>
 
 <h3 class="sm-h3"><?php echo awm_t('TEXT.ANSEHEN'); ?></h3>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i>' . awm_t('LEGENDE.LESEN') . '</span>
+<span><i class="sm-punkt sm-b-technik"></i>' . awm_t('LEGENDE.TECHNIK') . '</span>
+<span><i class="sm-punkt sm-b-aktion"></i>' . awm_t('LEGENDE.AKTION') . '</span>
+</div>
 <div class="sm-knopfreihe">
 <a class="sm-btn sm-b-lesen"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php" target="_blank"><?php echo awm_t('TEXT.LOXONE_ZEILE_ABRUFEN'); ?></a>
 <a class="sm-btn sm-b-lesen"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?json=1" target="_blank"><?php echo awm_t('TEXT.JSON_ANSICHT'); ?></a>
@@ -784,6 +798,9 @@ foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { $aw_pf++; } }
 <div class="sm-alert sm-info"><?php echo awm_t('TEXT.NOCH_KEINE_PROTOKOLL_EINTRGE_VORHA'); ?></div>
 <?php } ?>
 <?php aw_legende(); ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i>' . awm_t('LEGENDE.AKTION') . '</span>
+</div>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="clearlog" value="1">

@@ -1,28 +1,28 @@
-<h2>Abfuhrkalender AWM München</h2>
+<h2><TMPL_VAR HILFE.K01></h2>
 
-<p>Bringt den Abfuhrkalender des AWM München (Abfallwirtschaftsbetrieb) — oder jeden anderen iCal-/ICS-Abfuhrkalender mit Tonnen-Namen in den Termin-Titeln — in Loxone: Welche Tonne ist <b>morgen</b> fällig, welche <b>heute</b>, und in wie vielen Tagen kommt die nächste Leerung. Dazu optionale <b>Vorabend-Ansage</b> (TTS über Music Server/Audioserver), <b>MQTT</b>-Veröffentlichung und <b>JSON</b>.</p>
+<p><TMPL_VAR HILFE.K02></p>
 
-<p>Kompatibel mit LoxBerry 3.x und <b>LoxBerry 4</b> (reines PHP, läuft mit PHP 7.4 und 8.x).</p>
+<p><TMPL_VAR HILFE.K03></p>
 
-<h3>Funktionen</h3>
+<h3><TMPL_VAR HILFE.K04></h3>
 
-<ul><li>iCal-/ICS-Import per URL, Abruf-Intervall einstellbar; der Kalender wird persistent gespeichert (übersteht Neustarte, Ausfälle des Entsorger-Servers)</li><li>Rollt AWM-<b>Serientermine</b> korrekt selbst aus (RRULE FREQ=WEEKLY + INTERVAL + UNTIL + EXDATE) inkl. der einzelnen „Achtung“-Verschiebungstermine rund um Feiertage — der Verschiebungshinweis wird zusätzlich als Text angezeigt</li><li>Tonnen-Erkennung: Restmüll/Hausmüll, Bio, Papier, Wertstoff/Gelbe Tonne</li><li><b>Loxone-Textzeile</b>, 1:1 kompatibel zum verbreiteten muell.php-Format (<code>MUELL;REST=..;BIO=..;PAPIER=..;DATUM=..</code>), erweitert um <code>WERT</code>, <code>OK</code>, <code>WARN</code>, Heute-Flags (<code>HREST</code> …) und Tage-Zähler (<code>TREST</code> …)</li><li><b>Vorabend-Ansage</b> (TTS) zur konfigurierten Uhrzeit über Music Server/Audioserver (Zonen mit individueller Lautstärke, <code>Zone~Lautstärke</code>) oder über eine eigene URL-Vorlage — einmal pro Tag, nur wenn morgen etwas fällig ist</li><li><b>MQTT</b> über das LoxBerry MQTT Gateway (bei Änderung + alle 30 min): <code>awm/rest_morgen</code>, <code>_heute</code>, <code>tage_*</code>, <code>datum_*</code>, <code>ok</code>, <code>warnung</code>, <code>hinweis</code></li><li><b>JSON-Endpunkt</b> für Drittsoftware (<code>?json=1</code>)</li><li><b>Jahreswechsel-Warnung</b>: Der AWM-Link enthält das Kalenderjahr; endet der Kalender in &lt;30 Tagen, warnt das Plugin in der Oberfläche, per <code>WARN=1</code> in Loxone und per MQTT</li><li>Reiter: Einstellungen (mit Laien-Anleitung zur AWM-Website und „Jetzt abrufen“), Einbindung in Loxone (Schritt-für-Schritt inkl. kompletter Baustein-Liste und Praxis-Hinweisen zum Benachrichtigungs-Baustein), Test, Protokoll (mit Rotation)</li><li>Konfiguration, Log und Kalender überleben Plugin-Updates und Neuinstallation (Sicherungskopie außerhalb des Plugin-Ordners)</li></ul>
+<ul><li><TMPL_VAR HILFE.K05></li><li><TMPL_VAR HILFE.K06></li><li><TMPL_VAR HILFE.K07></li><li><TMPL_VAR HILFE.K08></li><li><TMPL_VAR HILFE.K09></li><li><TMPL_VAR HILFE.K10></li><li><TMPL_VAR HILFE.K11></li><li><TMPL_VAR HILFE.K12></li><li><TMPL_VAR HILFE.K13></li><li><TMPL_VAR HILFE.K14></li></ul>
 
-<h3>Endpunkte</h3>
+<h3><TMPL_VAR HILFE.K15></h3>
 
 <table class="sm-tbl">
-<tr><th>Aufruf</th><th>Zweck</th></tr>
-<tr><td><code>/plugins/awmabfuhr/awm.php</code></td><td>Loxone-Zeile <code>MUELL;REST=..;BIO=..;PAPIER=..;DATUM=..;WERT=..;OK=..;WARN=..;HREST=..;…;TREST=..;…</code></td></tr>
-<tr><td><code>/plugins/awmabfuhr/awm.php?debug=1</code></td><td>zusätzlich alle Termine im Vorschau-Fenster</td></tr>
-<tr><td><code>/plugins/awmabfuhr/awm.php?refresh=1</code></td><td>Kalender sofort neu abrufen</td></tr>
-<tr><td><code>/plugins/awmabfuhr/awm.php?json=1</code></td><td>kompletter Zustand als JSON</td></tr>
-<tr><td><code>/plugins/awmabfuhr/awm.php?say=1</code></td><td>Test: Vorabend-Ansage sofort abspielen</td></tr>
+<tr><th><TMPL_VAR HILFE.K23></th><th><TMPL_VAR HILFE.K24></th></tr>
+<tr><td><TMPL_VAR HILFE.K25></td><td><TMPL_VAR HILFE.K26></td></tr>
+<tr><td><TMPL_VAR HILFE.K27></td><td><TMPL_VAR HILFE.K28></td></tr>
+<tr><td><TMPL_VAR HILFE.K29></td><td><TMPL_VAR HILFE.K30></td></tr>
+<tr><td><TMPL_VAR HILFE.K31></td><td><TMPL_VAR HILFE.K32></td></tr>
+<tr><td><TMPL_VAR HILFE.K33></td><td><TMPL_VAR HILFE.K34></td></tr>
 </table>
 
-<h3>Einrichtung (AWM München)</h3>
+<h3><TMPL_VAR HILFE.K16></h3>
 
-<ol><li><a href="https://www.awm-muenchen.de/abfall-entsorgen/muelltonnen/abfuhrkalender" target="_blank">AWM-Abfuhrkalender öffnen</a>, Straße und Hausnummer eingeben, „Weiter“.</li><li>Auf der Ergebnisseite den iCal-Export-Link („Termine als iCal/ICS“) mit der rechten Maustaste kopieren.</li><li>Link in der Plugin-Oberfläche als „iCal-Kalender-URL“ eintragen, speichern.</li><li>„Jetzt abrufen“ klicken — fertig; ab dann hält das Plugin die Termine automatisch aktuell.</li></ol>
+<ol><li><TMPL_VAR HILFE.K17></li><li><TMPL_VAR HILFE.K18></li><li><TMPL_VAR HILFE.K19></li><li><TMPL_VAR HILFE.K20></li></ol>
 
-<h3>Datenschutz</h3>
+<h3><TMPL_VAR HILFE.K21></h3>
 
-<p>Es sind <b>keine persönlichen Daten</b> im Plugin enthalten. Adresse bzw. Kalender stecken ausschließlich in der lokal gespeicherten iCal-URL (<code>config/plugins/awmabfuhr/awm.json</code>). Externe Verbindungen gibt es nur zum konfigurierten Kalender-Server.</p>
+<p><TMPL_VAR HILFE.K22></p>
