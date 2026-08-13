@@ -60,6 +60,15 @@ $aw_note = '';
 // Adresse (die Reiter sind echte Verweise). Beides wird gegen dieselbe
 // Positivliste geprueft - sie muss Zeichen fuer Zeichen zu den fuenf
 // id-Werten der Bereiche weiter unten passen.
+// ---------- Loxone-Vorlage herunterladen (Hausstandard) ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage']) && function_exists('awm_vorlage')) {
+    list($aw_vname, $aw_vinhalt) = awm_vorlage();
+    header('Content-Type: application/x-download');
+    header('Content-Disposition: attachment; filename="' . $aw_vname . '"');
+    echo $aw_vinhalt;
+    exit;
+}
+
 $aw_tabliste = array('tab-settings', 'tab-bins', 'tab-loxone', 'tab-test', 'tab-log');
 $aw_tab = 'tab-settings';
 if (in_array((string) (isset($_GET['tab']) ? $_GET['tab'] : ''), $aw_tabliste, true)) {
@@ -573,6 +582,7 @@ foreach ($aw_quellen as $aw_q) { ?>
 </div>
 
 <h2><?php echo awm_t('TEXT.MQTT_OPTIONAL'); ?></h2>
+<?php if (function_exists('awm_mqtt_gateway_autostart') && awm_mqtt_gateway_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo awm_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
 <label style="display:inline-flex;align-items:center;gap:6px;">
     <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($aw_cfg['mqtt_enabled']) ? 'checked' : '' ?>> <?php echo awm_t('TEXT.ZUSTAND_PER_MQTT_VERFFENTLICHEN'); ?>
 </label>
@@ -694,6 +704,14 @@ foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
 <div class="sm-pane<?= $aw_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?php echo awm_t('TEXT.EINBINDUNG_IN_LOXONE_SCHRITT_FR_SC'); ?></h2>
 <p><?php echo awm_t('TEXT.DER_MINISERVER_FRAGT_DAS_PLUGIN_RE'); ?> <b><?php echo awm_t('TEXT.MORGEN'); ?></b> <?php echo awm_t('TEXT.FLLIG_WELCHE'); ?> <b><?php echo awm_t('TEXT.HEUTE_2'); ?></b><?php echo awm_t('TEXT.IN_WIE_VIELEN_TAGEN_KOMMT_DIE_NCHS'); ?> <span class="sm-mono">ANN</span><?php echo awm_t('TEXT.MIT_DEM_DER_MINISERVER_DEN_PUSH_VE'); ?> <b><?php echo awm_t('TEXT.ANSAGE'); ?></b> <?php echo awm_t('TEXT.SPRICHT_DAS_PLUGIN_SELBST_REITER_E'); ?></p>
+
+<h2><?php echo awm_t('TEXT.H_VORLAGE'); ?></h2>
+<div class="sm-hinweis"><?php echo awm_t('TEXT.H_VORLAGE_TEXT'); ?></div>
+<form action="index.php" method="post" style="margin-bottom:14px;">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <input data-role="none" type="hidden" name="vorlage" value="1">
+  <button data-role="none" class="sm-btn" type="submit" style="background:#546e7a;"><?php echo awm_t('TEXT.K_VORLAGE'); ?></button>
+</form>
 
 <div class="sm-step"><b><?php echo awm_t('TEXT.SCHRITT_1_VIRTUELLER_HTTP_EINGANG_'); ?></b> <?php echo awm_t('TEXT.ABFRAGE_ALLE_300_S'); ?>
 <table class="sm-tbl">
