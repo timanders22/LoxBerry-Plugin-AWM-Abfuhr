@@ -137,6 +137,25 @@ function awm_config() {
 }
 
 /** Stichwoerter fuer Feiertagsverschiebungen, bereinigt. Nie leer. */
+/** Sperre gegen parallele Cron-Laeufe - 1:1 nach fer_sperre (FerienFeiertage):
+ *  flock auf eine Sperrdatei, nicht blockierend; false = ein Lauf laeuft schon. */
+function awm_sperre($name = 'cron') {
+    $f = awm_tmpdir() . '/' . preg_replace('/[^a-z0-9_]/', '', $name) . '.lock';
+    $fh = @fopen($f, 'c');
+    if ($fh === false) {
+        // Nicht stillschweigend weiterlaufen: ohne Sperre ist der Schaden
+        // groesser als ohne Lauf, und ohne Meldung sucht niemand danach.
+        awm_log('WARNUNG: Sperrdatei ' . $f . ' laesst sich nicht oeffnen - '
+              . 'Platz im Verzeichnis und Eigentuemer pruefen.');
+        return false;
+    }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) {
+        fclose($fh);
+        return false;
+    }
+    return $fh;
+}
+
 function awm_hinweis_woerter() {
     $cfg = awm_config();
     $roh = trim((string) (isset($cfg['hinweis_woerter']) ? $cfg['hinweis_woerter'] : ''));

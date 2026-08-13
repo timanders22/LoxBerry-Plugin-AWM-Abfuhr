@@ -69,13 +69,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['vorlage']) && functio
     exit;
 }
 
-$aw_tabliste = array('tab-settings', 'tab-bins', 'tab-loxone', 'tab-test', 'tab-log');
+$aw_tabliste = array('tab-settings', 'tab-mqtt', 'tab-bins', 'tab-loxone', 'tab-test', 'tab-log');
 $aw_tab = 'tab-settings';
 if (in_array((string) (isset($_GET['tab']) ? $_GET['tab'] : ''), $aw_tabliste, true)) {
     $aw_tab = $_GET['tab'];
 }
 if (in_array((string) (isset($_POST['activetab']) ? $_POST['activetab'] : ''), $aw_tabliste, true)) {
     $aw_tab = $_POST['activetab'];
+}
+
+// ---------- MQTT speichern (eigener Reiter seit 1.3.4, Hausstandard) ----------
+// NICHT den save-Handler mitbenutzen: der setzt Haken per isset() und wuerde
+// beim Absenden des MQTT-Formulars die Einstellungs-Haken auf 0 stellen.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
+    $aw_new = awm_config();
+    $aw_new['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
+    $aw_new['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'awm')) ?: 'awm';
+    if (!is_dir($aw_cfgdir)) { @mkdir($aw_cfgdir, 0775, true); }
+    // Unteilbar schreiben wie der save-Handler, gleiche Fehlermeldung.
+    if (function_exists('awm_json_schreiben')
+        ? awm_json_schreiben($aw_cfgfile, $aw_new, 0664, true)
+        : false) {
+        $aw_saved = true;
+        @copy($aw_cfgfile, $aw_bkfile); // Sicherung ausserhalb des Plugin-Ordners
+    } else {
+        $aw_err = 'Konfiguration konnte nicht gespeichert werden: ' . $aw_cfgfile;
+    }
+    $aw_tab = 'tab-mqtt';
 }
 
 // ---------- Protokoll leeren ----------
@@ -186,8 +206,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $aw_hw = trim((string) (isset($_POST['hinweis_woerter']) ? $_POST['hinweis_woerter'] : ''));
     $aw_hw = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', $aw_hw));
     $aw_new['hinweis_woerter'] = $aw_hw !== '' ? $aw_hw : AWM_HINWEIS_STANDARD;
-    $aw_new['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
-    $aw_new['mqtt_topic'] = preg_replace('#[^\w/\-]#', '', (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'awm')) ?: 'awm';
+    // MQTT wohnt seit 1.3.4 im eigenen Reiter mit eigenem Formular - die
+    // Werte muessen hier aus der bestehenden Konfiguration uebernommen
+    // werden, sonst loescht ein Klick auf 'Speichern' sie (gleiche Falle
+    // wie oben bei der Tonnenzuordnung).
+    $aw_mqtt_alt = awm_config();
+    $aw_new['mqtt_enabled'] = isset($aw_mqtt_alt['mqtt_enabled']) ? (int) $aw_mqtt_alt['mqtt_enabled'] : 0;
+    $aw_new['mqtt_topic'] = isset($aw_mqtt_alt['mqtt_topic']) && $aw_mqtt_alt['mqtt_topic'] !== '' ? $aw_mqtt_alt['mqtt_topic'] : 'awm';
     $aw_new['notify'] = array(
         'audio' => isset($_POST['notify_audio']) ? 1 : 0,
         'push' => isset($_POST['notify_push']) ? 1 : 0,
@@ -311,6 +336,8 @@ $aw_host = aw_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 .sm-info { background: #e3f2fd; border: 1px solid #90caf9; font-size: 0.9em; }
 .sm-mono { font-family: ui-monospace, monospace; background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
 .sm-small { font-size: 0.82em; color: #666; margin-top: 3px; }
+.sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
+    padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 2px solid #6dac20; flex-wrap: wrap; }
 .sm-tab { background: #eee; border: 1px solid #ccc; border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px; cursor: pointer; font-size: 0.95em; color: #444 !important; text-shadow: none !important; }
 .sm-tab.sm-active { background: #6dac20; color: #fff !important; border-color: #6dac20; font-weight: 600; }
@@ -418,6 +445,7 @@ $aw_tagetext = function ($n) {
 // Klick ab, solange es laeuft.
 $aw_reiter = array(
     'tab-settings' => awm_t('REITER.EINSTELLUNGEN'),
+    'tab-mqtt'     => awm_t('REITER.MQTT'),
     'tab-bins'     => awm_t('REITER.TONNEN'),
     'tab-loxone'   => awm_t('REITER.LOXONE'),
     'tab-test'     => awm_t('REITER.TEST'),
@@ -581,6 +609,29 @@ foreach ($aw_quellen as $aw_q) { ?>
     <span class="sm-mono">ANN=1</span> <?php echo awm_t('TEXT.ANLEITUNG_SCHRITT_3'); ?>
 </div>
 
+<?php aw_legende(); ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i>' . awm_t('LEGENDE.TECHNIK') . '</span>
+<span><i class="sm-punkt sm-b-aktion"></i>' . awm_t('LEGENDE.AKTION') . '</span>
+</div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:0;"><?php echo awm_t('TEXT.SPEICHERN'); ?></button>
+</div>
+</form>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="fetchnow" value="1">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" style="margin-top:0;"><?php echo awm_t('TEXT.JETZT_ABRUFEN'); ?></button>
+</form>
+</div>
+</div>
+
+<!-- ================= Reiter: MQTT (eigener Reiter seit 1.3.4, Hausstandard) ================= -->
+<div class="sm-pane<?= $aw_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="mqtt_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <h2><?php echo awm_t('TEXT.MQTT_OPTIONAL'); ?></h2>
 <?php if (function_exists('awm_mqtt_gateway_autostart') && awm_mqtt_gateway_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo awm_t('TEXT.W_AUTOSTART'); ?></div><?php } ?>
 <label style="display:inline-flex;align-items:center;gap:6px;">
@@ -599,22 +650,10 @@ foreach ($aw_quellen as $aw_q) { ?>
     </div>
 </div>
 
-<?php aw_legende(); ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i>' . awm_t('LEGENDE.TECHNIK') . '</span>
-<span><i class="sm-punkt sm-b-aktion"></i>' . awm_t('LEGENDE.AKTION') . '</span>
-</div>
 <div class="sm-knopfreihe">
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:0;"><?php echo awm_t('TEXT.SPEICHERN'); ?></button>
 </div>
 </form>
-<div class="sm-knopfreihe">
-<form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="fetchnow" value="1">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" style="margin-top:0;"><?php echo awm_t('TEXT.JETZT_ABRUFEN'); ?></button>
-</form>
-</div>
 </div>
 
 <!-- ================= Reiter: Tonnen ================= -->

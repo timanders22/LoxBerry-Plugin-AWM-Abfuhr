@@ -11,6 +11,14 @@
 
 require_once __DIR__ . '/awm_lib.php';
 
+/* Nur ein Lauf gleichzeitig (Muster FerienFeiertage): der Abruf wartet je
+ * Kalender bis zu 20 s - der naechste Minutenlauf soll nicht hineinlaufen. */
+$awm_lock = awm_sperre('cron');
+if ($awm_lock === false) {
+    echo "BUSY\n";
+    exit(0);
+}
+
 $sigall = array();
 foreach (awm_cals() as $n => $c) {
     awm_fetch(false, $n);
