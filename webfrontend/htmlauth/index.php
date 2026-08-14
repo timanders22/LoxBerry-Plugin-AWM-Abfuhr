@@ -650,6 +650,7 @@ foreach ($aw_quellen as $aw_q) { ?>
     </div>
 </div>
 
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?php echo awm_t('LEGENDE.AKTION'); ?></span></div>
 <div class="sm-knopfreihe">
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" style="margin-top:0;"><?php echo awm_t('TEXT.SPEICHERN'); ?></button>
 </div>

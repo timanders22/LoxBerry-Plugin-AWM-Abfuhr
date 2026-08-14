@@ -667,6 +667,20 @@ function awm_tts_url($text) {
     if ($mode === 'audioserver') {
         return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
     }
+
+    /* Zonenliste EINMAL fuer alle Modi normalisieren.
+     *
+     * Bis hierher wurde nur im Modus musicserver je Zone getrimmt. In den
+     * Modi ms4h und "eigene Vorlage" ging die Eingabe roh in {zones} - aus
+     * "2, 4, 6" wurde eine Adresse mit Leerzeichen, also eine kaputte
+     * Adresse. Der Hilfetext sagt zu, dass beide Schreibweisen gehen;
+     * hier wird das eingeloest. */
+    $zl = array();
+    foreach (explode(',', (string) $tts['zones']) as $z) {
+        $z = trim($z);
+        if ($z !== '') { $zl[] = $z; }
+    }
+    $tts['zones'] = implode(',', $zl);
     if ($mode === 'musicserver' && (string) $tts['ip'] === '') {
         return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
     }
