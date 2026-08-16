@@ -23,7 +23,14 @@ $sigall = array();
 foreach (awm_cals() as $n => $c) {
     awm_fetch(false, $n);
     $st = awm_state(false, $n);
-    $sigall[$n] = array($st['morgen'], $st['heute'], $st['tage'], $st['ok'], $st['warnung']);
+    /* Die Meldeflags gehoeren in die Signatur, sonst waeren sie zwar in der
+     * Nachricht - aber die Nachricht ginge nicht raus. ann und ptest aendern
+     * sich naemlich OHNE Zustandswechsel, allein durch Zeitablauf. Ohne sie
+     * in der Signatur bliebe ein ptest bis zum naechsten Zustandswechsel
+     * oder bis zum halbstuendlichen Lebenszeichen liegen - sein Fenster ist
+     * aber nur fuenf Minuten breit. */
+    $sigall[$n] = array($st['morgen'], $st['heute'], $st['tage'], $st['ok'], $st['warnung'],
+                        awm_meldeflags($st, $n));
     // MQTT je Kalender: bei Aenderung sofort, sonst alle 30 Minuten als Lebenszeichen
     //
     // Die Signatur enthaelt nur Zahlen, ist also nie von einem Zeichensatz

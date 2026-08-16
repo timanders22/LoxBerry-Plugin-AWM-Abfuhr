@@ -98,6 +98,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mqtt_save'])) {
     $aw_tab = 'tab-mqtt';
 }
 
+// ---------- Neues Aktionstoken erzeugen (ab 1.3.6) ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['token_neu'])) {
+    $aw_cfg_tok = function_exists('awm_config') ? awm_config() : array();
+    if (!is_array($aw_cfg_tok)) { $aw_cfg_tok = array(); }
+    $aw_cfg_tok['aktionstoken'] = function_exists('awm_token_erzeugen')
+        ? awm_token_erzeugen() : bin2hex(random_bytes(12));
+    if (!is_dir($aw_cfgdir)) { @mkdir($aw_cfgdir, 0775, true); }
+    if (function_exists('awm_json_schreiben')
+        ? awm_json_schreiben($aw_cfgfile, $aw_cfg_tok, 0664, true)
+        : false) {
+        @copy($aw_cfgfile, $aw_bkfile);
+        $aw_note = 'Neues Token erzeugt. Die Adressen in Loxone muessen angepasst werden '
+                 . '- die alten funktionieren nicht mehr.';
+    }
+    $aw_tab = 'tab-loxone';
+}
+
 // ---------- Protokoll leeren ----------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['clearlog'])) {
     @mkdir(dirname($aw_logfile), 0775, true);
@@ -213,6 +230,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $aw_mqtt_alt = awm_config();
     $aw_new['mqtt_enabled'] = isset($aw_mqtt_alt['mqtt_enabled']) ? (int) $aw_mqtt_alt['mqtt_enabled'] : 0;
     $aw_new['mqtt_topic'] = isset($aw_mqtt_alt['mqtt_topic']) && $aw_mqtt_alt['mqtt_topic'] !== '' ? $aw_mqtt_alt['mqtt_topic'] : 'awm';
+    // Dasselbe gilt fuer das Aktionstoken (ab 1.3.6). $aw_new wird hier von
+    // Grund auf neu gebaut - genau daran gingen am 13.08.2026 in drei anderen
+    // Linien die Token verloren, und mit ihnen alle Adressen in Loxone.
+    $aw_new['aktionstoken'] = isset($aw_mqtt_alt['aktionstoken']) ? (string) $aw_mqtt_alt['aktionstoken'] : '';
     $aw_new['notify'] = array(
         'audio' => isset($_POST['notify_audio']) ? 1 : 0,
         'push' => isset($_POST['notify_push']) ? 1 : 0,
@@ -249,7 +270,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
 $aw_cfg = function_exists('awm_config') ? awm_config() : array();
 if (!is_array($aw_cfg)) { $aw_cfg = array(); }
 $aw_cfg += array('cals' => array(), 'fetch_days' => 14, 'lookahead' => 35, 'autorenew' => 1,
-    'mqtt_enabled' => 0, 'mqtt_topic' => 'awm', 'notify' => array(), 'tts' => array());
+    'mqtt_enabled' => 0, 'mqtt_topic' => 'awm', 'notify' => array(), 'tts' => array(),
+    'aktionstoken' => '');
+
+// Beim ersten Aufruf ein Token erzeugen, damit die Adressen fuer Loxone sofort
+// benutzbar sind (schuetzt ?ptest=, ?say= und ?renew= im unangemeldeten awm.php).
+if (empty($aw_cfg['aktionstoken'])) {
+    $aw_cfg['aktionstoken'] = function_exists('awm_token_erzeugen')
+        ? awm_token_erzeugen() : bin2hex(random_bytes(12));
+    if (!is_dir($aw_cfgdir)) { @mkdir($aw_cfgdir, 0775, true); }
+    if (function_exists('awm_json_schreiben')
+        ? awm_json_schreiben($aw_cfgfile, $aw_cfg, 0664, true)
+        : false) {
+        @copy($aw_cfgfile, $aw_bkfile);
+    }
+}
 $aw_notify = is_array($aw_cfg['notify']) ? $aw_cfg['notify'] : array();
 $aw_notify += array('audio' => 1, 'push' => 1, 'time' => '18:00');
 $aw_tts = is_array($aw_cfg['tts']) ? $aw_cfg['tts'] : array();
@@ -806,6 +841,24 @@ foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
 <span class="sm-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/...</span> <?php echo awm_t('TEXT.UND_ALS_JSON_FR_DRITTSOFTWARE'); ?>
 <span class="sm-mono">http://<?= $aw_host ?>/plugins/<?= aw_e($aw_plugin) ?><?php echo awm_t('TEXT.AWM_PHP_JSON_1'); ?></span>
 </div>
+
+<div class="sm-step"><b><?php echo awm_t('TEXT.AKTIONSTOKEN'); ?></b><br>
+<?php echo awm_t('TEXT.TOKEN_ERKLAERUNG'); ?>
+<table class="sm-tbl">
+<tr><th><?php echo awm_t('TEXT.EIGENSCHAFT'); ?></th><th><?php echo awm_t('TEXT.WERT'); ?></th></tr>
+<tr><td><?php echo awm_t('TEXT.AKTUELLES_TOKEN'); ?></td><td><span class="sm-mono"><?= aw_e($aw_cfg['aktionstoken']) ?></span></td></tr>
+<tr><td><span class="sm-mono">?say=1</span></td><td><span class="sm-mono">/plugins/<?= aw_e($aw_plugin) ?>/awm.php?say=1&amp;token=<?= aw_e($aw_cfg['aktionstoken']) ?></span></td></tr>
+<tr><td><span class="sm-mono">?ptest=1</span></td><td><span class="sm-mono">/plugins/<?= aw_e($aw_plugin) ?>/awm.php?ptest=1&amp;token=<?= aw_e($aw_cfg['aktionstoken']) ?></span></td></tr>
+<tr><td><span class="sm-mono">?renew=1</span></td><td><span class="sm-mono">/plugins/<?= aw_e($aw_plugin) ?>/awm.php?renew=1&amp;token=<?= aw_e($aw_cfg['aktionstoken']) ?></span></td></tr>
+<tr><td><span class="sm-mono">?selftest=1</span></td><td><span class="sm-mono">/plugins/<?= aw_e($aw_plugin) ?>/awm.php?selftest=1&amp;token=<?= aw_e($aw_cfg['aktionstoken']) ?></span></td></tr>
+</table>
+<div class="sm-knopfreihe sm-b-aktion">
+  <form method="post" action="index.php">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" type="submit" name="token_neu" value="1"><?php echo awm_t('TEXT.K_TOKEN_NEU'); ?></button>
+  </form>
+</div>
+</div>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
@@ -861,9 +914,9 @@ foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { $aw_pf++; } }
 
 <h3 class="sm-h3"><?php echo awm_t('TEXT.LST_ETWAS_AUS'); ?></h3>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?say=1" target="_blank"><?php echo awm_t('TEXT.TEST_ANSAGE_JETZT'); ?></a>
-<a class="sm-btn sm-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?ptest=1" target="_blank"><?php echo awm_t('TEXT.TEST_PUSHNACHRICHT_2'); ?></a>
-<a class="sm-btn sm-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?renew=1" target="_blank"><?php echo awm_t('TEXT.JAHRES_ERNEUERUNG_TESTEN'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?say=1&amp;token=<?= aw_e($aw_cfg['aktionstoken']) ?>" target="_blank"><?php echo awm_t('TEXT.TEST_ANSAGE_JETZT'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?ptest=1&amp;token=<?= aw_e($aw_cfg['aktionstoken']) ?>" target="_blank"><?php echo awm_t('TEXT.TEST_PUSHNACHRICHT_2'); ?></a>
+<a class="sm-btn sm-b-aktion"  href="/plugins/<?= aw_e($aw_plugin) ?>/awm.php?renew=1&amp;token=<?= aw_e($aw_cfg['aktionstoken']) ?>" target="_blank"><?php echo awm_t('TEXT.JAHRES_ERNEUERUNG_TESTEN'); ?></a>
 </div>
 
 

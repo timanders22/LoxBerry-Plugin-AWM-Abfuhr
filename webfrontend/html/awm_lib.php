@@ -113,6 +113,7 @@ function awm_config() {
         'mqtt_topic' => 'awm',
         'notify' => array(),
         'tts' => array(),
+        'aktionstoken' => '',      // schuetzt ?ptest= ?say= ?renew= (unangemeldeter Endpunkt)
     );
     if (!is_array($cfg['cals'])) { $cfg['cals'] = array(); }
     // Migration alter Konfigurationen (Einzel-URL / tts.enabled / fetch_hours)
@@ -589,10 +590,52 @@ function awm_ann_active($st = null) {
     return (time() >= $start && time() < $start + 600) ? 1 : 0;
 }
 
+/** Ein Aktionstoken erzeugen.
+ *
+ * Der Zeichenvorrat laesst i, l, o und 0/1 weg: das Token steht in der
+ * Oberflaeche zum Abschreiben, und diese Zeichen verwechselt man dabei.
+ * Uebernommen aus dem Saugroboter-Plugin, damit alle Linien dasselbe tun.
+ */
+function awm_token_erzeugen($laenge = 24) {
+    $zeichen = 'abcdefghijkmnpqrstuvwxyz23456789';
+    $t = '';
+    for ($i = 0; $i < $laenge; $i++) {
+        $t .= $zeichen[random_int(0, strlen($zeichen) - 1)];
+    }
+    return $t;
+}
+
 /** Test-Push-Merker (5 Minuten nach Klick auf "Test-Pushnachricht"). */
 function awm_ptest_active() {
     $f = awm_tmpdir() . '/ptest';
     return (is_file($f) && time() - filemtime($f) < 300) ? 1 : 0;
+}
+
+/**
+ * Die vier Meldeflags an EINER Stelle: ann, audio, push, ptest.
+ *
+ * Sie standen bisher nur in der HTTP-Antwort. Wer auf MQTT umstellte,
+ * verlor sie ersatzlos: kein Meldefenster, keine Freigaben und vor allem
+ * kein PTEST, also keine Moeglichkeit mehr, den Push-Weg zu pruefen, ohne
+ * auf einen echten Abholtermin zu warten.
+ *
+ * Seit 1.3.6 liefert diese Funktion die Werte fuer beide Wege. Sie koennen
+ * damit nicht mehr auseinanderlaufen - genau das war der Grund, sie
+ * herauszuziehen statt die Rechnung ein zweites Mal hinzuschreiben.
+ *
+ * ann bleibt bei den Zweit- und Drittkalendern 0: die Ansage haengt am
+ * ersten Kalender, sonst redete das Haus mehrfach. Das war in awm.php schon
+ * so und wandert hier unveraendert mit.
+ */
+function awm_meldeflags($st = null, $cal = 1)
+{
+    $cfg = awm_config();
+    return array(
+        'ann'   => ((int) $cal === 1) ? awm_ann_active($st) : 0,
+        'audio' => empty($cfg['notify']['audio']) ? 0 : 1,
+        'push'  => empty($cfg['notify']['push']) ? 0 : 1,
+        'ptest' => awm_ptest_active(),
+    );
 }
 
 /* ---------------- MQTT (LoxBerry MQTT Gateway, UDP-Relay) ---------------- */
@@ -646,6 +689,11 @@ function awm_mqtt_publish($st = null, $cal = 1) {
         $msgs['tage_' . $k] = $st['tage'][$k];
         $msgs['datum_' . $k] = $st['naechste'][$k] !== '' ? $st['naechste'][$k] : '-';
     }
+    /* ann, audio, push und ptest fehlten hier. In der Vorlage fuer Loxone
+     * (awm_felder) stehen sie seit jeher, ueber HTTP kamen sie auch - nur
+     * der MQTT-Weg lieferte sie nicht. Wer umstellte, merkte es erst, wenn
+     * der Test-Push nicht mehr ausloeste. */
+    $msgs = array_merge($msgs, awm_meldeflags($st, $cal));
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) {
         return;

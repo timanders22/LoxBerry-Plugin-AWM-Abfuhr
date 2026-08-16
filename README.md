@@ -24,7 +24,8 @@ Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 u
   oder über eine eigene URL-Vorlage — einmal pro Tag, nur wenn morgen etwas
   fällig ist
 - **MQTT** über das LoxBerry MQTT Gateway (bei Änderung + alle 30 min):
-  `awm/rest_morgen`, `_heute`, `tage_*`, `datum_*`, `ok`, `warnung`, `hinweis`
+  `awm/rest_morgen`, `_heute`, `tage_*`, `datum_*`, `ok`, `warnung`, `hinweis`,
+  dazu die Melde-Merker `ann`, `audio`, `push`, `ptest`
 - **JSON-Endpunkt** für Drittsoftware (`?json=1`)
 - **Jahreswechsel-Warnung**: Der AWM-Link enthält das Kalenderjahr; endet der
   Kalender in <30 Tagen, warnt das Plugin in der Oberfläche, per `WARN=1` in
@@ -35,6 +36,43 @@ Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 u
   Protokoll (mit Rotation)
 - Konfiguration, Log und Kalender überleben Plugin-Updates und Neuinstallation
   (Sicherungskopie außerhalb des Plugin-Ordners)
+
+## Neu in 1.3.6
+
+**Der MQTT-Weg liefert jetzt alles, was der HTTP-Weg liefert.** Bisher
+veröffentlichte das Plugin über MQTT 19 Werte, über HTTP aber 23: es fehlten
+die vier Melde-Merker `ann` (Erinnerungsfenster), `audio` und `push`
+(Freigaben aus der Konfiguration) sowie `ptest` (Test-Push). Wer auf MQTT
+umstellte, verlor damit genau die Werte, mit denen sich Vorabend-Ansage und
+Pushnachricht im Miniserver steuern und **prüfen** lassen — der Test-Push
+löste über MQTT schlicht nicht mehr aus.
+
+Drei Änderungen, damit das wirklich wirkt:
+
+- Die vier Merker kommen aus **einer** Funktion (`awm_meldeflags()`), die
+  beide Wege benutzen. HTTP und MQTT können nicht mehr auseinanderlaufen.
+  `ann` bleibt beim Zweit- und Drittkalender 0 — wie bisher schon in der
+  HTTP-Zeile, sonst redete das Haus mehrfach.
+- Sie stehen jetzt auch in der **Signatur** des Cron-Laufs. Ohne das wären
+  sie zwar in der Nachricht gewesen, die Nachricht aber nicht verschickt
+  worden: `ann` und `ptest` ändern sich allein durch Zeitablauf, nicht durch
+  einen Zustandswechsel — ein gesetzter `ptest` wäre bis zum halbstündlichen
+  Lebenszeichen liegengeblieben, sein Fenster ist aber nur fünf Minuten breit.
+- `?ptest=1` veröffentlicht **sofort**, statt bis zu eine Minute auf den
+  nächsten Cron-Lauf zu warten. Ein Test, der erst eine Minute später wirkt,
+  sieht aus wie ein Test, der nicht wirkt.
+
+**Aktionstoken für die drei auslösenden Aufrufe.** `?say=1` (das Haus spricht),
+`?ptest=1` (Pushnachricht aufs Telefon) und `?renew=1` (schreibt die
+Konfiguration um) lagen bisher offen im Heimnetz — jedes Gerät konnte sie
+auslösen. Sie verlangen jetzt ein Token aus dem Reiter *Einbindung in Loxone*;
+ohne passendes Token antworten sie mit HTTP 403. Die abfragenden Aufrufe
+bleiben offen, sie ändern nichts.
+
+Dazu neu: **`?selftest=1&token=…`** beantwortet die Tokenfrage, ohne etwas
+auszulösen — Hausstandard für alle Aktionsendpunkte. Das Token wird beim
+ersten Aufruf der Oberfläche erzeugt und überlebt jedes Speichern; ein Knopf
+erzeugt auf Wunsch ein neues.
 
 ## Neu in 1.3.0
 
@@ -83,7 +121,10 @@ Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 u
 | `/plugins/awmabfuhr/awm.php?debug=1` | zusätzlich alle Termine im Vorschau-Fenster |
 | `/plugins/awmabfuhr/awm.php?refresh=1` | Kalender sofort neu abrufen |
 | `/plugins/awmabfuhr/awm.php?json=1` | kompletter Zustand als JSON |
-| `/plugins/awmabfuhr/awm.php?say=1` | Test: Vorabend-Ansage sofort abspielen |
+| `/plugins/awmabfuhr/awm.php?say=1&token=…` | Test: Vorabend-Ansage sofort abspielen **(Token nötig)** |
+| `/plugins/awmabfuhr/awm.php?ptest=1&token=…` | Test-Pushnachricht auslösen **(Token nötig)** |
+| `/plugins/awmabfuhr/awm.php?renew=1&token=…` | Jahres-Erneuerung jetzt versuchen **(Token nötig)** |
+| `/plugins/awmabfuhr/awm.php?selftest=1&token=…` | nur prüfen, ob das Token stimmt — löst nichts aus |
 
 ## Einrichtung (AWM München)
 
