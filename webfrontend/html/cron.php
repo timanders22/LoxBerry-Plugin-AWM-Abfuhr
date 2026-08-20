@@ -4,8 +4,8 @@
  *
  * 1. Kalender im konfigurierten Intervall abrufen (Standard: alle 14 Tage).
  * 2. Zustand aktualisieren und bei Aenderung (oder alle 30 min) per MQTT melden.
- * 3. Ansage am Vorabend zur konfigurierten Uhrzeit ausloesen (einmal pro Tag).
- * 4. Jahres-Erneuerung des AWM-Links pruefen (hoechstens einmal taeglich).
+ * 3. Ansage am Vorabend und - falls eingeschaltet - am Abholmorgen ausloesen.
+ * 4. Jahres-Erneuerung des Kalender-Links pruefen (hoechstens einmal taeglich).
  * 5. Alte Tages-Merker aufraeumen.
  */
 
@@ -19,26 +19,22 @@ if ($awm_lock === false) {
     exit(0);
 }
 
-$sigall = array();
 foreach (awm_cals() as $n => $c) {
     awm_fetch(false, $n);
     $st = awm_state(false, $n);
-    /* Die Meldeflags gehoeren in die Signatur, sonst waeren sie zwar in der
-     * Nachricht - aber die Nachricht ginge nicht raus. ann und ptest aendern
-     * sich naemlich OHNE Zustandswechsel, allein durch Zeitablauf. Ohne sie
-     * in der Signatur bliebe ein ptest bis zum naechsten Zustandswechsel
-     * oder bis zum halbstuendlichen Lebenszeichen liegen - sein Fenster ist
-     * aber nur fuenf Minuten breit. */
-    $sigall[$n] = array($st['morgen'], $st['heute'], $st['tage'], $st['ok'], $st['warnung'],
-                        awm_meldeflags($st, $n));
-    // MQTT je Kalender: bei Aenderung sofort, sonst alle 30 Minuten als Lebenszeichen
-    //
-    // Die Signatur enthaelt nur Zahlen, ist also nie von einem Zeichensatz
-    // abhaengig. Trotzdem wird das Ergebnis geprueft: waere es false,
-    // stimmte es mit keinem gespeicherten Stand ueberein und das Plugin
-    // schickte jede Minute dieselben Werte ans MQTT-Gateway.
-    $sig = json_encode($sigall[$n]);
+    /* Die Signatur entsteht aus DENSELBEN Werten, die auch verschickt
+     * werden. Bis 1.3.8 stand hier eine eigene Zusammenstellung - und was
+     * nicht in der Signatur steht, geht nicht raus, auch wenn es sich
+     * geaendert hat. Genau daran lag es, dass ein gesetzter PTEST bis zum
+     * halbstuendlichen Lebenszeichen liegenblieb, obwohl sein Fenster nur
+     * fuenf Minuten breit ist.
+     *
+     * Mit awm_werte() als Quelle kann das nicht mehr passieren: jeder neue
+     * Wert ist automatisch Teil der Signatur. */
+    $sig = json_encode(awm_werte($st, $n));
     if ($sig === false) {
+        // Waere es false, stimmte es mit keinem gespeicherten Stand ueberein
+        // und das Plugin schickte jede Minute dieselben Werte ans Gateway.
         $sig = 'unlesbar';
     }
     $sigf = awm_tmpdir() . '/mqtt_sig_' . $n . '.txt';
@@ -54,15 +50,22 @@ foreach (awm_cals() as $n => $c) {
 awm_announce_check();
 awm_renew_check();
 
-// Merker-Aufraeumen (aeltere announced_-/renew_-Dateien)
-foreach (glob(awm_tmpdir() . '/announced_*') ?: array() as $f) {
-    if (basename($f) !== 'announced_' . date('Ymd')) {
-        @unlink($f);
+/* Merker-Aufraeumen. Die Liste steht hier, damit sie beim naechsten neuen
+ * Merker nicht vergessen wird - eine Datei je Tag summiert sich sonst still
+ * auf der Ramdisk. */
+foreach (array('announced_', 'announced2_', 'renew_', 'ack_', 'daytype_') as $awm_praefix) {
+    foreach (glob(awm_tmpdir() . '/' . $awm_praefix . '*') ?: array() as $f) {
+        // Alle diese Namen enden auf JJJJMMTT (daytype_ zusaetzlich auf .json).
+        $name = basename($f);
+        if (!preg_match('/(\d{8})(\.json)?$/', $name, $m)) { continue; }
+        if ($m[1] < date('Ymd')) {
+            @unlink($f);
+        }
     }
 }
-foreach (glob(awm_tmpdir() . '/renew_*') ?: array() as $f) {
-    if (substr(basename($f), -8) !== date('Ymd')) {
-        @unlink($f);
-    }
+/* Meldesperren laufen nach einem Tag ab - die Dateien bleiben sonst liegen. */
+foreach (glob(awm_tmpdir() . '/meldung_*') ?: array() as $f) {
+    if (time() - filemtime($f) > 172800) { @unlink($f); }
 }
+
 echo "OK\n";

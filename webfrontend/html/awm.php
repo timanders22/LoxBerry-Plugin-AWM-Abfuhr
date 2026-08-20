@@ -3,42 +3,87 @@
  * Abfuhrkalender AWM Muenchen - Miniserver-Endpunkt
  *
  * Aufrufe (&cal=2 waehlt den zweiten Kalender, z. B. Ferienhaus; Standard 1):
+ *
  *   (ohne Parameter) -> MUELL;REST=..;BIO=..;PAPIER=..;DATUM=..;WERT=..;OK=..;WARN=..;
- *                       HREST=..;HBIO=..;HPAPIER=..;HWERT=..;TREST=..;TBIO=..;TPAPIER=..;TWERT=..;
- *                       ANN=..;AUDIO=..;PUSH=..;PTEST=..
+ *                       HREST=..;..;TREST=..;..;ANN=..;AUDIO=..;PUSH=..;PTEST=..;
+ *                       GLAS=..;..;DREST=..;..;SREST=..;..;TNEXT=..;DNEXT=..;SNEXT=..;
+ *                       AGE=..;FETCH=..;LETZTER=..;HINW=..;LUECKE=..;ACK=..;RUHE=..
+ *
  *                       Die ersten vier Felder sind identisch zum klassischen muell.php
  *                       (REST/BIO/PAPIER = morgen faellig, DATUM = morgen als JJJJMMTT).
  *                       H* = heute faellig; T* = Tage bis zur naechsten Leerung (-1 = unbekannt);
- *                       WARN=1 = Kalender endet in <30 Tagen; ANN=1 = Erinnerungsfenster JETZT
- *                       (10 min ab konfigurierter Uhrzeit, wenn morgen etwas faellig ist);
+ *                       D* = deren Datum als JJJJMMTT; S* = dasselbe als Loxone-Zeit
+ *                       (Sekunden seit 01.01.2009 - damit rechnet der Miniserver);
+ *                       WARN=1 = Kalender endet in <30 Tagen; ANN=1 = Erinnerungsfenster JETZT;
  *                       AUDIO/PUSH = Freigaben aus der Plugin-Konfiguration;
- *                       PTEST=1 = Test-Pushnachricht angefordert (5 min aktiv).
+ *                       PTEST=1 = Test-Pushnachricht angefordert (5 min aktiv);
+ *                       AGE = Alter der Kalenderdatei in Stunden, FETCH = letzter Abruf ok,
+ *                       LETZTER = letzter Termin im Kalender (Loxone-Zeit, 0 = unbegrenzt),
+ *                       HINW=1 = es gibt einen Hinweis (Text ueber ?text=1),
+ *                       LUECKE = Tage bis zum naechsten ersatzlos gestrichenen Termin,
+ *                       ACK=1 = heute quittiert, RUHE=1 = Ansage ausgesetzt.
+ *
  *   ?debug=1         -> zusaetzlich alle Termine im Vorschau-Fenster
  *   ?refresh=1       -> Kalender sofort neu abrufen
  *   ?json=1          -> kompletter Zustand als JSON
+ *   ?text=1          -> die fertigen Saetze und der Hinweistext (fuer Textbausteine)
+ *   ?ics=1           -> der gespeicherte Kalender zum Abonnieren
  *
- * Die drei Aufrufe, die etwas AUSLOESEN, verlangen seit 1.3.6 ein Token aus
- * dem Reiter "Einbindung in Loxone". Ohne passendes Token antworten sie mit
+ * Die Aufrufe, die etwas AUSLOESEN, verlangen seit 1.3.6 ein Token aus dem
+ * Reiter "Einbindung in Loxone". Ohne passendes Token antworten sie mit
  * HTTP 403. Die abfragenden Aufrufe bleiben offen - sie aendern nichts.
  *
  *   ?say=1&token=T     -> Test: Ansage sofort abspielen (bzw. Demo-Text)
  *   ?ptest=1&token=T   -> Test-Pushnachricht ausloesen (setzt PTEST fuer 5 Minuten)
- *   ?renew=1&token=T   -> Jahres-Erneuerung des AWM-Links jetzt versuchen
+ *   ?ack=1&token=T     -> Quittierung "Tonne steht draussen" (setzt ACK bis Mitternacht)
+ *   ?renew=1&token=T   -> Jahres-Erneuerung des Kalender-Links jetzt versuchen
  *   ?selftest=1&token=T -> nur pruefen, ob das Token stimmt; loest nichts aus
  *
  * Zugangsdaten stehen ausschliesslich in der Plugin-Konfiguration - diese URL
  * enthaelt kein Passwort.
+ *
+ * DIESE DATEI RECHNET NICHTS SELBST. Alle Werte kommen aus awm_werte() -
+ * derselben Funktion, aus der auch die MQTT-Meldung entsteht. Bis 1.3.8
+ * stand die Rechnung zweimal da, und die beiden Wege lieferten verschieden
+ * viel.
  */
 
 require_once __DIR__ . '/awm_lib.php';
 $cal = isset($_GET['cal']) ? max(1, min(9, (int) $_GET['cal'])) : 1;
+
+/* ---------- Kalender zum Abonnieren ----------
+ * Wer den Kalender aufs Telefon oder in eine andere Hausautomatik legen
+ * will, holt ihn ab jetzt vom LoxBerry statt vom Entsorger: der Server des
+ * Entsorgers wird weiterhin nur alle 14 Tage gefragt, und die Adresse mit
+ * Strasse und Hausnummer bleibt im Haus. */
+if (isset($_GET['ics'])) {
+    $awm_f = awm_icsfile($cal);
+    if (!is_file($awm_f)) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "Kein Kalender gespeichert.\n";
+        exit;
+    }
+    header('Content-Type: text/calendar; charset=utf-8');
+    header('Content-Disposition: inline; filename="abfuhrkalender_' . (int) $cal . '.ics"');
+    readfile($awm_f);
+    exit;
+}
 
 /* ---------- JSON ---------- */
 if (isset($_GET['json'])) {
     header('Content-Type: application/json; charset=utf-8');
     awm_fetch(isset($_GET['refresh']), $cal);
     $st = awm_state(isset($_GET['refresh']), $cal);
-    $st['ann'] = $cal === 1 ? awm_ann_active($st) : 0;
+    // Die Meldeflags und die fertigen Saetze gehoeren mit hinein - sonst
+    // muesste Drittsoftware sie nachbauen.
+    $st = array_merge($st, awm_meldeflags($st, $cal));
+    $st['werte'] = awm_werte($st, $cal);
+    $st['text'] = array(
+        'morgen' => awm_text_morgen($st),
+        'heute' => awm_text_heute($st),
+        'naechste' => awm_text_naechste($st),
+    );
     $js = json_encode($st, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
     if ($js === false) {
         // Passiert nur bei ungueltigem UTF-8 aus dem Kalender. Ein leerer
@@ -55,6 +100,19 @@ if (isset($_GET['json'])) {
 
 header('Content-Type: text/plain; charset=utf-8');
 
+/* ---------- Fertige Saetze ----------
+ * Fuer den Statustext-Baustein in Loxone und fuer die Visualisierung. Bis
+ * 1.3.8 musste der Anwender den Satz aus vier Flags selbst bauen. */
+if (isset($_GET['text'])) {
+    awm_fetch(false, $cal);
+    $st = awm_state(false, $cal);
+    echo awm_text_morgen($st) . "\n";
+    echo awm_text_heute($st) . "\n";
+    echo awm_text_naechste($st) . "\n";
+    echo ($st['hinweis'] !== '' ? $st['hinweis'] : '-') . "\n";
+    exit;
+}
+
 /** Ist ein gueltiges Aktionstoken mitgeschickt worden?
  *
  * Ohne eingerichtetes Token ist die Antwort NEIN - ein leeres Soll darf
@@ -69,23 +127,23 @@ function awm_token_ok() {
     return hash_equals($soll, isset($_GET['token']) ? (string) $_GET['token'] : '');
 }
 
+/** Einheitliche Abweisung - jeder Aktionsendpunkt antwortet gleich. */
+function awm_token_abweisen($praefix) {
+    $cfg = awm_config();
+    $soll = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    http_response_code(403);
+    echo $praefix . ';OK=0;ERR=' . ($soll === '' ? 'KEIN_TOKEN_EINGERICHTET' : 'TOKEN') . "\n";
+    exit;
+}
+
 /* ---------- Selbsttest: Token pruefen, ohne etwas auszuloesen ----------
  * Hausregel: jeder Aktionsendpunkt beantwortet ?selftest=1&token=... , ohne
  * dass etwas passiert. Sonst laesst sich nicht feststellen, ob die Adresse im
  * Miniserver noch stimmt, ohne wirklich etwas auszuloesen.
  */
 if (isset($_GET['selftest'])) {
-    $aw_cfg_st = awm_config();
-    $aw_soll_st = isset($aw_cfg_st['aktionstoken']) ? (string) $aw_cfg_st['aktionstoken'] : '';
-    if ($aw_soll_st === '') {
-        http_response_code(403);
-        echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
-        exit;
-    }
-    if (!hash_equals($aw_soll_st, isset($_GET['token']) ? (string) $_GET['token'] : '')) {
-        http_response_code(403);
-        echo "SELFTEST;OK=0;ERR=TOKEN\n";
-        exit;
+    if (!awm_token_ok()) {
+        awm_token_abweisen('SELFTEST');
     }
     echo "SELFTEST;OK=1;TOKEN=OK;CAL=" . $cal . "\n";
     exit;
@@ -96,31 +154,25 @@ if (isset($_GET['say'])) {
     /* Seit 1.3.6 tokenpflichtig: der Aufruf laesst das Haus sprechen. Ohne
      * Token konnte jedes Geraet im Heimnetz die Ansage ausloesen. */
     if (!awm_token_ok()) {
-        http_response_code(403);
-        echo "SAY;OK=0;ERR=TOKEN\n";
-        exit;
+        awm_token_abweisen('SAY');
     }
-    awm_fetch(false, 1);
-    $text = awm_announce_text();
+    awm_fetch(false, $cal);
+    $awm_c = awm_cal($cal);
+    $text = awm_announce_text(null, $cal);
     if ($text === '') {
-        $text = 'Hallo! Dies ist eine Testansage des Abfuhrkalenders. Morgen wird keine Tonne abgeholt.';
+        $text = awm_t_oder('TEXT.ANSAGE_TEST',
+            'Hallo! Dies ist eine Testansage des Abfuhrkalenders. Morgen wird keine Tonne abgeholt.');
     }
-    $ok = awm_say($text);
+    $ok = awm_say($text, $awm_c ? $awm_c['zonen'] : '');
     echo 'SAY;OK=' . ($ok ? 1 : 0) . ";TEXT=$text\n";
     exit;
 }
 
 /* ---------- Test-Pushnachricht ---------- */
 if (isset($_GET['ptest'])) {
-    /* Seit 1.3.6 tokenpflichtig - Hausstandard fuer alle Aktionsendpunkte.
-     * Der Aufruf setzt PTEST=1 fuer fuenf Minuten; das Loxone-Programm
-     * schickt daraufhin eine echte Pushnachricht, und seit dieser Fassung
-     * geht zusaetzlich sofort eine MQTT-Meldung heraus. Ohne Token konnte
-     * jedes Geraet im Netz dem Anwender Meldungen aufs Telefon schicken. */
+    /* Seit 1.3.6 tokenpflichtig - Hausstandard fuer alle Aktionsendpunkte. */
     if (!awm_token_ok()) {
-        http_response_code(403);
-        echo "PTEST;OK=0;ERR=TOKEN\n";
-        exit;
+        awm_token_abweisen('PTEST');
     }
     @file_put_contents(awm_tmpdir() . '/ptest', '1');
     awm_log('Test-Pushnachricht angefordert (PTEST=1 fuer 5 Minuten; Loxone fragt im 300-s-Takt ab)');
@@ -132,7 +184,23 @@ if (isset($_GET['ptest'])) {
     foreach (array_keys(awm_cals()) as $awm_n) {
         awm_mqtt_publish(null, $awm_n);
     }
-    echo "PTEST;OK=1;DAUER=300\nHinweis: Loxone pollt alle 300 s - die Push-Nachricht kommt innerhalb von 5 Minuten,\nsofern der Test-Benachrichtigungsbaustein laut Anleitung (Schritt 3) verdrahtet ist.\n";
+    echo "PTEST;OK=1;DAUER=300\nHinweis: Loxone pollt alle 300 s - die Push-Nachricht kommt innerhalb von 5 Minuten,\nsofern der Test-Benachrichtigungsbaustein laut Anleitung (Schritt 6) verdrahtet ist.\n";
+    exit;
+}
+
+/* ---------- Quittierung "Tonne steht draussen" ----------
+ * Bis 1.3.8 lebte die Quittierung ausschliesslich im Miniserver, und der
+ * Reiter "Einbindung in Loxone" brauchte dafuer sieben Bausteine. Jetzt
+ * weiss auch das Plugin davon und laesst die Morgen-Ansage aus. */
+if (isset($_GET['ack'])) {
+    if (!awm_token_ok()) {
+        awm_token_abweisen('ACK');
+    }
+    awm_ack_setzen();
+    foreach (array_keys(awm_cals()) as $awm_n) {
+        awm_mqtt_publish(null, $awm_n);
+    }
+    echo "ACK;OK=1;BIS=Mitternacht\n";
     exit;
 }
 
@@ -141,31 +209,52 @@ if (isset($_GET['renew'])) {
     /* Seit 1.3.6 tokenpflichtig: der Aufruf schreibt die Konfiguration um
      * (neuer Kalender-Link) und geht dafuer ins Netz. */
     if (!awm_token_ok()) {
-        http_response_code(403);
-        echo "RENEW;OK=0;ERR=TOKEN\n";
-        exit;
+        awm_token_abweisen('RENEW');
     }
     $ok = awm_renew($cal);
     echo 'RENEW;OK=' . ($ok ? 1 : 0) . "\n" . ($ok ? 'Neuer Link gespeichert.' : 'Erneuerung fehlgeschlagen - Details im Protokoll.') . "\n";
     exit;
 }
 
-/* ---------- Abruf / Zustand ---------- */
-list($ok, $quelle) = awm_fetch(isset($_GET['refresh']), $cal);
-$st = awm_state(isset($_GET['refresh']), $cal);
-$cfg = awm_config();
-/* Dieselbe Quelle wie die MQTT-Meldung - siehe awm_meldeflags(). */
-$flags = awm_meldeflags($st, $cal);
+/* ---------- Abruf / Zustand ----------
+ *
+ * ?refresh wird nur noch mit Token akzeptiert. Ohne Token konnte jedes
+ * Geraet im Heimnetz beliebig oft eine ausgehende Anfrage an den Entsorger
+ * ausloesen - und weil isset() geprueft wurde, tat das sogar ?refresh=0.
+ * Die Oberflaeche und der Reiter Test schicken das Token mit.
+ */
+$awm_refresh = false;
+if (isset($_GET['refresh']) && (string) $_GET['refresh'] !== '0') {
+    $awm_refresh = awm_token_ok();
+    if (!$awm_refresh) {
+        awm_log('Abruf ueber ?refresh=1 ohne gueltiges Token abgelehnt.');
+    }
+}
+list($ok, $quelle) = awm_fetch($awm_refresh, $cal);
+$st = awm_state($awm_refresh, $cal);
 
 if (isset($_GET['debug'])) {
     $c = awm_cal($cal);
     $icst = is_file(awm_icsfile($cal)) ? date('Y-m-d H:i', filemtime(awm_icsfile($cal))) . ', ' . filesize(awm_icsfile($cal)) . ' B' : 'keiner';
     echo 'DEBUG  Kalender ' . $cal . ' (' . ($c ? $c['name'] : '-') . ')  Quelle: ' . $quelle . '  Ereignisse: ' . $st['ereignisse'] . '  Datei: ' . $icst . "\n";
+    if (isset($_GET['refresh']) && !$awm_refresh) {
+        echo "HINWEIS: ?refresh=1 verlangt das Aktionstoken - es wurde der gespeicherte Stand benutzt.\n";
+    }
+    if (!$st['abruf_ok'] && $st['abruf_grund'] !== '') {
+        echo 'ABRUF-FEHLER: ' . $st['abruf_grund'] . "\n";
+    }
     if ($st['hinweis'] !== '') {
         echo 'HINWEIS: ' . $st['hinweis'] . "\n";
     }
     if ($st['warnung']) {
         echo "WARNUNG: Kalender liefert in weniger als 30 Tagen keine Termine mehr - Jahres-Erneuerung laeuft automatisch, sonst neuen iCal-Link eintragen!\n";
+    }
+    if (!empty($st['luecken'])) {
+        echo "ERSATZLOS GESTRICHENE TERMINE (der Entsorger nennt keinen Ersatz):\n";
+        foreach ($st['luecken'] as $l) {
+            echo '  ' . substr($l['datum'], 6, 2) . '.' . substr($l['datum'], 4, 2) . '.' . substr($l['datum'], 0, 4)
+               . '  ' . implode('+', $l['tonnen']) . '  (' . $l['titel'] . ")\n";
+        }
     }
     echo "Abholtermine im Vorschau-Fenster:\n";
     foreach ($st['termine'] as $t) {
@@ -174,29 +263,7 @@ if (isset($_GET['debug'])) {
     echo "\n";
 }
 
-/* DIE REIHENFOLGE DIESER FELDER DARF SICH NICHT AENDERN.
- *
- * Nicht nur wegen der 1:1-Kompatibilitaet zum alten muell.php, sondern aus
- * einem zweiten, weniger offensichtlichen Grund: Loxone sucht bei einem
- * "Virtuellen HTTP-Eingang Befehl" den Suchtext WOERTLICH und nimmt den
- * ERSTEN Treffer in der Zeile. Der Suchtext \iREST=\i\v steckt aber auch
- * in HREST= und TREST=, \iBIO=\i\v in HBIO= und TBIO=, und so weiter.
- *
- * Dass trotzdem jeder Baustein den richtigen Wert bekommt, liegt einzig
- * daran, dass REST, BIO, PAPIER und WERT VOR ihren H- und T-Varianten
- * stehen. Wer die Reihenfolge umstellt - etwa um die Zeile "aufzuraeumen"
- * - liefert stillschweigend falsche Zahlen an bestehende Loxone-Projekte,
- * ohne dass irgendwo ein Fehler auftaucht.
- *
- * Neue Felder deshalb immer HINTEN anhaengen. Wer einen Namen braucht, der
- * ein bestehendes Feld als Anfangsstueck enthaelt, muss ihn vor die
- * kuerzere Variante setzen - oder den Baustein mit fuehrendem Semikolon
- * suchen lassen (\i;FELD=\i\v).
- */
-printf("MUELL;REST=%d;BIO=%d;PAPIER=%d;DATUM=%s;WERT=%d;OK=%d;WARN=%d;HREST=%d;HBIO=%d;HPAPIER=%d;HWERT=%d;TREST=%d;TBIO=%d;TPAPIER=%d;TWERT=%d;ANN=%d;AUDIO=%d;PUSH=%d;PTEST=%d\n",
-    $st['morgen']['rest'], $st['morgen']['bio'], $st['morgen']['papier'],
-    date('Ymd', strtotime('+1 day')),
-    $st['morgen']['wert'], $st['ok'], $st['warnung'],
-    $st['heute']['rest'], $st['heute']['bio'], $st['heute']['papier'], $st['heute']['wert'],
-    $st['tage']['rest'], $st['tage']['bio'], $st['tage']['papier'], $st['tage']['wert'],
-    $flags['ann'], $flags['audio'], $flags['push'], $flags['ptest']);
+/* Die Zeile entsteht aus awm_werte() - derselben Quelle wie die
+ * MQTT-Meldung. Zur Reihenfolge der Felder siehe awm_feldliste(): die
+ * ersten neunzehn duerfen sich nicht aendern, neue kommen hinten dazu. */
+echo awm_zeile(awm_werte($st, $cal)) . "\n";

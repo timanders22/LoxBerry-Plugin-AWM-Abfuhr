@@ -2,22 +2,53 @@
 # Abfuhrkalender AWM - uninstall
 # command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
 #
-# LoxBerry raeumt config/, log/ und data/ des Plugins selbst weg. Was hier
-# bleibt, sind die beiden Sicherungen ausserhalb dieser Ordner und die
-# Arbeitsdateien unter /tmp.
+# LoxBerry raeumt config/, log/ und data/ des Plugins selbst weg - aber nur
+# die VERZEICHNISSE:
 #
-# Die Konfigurations-Sicherung wird ABSICHTLICH stehen gelassen: sie ist
-# genau dafuer da, eine Neuinstallation zu ueberleben, und enthaelt nichts
-# als die eigenen iCal-Adressen. Wer sie los werden will, loescht
-#   <loxberry>/config/plugins/awmabfuhr.backup.json
-#   <loxberry>/config/plugins/awmabfuhr.backup.ics/
-# von Hand.
+#     rm -rf config/plugins/<ordner>/
+#
+# Eine Sicherungsdatei DANEBEN bleibt liegen. Bis 1.3.8 stand hier
+# ausdruecklich, sie werde "ABSICHTLICH stehen gelassen", damit eine
+# Neuinstallation sie wiederfindet, und sie enthalte "nichts als die eigenen
+# iCal-Adressen".
+#
+# Beides war falsch gedacht:
+#
+#   1. Die iCal-Adresse des AWM traegt Strasse und Hausnummer des Haushalts.
+#      Das ist keine Nebensache, sondern die Wohnanschrift.
+#   2. Die Sicherung ist eine Kopie der ganzen awm.json und enthaelt damit
+#      auch das Aktionstoken, mit dem sich Ansage, Pushnachricht und die
+#      Erneuerung des Kalender-Links ausloesen lassen.
+#
+# Die Hausregel ist eindeutig: wer neben dem Ordner ablegt, um ein Upgrade zu
+# ueberleben, raeumt beim Deinstallieren selbst auf. Beim WifiScanner blieb so
+# eine Anwesenheitsliste des Haushalts liegen.
+#
+# Wer die Konfiguration behalten will, sichert sie VORHER von Hand - das
+# Deinstallieren ist der falsche Ort fuer eine Aufbewahrung, die niemand
+# angefordert hat.
 ARGV3=$3
+ARGV5=$5
 PFOLDER="${ARGV3:-awmabfuhr}"
+BASE="${ARGV5:-$LBHOMEDIR}"
 
 rm -rf "/tmp/$PFOLDER" 2>/dev/null
 rm -rf /tmp/awmabfuhr 2>/dev/null
 
+ENTFERNT=0
+if [ -n "$BASE" ]; then
+    if [ -f "$BASE/config/plugins/$PFOLDER.backup.json" ]; then
+        rm -f "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null && ENTFERNT=1
+    fi
+    if [ -d "$BASE/config/plugins/$PFOLDER.backup.ics" ]; then
+        rm -rf "$BASE/config/plugins/$PFOLDER.backup.ics" 2>/dev/null && ENTFERNT=1
+    fi
+fi
+
 echo "<OK> Arbeitsdateien entfernt."
-echo "<INFO> Die Sicherungen der Konfiguration und der Kalender bleiben erhalten, damit eine Neuinstallation sie wiederfindet."
+if [ "$ENTFERNT" = "1" ]; then
+    echo "<OK> Sicherung der Konfiguration und der Kalender entfernt - sie enthielt die iCal-Adresse (mit Strasse und Hausnummer) und das Aktionstoken."
+else
+    echo "<INFO> Es lag keine Sicherung neben dem Plugin-Ordner."
+fi
 exit 0
