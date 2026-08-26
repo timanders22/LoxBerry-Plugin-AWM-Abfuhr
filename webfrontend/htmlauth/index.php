@@ -173,6 +173,23 @@ if ($aw_post && !aw_formtoken_ok($aw_cfg_roh)) {
     $aw_post = false;
 }
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ---------- Loxone-Vorlagen herunterladen (Hausstandard) ---------- */
 if ($aw_post && isset($_POST['vorlage'])) {
     $aw_vcal = max(1, min(9, (int) (isset($_POST['vorlage_cal']) ? $_POST['vorlage_cal'] : 1)));
@@ -518,9 +535,6 @@ $aw_regel_zu = array();
 foreach ($aw_regeln_anz as $aw_r) { $aw_regel_zu[$aw_r['muster']] = $aw_r; }
 
 $aw_frame = class_exists('LBWeb', false);
-if ($aw_frame) {
-    LBWeb::lbheader('Abfuhrkalender AWM M&uuml;nchen', 'https://wiki.loxberry.de/', 'help.html');
-}
 $aw_host = aw_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 $aw_basis = '/plugins/' . aw_e($aw_plugin) . '/awm.php';
 $aw_tok = aw_e($aw_cfg['aktionstoken']);
@@ -571,6 +585,11 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
             $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($aw_frame) {
+    LBWeb::lbheader('Abfuhrkalender AWM M&uuml;nchen', 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
