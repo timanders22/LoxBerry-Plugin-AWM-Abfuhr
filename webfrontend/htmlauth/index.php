@@ -524,6 +524,55 @@ if ($aw_frame) {
 $aw_host = aw_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberry-ip>');
 $aw_basis = '/plugins/' . aw_e($aw_plugin) . '/awm.php';
 $aw_tok = aw_e($aw_cfg['aktionstoken']);
+
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($aw_post && isset($_POST['awm_sichern'])) {
+    $awm_js = json_encode(awm_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($awm_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="awm_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $awm_js;
+        exit;
+    }
+    $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
+ * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
+ * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
+ * nicht erst gelesen. */
+if ($aw_post && isset($_POST['awm_zurueck'])) {
+    if (!isset($_FILES['awm_sicherung']) || !is_array($_FILES['awm_sicherung'])
+        || !isset($_FILES['awm_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['awm_sicherung']['tmp_name'])) {
+        $aw_fehler[] = awm_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['awm_sicherung']['size'] > 262144) {
+        $aw_fehler[] = awm_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($awm_neu, $awm_mangel, $awm_n) = awm_sicherung_lesen(
+            (string) @file_get_contents($_FILES['awm_sicherung']['tmp_name']));
+        if ($awm_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
+             * wird nichts. */
+            $aw_fehler[] = awm_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $awm_mangel);
+        } elseif (awm_config_speichern($awm_neu)) {
+            $aw_hinweise[] = sprintf(awm_t('EINST.SICH_UEBERNOMMEN'), $awm_n);
+        } else {
+            $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 /* Hausstandard - wortgetreu aus VORLAGE_hausstandard.css.html */
@@ -989,6 +1038,28 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
     <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= aw_t('KNOPF.JETZT_ABRUFEN') ?></button>
 </form>
 </div>
+
+
+<h2><?= awm_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= awm_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= awm_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="awm_sichern" value="1"><?= awm_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
+    <input data-role="none" type="file" name="awm_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="awm_zurueck" value="1"><?= awm_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -1018,7 +1089,10 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 <div class="sm-step"><b><?= aw_t('MQTT.H_ABO') ?></b><br>
 <?= aw_t('MQTT.T_ABO') ?>
 <div class="sm-pre"><?= aw_e($aw_cfg['mqtt_topic']) ?>/#</div>
-<b><?= aw_t('MQTT.T_ABO_WARN') ?></b>
+<?php /* awm_abo_text() statt aw_t(): aw_t() maskiert (aw_e(awm_t(...))),
+     und der Hinweis traegt HTML. Durch aw_t() gingen dem Anwender die
+     spitzen Klammern als Text auf den Bildschirm. */ ?>
+<b><?= awm_abo_text() ?></b>
 </div>
 
 <h2><?= aw_t('MQTT.H_THEMEN') ?></h2>
@@ -1049,7 +1123,10 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 <div class="sm-step"><b><?= aw_t('LOX.S2') ?></b><br>
 <?= aw_t('LOX.S2_TEXT') ?>
 <div class="sm-pre"><?= aw_e($aw_cfg['mqtt_topic']) ?>/#</div>
-<b><?= aw_t('LOX.S2_WARN') ?></b>
+<?php /* awm_abo_text() statt aw_t(): aw_t() maskiert (aw_e(awm_t(...))),
+     und der Hinweis traegt HTML. Durch aw_t() gingen dem Anwender die
+     spitzen Klammern als Text auf den Bildschirm. */ ?>
+<b><?= awm_abo_text() ?></b>
 </div>
 
 <div class="sm-step"><b><?= aw_t('LOX.S3') ?></b><br>
