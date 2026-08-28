@@ -106,7 +106,7 @@ function awm_paths() {
             'backup' => $lbhomedir . '/config/plugins/' . $plugindir . '.backup.json',
             'icsbackup' => $lbhomedir . '/config/plugins/' . $plugindir . '.backup.ics',
             'log' => $lbhomedir . '/log/plugins/' . $plugindir . '/awm.log',
-            'data' => $lbhomedir . '/data/plugins/' . $plugindir,
+            'datadir' => $lbhomedir . '/data/plugins/' . $plugindir,
             'tmp' => '/tmp/awmabfuhr',
             'lbhome' => $lbhomedir,
             'plugin' => $plugindir,
@@ -117,7 +117,7 @@ function awm_paths() {
         'backup' => dirname(dirname(__DIR__)) . '/config/awm.backup.json',
         'icsbackup' => dirname(dirname(__DIR__)) . '/config/awm.backup.ics',
         'log' => sys_get_temp_dir() . '/awmabfuhr/awm.log',
-        'data' => sys_get_temp_dir() . '/awmabfuhr/data',
+        'datadir' => sys_get_temp_dir() . '/awmabfuhr/data',
         'tmp' => sys_get_temp_dir() . '/awmabfuhr',
         'lbhome' => '',
         'plugin' => 'awmabfuhr',
@@ -293,10 +293,10 @@ function awm_tmpdir() {
 
 function awm_datadir() {
     $p = awm_paths();
-    if (!is_dir($p['data'])) {
-        @mkdir($p['data'], 0775, true);
+    if (!is_dir($p['datadir'])) {
+        @mkdir($p['datadir'], 0775, true);
     }
-    return $p['data'];
+    return $p['datadir'];
 }
 
 /* ==================================================================
