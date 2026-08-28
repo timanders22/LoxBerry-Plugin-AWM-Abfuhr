@@ -82,7 +82,6 @@ $aw_cfgfile = $aw_p['config'];
 $aw_bkfile = $aw_p['backup'];
 $aw_logfile = $aw_p['log'];
 
-function aw_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 function aw_t($k) { return aw_e(awm_t($k)); }
 function aw_d($ymd) { return strlen((string) $ymd) === 8 ? substr($ymd, 6, 2) . '.' . substr($ymd, 4, 2) . '.' . substr($ymd, 0, 4) : '-'; }
 
