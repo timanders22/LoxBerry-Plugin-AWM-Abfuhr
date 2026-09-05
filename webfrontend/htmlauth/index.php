@@ -17,7 +17,18 @@
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-ini_set('display_errors', '1');
+/* Fehler NICHT in die Seite schreiben, sondern ins Protokoll.
+ *
+ * Bis 1.4.6 stand hier display_errors=1. Auf PHP 8 ist der Zugriff auf einen
+ * fehlenden Array-Schluessel eine WARNUNG (bis 7.4 war es ein HINWEIS und
+ * damit von der Maske oben gedeckt) - gemessen am 05.09.2026: 7.4.33 stumm,
+ * 8.4.24 "Warning: Undefined array key". Eine einzige solche Warnung vor
+ * Zeile 197 oder 552 bringt header() zu Fall, und der Knopf "Einstellungen
+ * sichern" liefert dann eine Seite mit angehaengtem JSON statt einer Datei -
+ * genau der Schaden, den der Baublock weiter unten beschreibt. Ausserdem
+ * standen Serverpfade im Browser. */
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -81,6 +92,12 @@ $aw_cfgdir = dirname($aw_p['config']);
 $aw_cfgfile = $aw_p['config'];
 $aw_bkfile = $aw_p['backup'];
 $aw_logfile = $aw_p['log'];
+/* Wohin die Fehler gehen, steht erst fest, seit die Pfade bekannt sind.
+ * Eine eigene Datei neben dem Plugin-Protokoll: der Betreiber soll den
+ * Unterschied sehen zwischen "das Plugin sagt etwas" und "PHP klagt". */
+if (is_dir(dirname($aw_logfile))) {
+    ini_set('error_log', dirname($aw_logfile) . '/php_fehler.log');
+}
 
 function aw_t($k) { return aw_e(awm_t($k)); }
 function aw_d($ymd) { return strlen((string) $ymd) === 8 ? substr($ymd, 6, 2) . '.' . substr($ymd, 4, 2) . '.' . substr($ymd, 0, 4) : '-'; }
@@ -111,9 +128,14 @@ function aw_speichern($daten, &$fehler)
     $p = awm_paths();
     if (!is_dir(dirname($p['config']))) { @mkdir(dirname($p['config']), 0775, true); }
     $sperre = awm_sperre('config');
-    $ok = awm_json_schreiben($p['config'], $daten, 0664, true);
+    /* 0600: in der Datei stehen das Aktionstoken und die iCal-Adresse
+     * mit Strasse und Hausnummer - das Plugin sagt es in
+     * uninstall/uninstall selbst. Hausstandard seit 03.09.2026
+     * (Regeln/05); dieselbe Zahl wie bei Robonect und MG iSmart. */
+    $ok = awm_json_schreiben($p['config'], $daten, 0600, true);
     if ($ok) {
         @copy($p['config'], $p['backup']);
+        @chmod($p['backup'], 0600);
     } else {
         $fehler[] = sprintf(awm_t('MELD.NICHT_GESPEICHERT'), $p['config']);
     }
@@ -232,7 +254,7 @@ if ($aw_post && isset($_POST['token_neu'])) {
 
 /* ---------- Protokoll leeren ---------- */
 if ($aw_post && isset($_POST['clearlog'])) {
-    @mkdir(dirname($aw_logfile), 0775, true);
+    if (!is_dir(dirname($aw_logfile))) { @mkdir(dirname($aw_logfile), 0775, true); }
     @file_put_contents($aw_logfile, '[' . date('Y-m-d H:i:s') . '] ' . awm_t('MELD.LOG_GELEERT') . "\n");
     $aw_tab = 'tab-log';
 }
@@ -243,7 +265,12 @@ if ($aw_post && isset($_POST['clearlog'])) {
  * ohnehin dauerhaft - es fehlte nur der Weg hinein. */
 if ($aw_post && isset($_POST['upload'])) {
     $aw_slot = max(0, min(AWM_MAX_KALENDER - 1, (int) (isset($_POST['up_slot']) ? $_POST['up_slot'] : 0)));
-    if (!isset($_FILES['icsdatei']) || $_FILES['icsdatei']['error'] !== UPLOAD_ERR_OK) {
+    /* is_uploaded_file() ZUERST - dieselbe Wache wie beim
+     * Zurueckspielen einer Sicherung. Ohne sie liesse sich jede Datei
+     * des Servers unterschieben. */
+    if (!isset($_FILES['icsdatei']) || !isset($_FILES['icsdatei']['tmp_name'])
+            || !@is_uploaded_file($_FILES['icsdatei']['tmp_name'])
+            || $_FILES['icsdatei']['error'] !== UPLOAD_ERR_OK) {
         $aw_fehler[] = awm_t('MELD.UPLOAD_FEHLT');
     } elseif ($_FILES['icsdatei']['size'] > 4 * 1024 * 1024) {
         $aw_fehler[] = awm_t('MELD.UPLOAD_GROSS');
@@ -306,12 +333,12 @@ if ($aw_post && isset($_POST['save_bins'])) {
             continue;                    // leere Zeile = keine Zuordnung
         }
         if (!isset($aw_arten[$aw_zz])) {
-            $aw_fehler[] = sprintf(awm_t('MELD.TONNE_UNBEKANNT'), aw_e($aw_zz));
+            $aw_fehler[] = sprintf(awm_t('MELD.TONNE_UNBEKANNT'), $aw_zz);
             continue;
         }
         $aw_aa = (string) (isset($aw_art[$aw_k]) ? $aw_art[$aw_k] : 'enthaelt');
         if (!in_array($aw_aa, array('enthaelt', 'beginnt', 'genau'), true)) {
-            $aw_fehler[] = sprintf(awm_t('MELD.ART_UNBEKANNT'), aw_e($aw_tt));
+            $aw_fehler[] = sprintf(awm_t('MELD.ART_UNBEKANNT'), $aw_tt);
             continue;
         }
         $aw_regeln_neu[] = array('muster' => $aw_tt, 'tonne' => $aw_zz, 'art' => $aw_aa);
@@ -359,11 +386,11 @@ if ($aw_post && isset($_POST['save_termine'])) {
         if (preg_match('/^(\d{2})\.(\d{2})\.(\d{4})$/', $aw_dd, $m)) { $aw_ymd = $m[3] . $m[2] . $m[1]; }
         elseif (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $aw_dd, $m)) { $aw_ymd = $m[1] . $m[2] . $m[3]; }
         if ($aw_ymd === '' || awm_tagnummer($aw_ymd) < 0) {
-            $aw_fehler[] = sprintf(awm_t('MELD.DATUM_UNGUELTIG'), aw_e($aw_dd));
+            $aw_fehler[] = sprintf(awm_t('MELD.DATUM_UNGUELTIG'), $aw_dd);
             continue;
         }
         if (!isset($aw_arten[$aw_bb])) {
-            $aw_fehler[] = sprintf(awm_t('MELD.TONNE_FEHLT'), aw_e($aw_dd));
+            $aw_fehler[] = sprintf(awm_t('MELD.TONNE_FEHLT'), $aw_dd);
             continue;
         }
         $aw_neu[] = array('datum' => $aw_ymd, 'tonne' => $aw_bb,
@@ -424,8 +451,14 @@ if ($aw_post && isset($_POST['save'])) {
             $aw_u = isset($aw_alt['url']) ? (string) $aw_alt['url'] : '';   // alte behalten
         }
         if ($aw_u === '' && !$aw_hoch) {
-            $aw_liste[] = array('name' => trim((string) (isset($aw_names[$aw_i]) ? $aw_names[$aw_i] : '')),
-                                'url' => '');
+            /* Nur die Adresse leeren - alles andere bleibt.
+             * Bis 1.4.6 wurde hier $aw_alt weggeworfen, und mit ihm die
+             * Zuordnungsregeln und die eigenen Termine dieses Kalenders.
+             * Sie standen danach in keiner Datei mehr. */
+            $aw_eintrag = $aw_alt;
+            $aw_eintrag['name'] = trim((string) (isset($aw_names[$aw_i]) ? $aw_names[$aw_i] : ''));
+            $aw_eintrag['url'] = '';
+            $aw_liste[] = $aw_eintrag;
             continue;
         }
         // Alles, was das Formular NICHT mitschickt, wird uebernommen.
@@ -438,8 +471,21 @@ if ($aw_post && isset($_POST['save'])) {
         $aw_liste[] = $aw_eintrag;
     }
     $aw_new['cals'] = $aw_liste;
-    $aw_new['fetch_days'] = max(1, min(60, (int) (isset($_POST['fetch_days']) ? $_POST['fetch_days'] : 14)));
-    $aw_new['lookahead'] = max(7, min(90, (int) (isset($_POST['lookahead']) ? $_POST['lookahead'] : 35)));
+    /* Abweisen und melden, nicht stillschweigend zurechtbiegen: wer 200
+     * Tage Vorschau eintraegt, bekam bis 1.4.6 wortlos 90 und hielt sie
+     * fuer seinen Wert (Regeln/05). Der bisherige Wert bleibt stehen. */
+    $aw_fd = isset($_POST['fetch_days']) ? $_POST['fetch_days'] : 14;
+    if (awm_ist_zahl($aw_fd, 1, 60)) {
+        $aw_new['fetch_days'] = (int) $aw_fd;
+    } else {
+        $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_INTERVALL'), 1, 60, $aw_fd);
+    }
+    $aw_la = isset($_POST['lookahead']) ? $_POST['lookahead'] : 35;
+    if (awm_ist_zahl($aw_la, 7, 90)) {
+        $aw_new['lookahead'] = (int) $aw_la;
+    } else {
+        $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_VORSCHAU'), 7, 90, $aw_la);
+    }
     $aw_new['autorenew'] = isset($_POST['autorenew']) ? 1 : 0;
     $aw_new['melden'] = isset($_POST['melden']) ? 1 : 0;
     $aw_hw = trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
@@ -448,11 +494,11 @@ if ($aw_post && isset($_POST['save'])) {
     $aw_zeit = (string) (isset($_POST['notify_time']) ? $_POST['notify_time'] : '');
     $aw_zeit2 = (string) (isset($_POST['notify_time2']) ? $_POST['notify_time2'] : '');
     if ($aw_zeit !== '' && !preg_match('/^\d{1,2}:\d{2}$/', $aw_zeit)) {
-        $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), aw_e($aw_zeit));
+        $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_zeit);
         $aw_zeit = (string) $aw_new['notify']['time'];
     }
     if ($aw_zeit2 !== '' && !preg_match('/^\d{1,2}:\d{2}$/', $aw_zeit2)) {
-        $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), aw_e($aw_zeit2));
+        $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_zeit2);
         $aw_zeit2 = (string) $aw_new['notify']['time2'];
     }
     $aw_new['notify'] = array(
@@ -468,7 +514,7 @@ if ($aw_post && isset($_POST['save'])) {
         if (preg_match('/^(\d{2})\.(\d{2})\.(\d{4})$/', $aw_bd, $m)) { $aw_bd_ymd = $m[3] . $m[2] . $m[1]; }
         elseif (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $aw_bd, $m)) { $aw_bd_ymd = $m[1] . $m[2] . $m[3]; }
         if ($aw_bd_ymd === '' || awm_tagnummer($aw_bd_ymd) < 0) {
-            $aw_fehler[] = sprintf(awm_t('MELD.DATUM_UNGUELTIG'), aw_e($aw_bd));
+            $aw_fehler[] = sprintf(awm_t('MELD.DATUM_UNGUELTIG'), $aw_bd);
             $aw_bd_ymd = (string) $aw_new['ruhe']['bis_datum'];
         }
     }
@@ -480,12 +526,24 @@ if ($aw_post && isset($_POST['save'])) {
         'bis_datum' => $aw_bd_ymd,
     );
     $aw_mode = (string) (isset($_POST['tts_mode']) ? $_POST['tts_mode'] : 'musicserver');
+    $aw_port = isset($_POST['tts_port']) ? $_POST['tts_port'] : 7091;
+    if (awm_ist_zahl($aw_port, 1, 65535)) { $aw_port = (int) $aw_port; }
+    else {
+        $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_PORT'), 1, 65535, $aw_port);
+        $aw_port = (int) $aw_new['tts']['port'];
+    }
+    $aw_vol = isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 8;
+    if (awm_ist_zahl($aw_vol, 1, 100)) { $aw_vol = (int) $aw_vol; }
+    else {
+        $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_LAUT'), 1, 100, $aw_vol);
+        $aw_vol = (int) $aw_new['tts']['volume'];
+    }
     $aw_new['tts'] = array(
         'mode' => in_array($aw_mode, array('musicserver', 'ms4h', 'audioserver', 'custom'), true) ? $aw_mode : 'musicserver',
         'ip' => trim((string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : '')),
-        'port' => max(1, min(65535, (int) (isset($_POST['tts_port']) ? $_POST['tts_port'] : 7091))),
+        'port' => $aw_port,
         'zones' => trim((string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '1')),
-        'volume' => max(1, min(100, (int) (isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 8))),
+        'volume' => $aw_vol,
         'lang' => preg_replace('/[^a-z]/', '', strtolower((string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : 'de'))) ?: 'de',
         'template' => trim((string) (isset($_POST['tts_template']) ? $_POST['tts_template'] : '')),
     );
@@ -504,6 +562,67 @@ if ($aw_post && isset($_POST['save'])) {
     }
     $aw_tab = 'tab-settings';
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($aw_post && isset($_POST['awm_sichern'])) {
+    /* EINE Stelle baut die Datei - samt lesbarem Kopf und ohne
+     * Altschluessel, die das Zurueckspielen sonst ablehnt. */
+    $awm_js = awm_sicherung_bauen();
+    if ($awm_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="awm_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $awm_js;
+        exit;
+    }
+    $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
+ * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
+ * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
+ * nicht erst gelesen. */
+if ($aw_post && isset($_POST['awm_zurueck'])) {
+    if (!isset($_FILES['awm_sicherung']) || !is_array($_FILES['awm_sicherung'])
+        || !isset($_FILES['awm_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['awm_sicherung']['tmp_name'])) {
+        $aw_fehler[] = awm_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['awm_sicherung']['size'] > 262144) {
+        $aw_fehler[] = awm_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($awm_neu, $awm_mangel, $awm_n) = awm_sicherung_lesen(
+            (string) @file_get_contents($_FILES['awm_sicherung']['tmp_name']));
+        if ($awm_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
+             * wird nichts. */
+            $aw_fehler[] = awm_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $awm_mangel);
+        } elseif (awm_config_speichern($awm_neu)) {
+            $aw_hinweise[] = sprintf(awm_t('EINST.SICH_UEBERNOMMEN'), $awm_n);
+            /* Den Dienst nachziehen UND sagen, was mit ihm geschah
+             * (Regeln/05). Ohne das stimmt die Seite, aber der Miniserver
+             * rechnet bis zum naechsten Minutenlauf mit dem alten Stand. */
+            awm_log('Einstellungen aus einer Sicherungsdatei zurueckgespielt ('
+                    . (int) $awm_n . ' Werte).');
+            $awm_nach = 0;
+            foreach (array_keys(awm_cals()) as $awm_kn) {
+                awm_state(true, $awm_kn);
+                awm_mqtt_publish(null, $awm_kn);
+                $awm_nach++;
+            }
+            $aw_hinweise[] = sprintf(awm_t('EINST.SICH_DIENST'), $awm_nach);
+        } else {
+            $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 
 /* ---------- Laden ---------- */
 $aw_cfg = awm_config(true);
@@ -538,53 +657,6 @@ $aw_host = aw_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '<loxberr
 $aw_basis = '/plugins/' . aw_e($aw_plugin) . '/awm.php';
 $aw_tok = aw_e($aw_cfg['aktionstoken']);
 
-
-/* ---------------- Einstellungen sichern ----------------
- *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
-if ($aw_post && isset($_POST['awm_sichern'])) {
-    $awm_js = json_encode(awm_config(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($awm_js !== false) {
-        header('Content-Type: application/json; charset=utf-8');
-        header('Content-Disposition: attachment; filename="awm_einstellungen_'
-               . date('Ymd_His') . '.json"');
-        echo $awm_js;
-        exit;
-    }
-    $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
-}
-
-/* ---------------- Einstellungen zurueckspielen ----------------
- *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
- * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
- * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
- * nicht erst gelesen. */
-if ($aw_post && isset($_POST['awm_zurueck'])) {
-    if (!isset($_FILES['awm_sicherung']) || !is_array($_FILES['awm_sicherung'])
-        || !isset($_FILES['awm_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['awm_sicherung']['tmp_name'])) {
-        $aw_fehler[] = awm_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['awm_sicherung']['size'] > 262144) {
-        $aw_fehler[] = awm_t('EINST.SICH_ZU_GROSS');
-    } else {
-        list($awm_neu, $awm_mangel, $awm_n) = awm_sicherung_lesen(
-            (string) @file_get_contents($_FILES['awm_sicherung']['tmp_name']));
-        if ($awm_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
-             * wird nichts. */
-            $aw_fehler[] = awm_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $awm_mangel);
-        } elseif (awm_config_speichern($awm_neu)) {
-            $aw_hinweise[] = sprintf(awm_t('EINST.SICH_UEBERNOMMEN'), $awm_n);
-        } else {
-            $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
-        }
-    }
-}
 
 
 if ($aw_frame) {
@@ -761,19 +833,19 @@ if ($aw_frame) {
 </tr>
 <?php } ?>
 </table>
-<div class="sm-hilfe"><?= aw_t('EINST.H_QUELLEN_HILFE') ?></div>
+<div class="sm-hilfe"><?= awm_t('EINST.H_QUELLEN_HILFE') ?></div>
 
 <div class="sm-step"><b><?= aw_t('EINST.AWM_TITEL') ?></b><br>
 <?= aw_t('EINST.AWM_1') ?> <a href="https://www.awm-muenchen.de/abfall-entsorgen/muelltonnen/abfuhrkalender" target="_blank"><?= aw_t('EINST.AWM_LINK') ?></a><br>
 <?= aw_t('EINST.AWM_2') ?><br>
 <?= aw_t('EINST.AWM_3') ?><br>
 <?= aw_t('EINST.AWM_4') ?><br>
-<span class="sm-hilfe"><b><?= aw_t('EINST.HINWEIS') ?></b> <?= aw_t('EINST.AWM_JAHR') ?></span>
+<span class="sm-hilfe"><b><?= aw_t('EINST.HINWEIS') ?></b> <?= awm_t('EINST.AWM_JAHR') ?></span>
 </div>
 
 <div class="sm-step"><b><?= aw_t('QUELLEN.H_WEITERE') ?></b><br>
 <?= aw_t('QUELLEN.EINLEITUNG') ?>
-<div class="sm-hilfe" style="margin-top:8px;"><b>Abfallplus / abfall.io</b><br><?= aw_t('QUELLEN.ABFALLIO') ?></div>
+<div class="sm-hilfe" style="margin-top:8px;"><b>Abfallplus / abfall.io</b><br><?= awm_t('QUELLEN.ABFALLIO') ?></div>
 <div class="sm-hilfe" style="margin-top:8px;"><b>Jumomind / MyM&uuml;ll</b><br><?= aw_t('QUELLEN.JUMOMIND') ?></div>
 <div class="sm-hilfe" style="margin-top:8px;"><b>ATURIS AbfallKalenderSystem</b><br><?= aw_t('QUELLEN.ATURIS') ?></div>
 <div class="sm-hilfe" style="margin-top:8px;"><?= aw_t('QUELLEN.SONST') ?></div>
@@ -817,20 +889,20 @@ if ($aw_frame) {
     <label style="display:inline-flex;align-items:center;gap:6px;">
         <input data-role="none" type="checkbox" name="notify_push" <?= !empty($aw_notify['push']) ? 'checked' : '' ?>> <?= aw_t('EINST.L_PUSH') ?>
     </label>
-    <div class="sm-hilfe"><?= aw_t('EINST.H_AUDIOPUSH') ?></div>
+    <div class="sm-hilfe"><?= awm_t('EINST.H_AUDIOPUSH') ?></div>
 </div>
 <div class="sm-row">
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_ZEIT') ?></label>
         <input data-role="none" type="text" name="notify_time" value="<?= aw_e($aw_notify['time']) ?>" placeholder="18:00">
-        <div class="sm-hilfe"><?= aw_t('EINST.H_ZEIT') ?></div>
+        <div class="sm-hilfe"><?= awm_t('EINST.H_ZEIT') ?></div>
     </div>
     <div class="sm-feld">
         <label style="display:inline-flex;align-items:center;gap:6px;">
             <input data-role="none" type="checkbox" name="notify_audio2" <?= !empty($aw_notify['audio2']) ? 'checked' : '' ?>> <?= aw_t('EINST.L_AUDIO2') ?>
         </label>
         <input data-role="none" type="text" name="notify_time2" value="<?= aw_e($aw_notify['time2']) ?>" placeholder="06:30" style="margin-top:6px;">
-        <div class="sm-hilfe"><?= aw_t('EINST.H_AUDIO2') ?></div>
+        <div class="sm-hilfe"><?= awm_t('EINST.H_AUDIO2') ?></div>
     </div>
 </div>
 
@@ -877,7 +949,7 @@ if ($aw_frame) {
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_ZONEN') ?></label>
         <input data-role="none" type="text" name="tts_zones" value="<?= aw_e($aw_tts['zones']) ?>" placeholder="2,4,6">
-        <div class="sm-hilfe"><?= aw_t('EINST.H_ZONEN') ?></div>
+        <div class="sm-hilfe"><?= awm_t('EINST.H_ZONEN') ?></div>
     </div>
     <div class="sm-feld"><label><?= aw_t('EINST.L_LAUT') ?></label>
         <input data-role="none" type="number" name="tts_volume" value="<?= (int) $aw_tts['volume'] ?>" min="1" max="100"></div>
@@ -887,15 +959,15 @@ if ($aw_frame) {
 <div class="sm-feld" id="tts_template_row">
     <label><?= aw_t('EINST.L_VORLAGE') ?></label>
     <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= aw_e($aw_tts['template']) ?></textarea>
-    <div class="sm-hilfe"><?= aw_t('EINST.H_VORLAGE') ?></div>
+    <div class="sm-hilfe"><?= awm_t('EINST.H_VORLAGE') ?></div>
 </div>
-<div id="tts_audioserver_hint" class="sm-warnung" style="display:none;"><?= aw_t('EINST.H_AUDIOSERVER') ?></div>
+<div id="tts_audioserver_hint" class="sm-warnung" style="display:none;"><?= awm_t('EINST.H_AUDIOSERVER') ?></div>
 
 <div class="sm-row">
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_ANSAGETEXT') ?></label>
         <input data-role="none" type="text" name="ansage_vorlage" value="<?= aw_e($aw_ansage['vorlage']) ?>" placeholder="<?= aw_e(awm_t_oder('TEXT.ANSAGE_MEHRERE', '')) ?>">
-        <div class="sm-hilfe"><?= aw_t('EINST.H_ANSAGETEXT') ?></div>
+        <div class="sm-hilfe"><?= awm_t('EINST.H_ANSAGETEXT') ?></div>
     </div>
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_ANSAGETEXT2') ?></label>
@@ -1121,7 +1193,7 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 <tr><td><span class="sm-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/<?= aw_e($aw_th) ?></span></td><td><?= aw_e($aw_bed) ?></td></tr>
 <?php } ?>
 </table>
-<div class="sm-hilfe"><?= sprintf(aw_t('MQTT.H_ZWEITER'), aw_e($aw_cfg['mqtt_topic']), aw_e($aw_cfg['mqtt_topic'])) ?></div>
+<div class="sm-hilfe"><?= sprintf(awm_t('MQTT.H_ZWEITER'), aw_e($aw_cfg['mqtt_topic']), aw_e($aw_cfg['mqtt_topic'])) ?></div>
 
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= aw_t('LEGENDE.AKTION') ?></span>
@@ -1154,7 +1226,7 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 <tr><td>URL</td><td><span class="sm-mono">http://<?= $aw_host ?><?= $aw_basis ?></span></td></tr>
 <tr><td><?= aw_t('LOX.T_ZYKLUS') ?></td><td>300 <?= aw_t('LOX.T_SEKUNDEN') ?></td></tr>
 </table>
-<?= aw_t('LOX.S3_BEFEHLE') ?>
+<?= awm_t('LOX.S3_BEFEHLE') ?>
 <table class="sm-tbl">
 <tr><th style="width:170px;"><?= aw_t('LOX.T_SUCHTEXT') ?></th><th style="width:60px;"><?= aw_t('LOX.T_TYP') ?></th><th><?= aw_t('LOX.T_BEDEUTUNG') ?></th></tr>
 <?php foreach (awm_felder($aw_bcal) as $aw_fn => $aw_ff) { ?>
@@ -1163,8 +1235,8 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
     <td><?= aw_e($aw_ff[4]) ?><?= $aw_ff[3] !== '' ? ' [' . aw_e($aw_ff[3]) . ']' : '' ?></td></tr>
 <?php } ?>
 </table>
-<div class="sm-hilfe"><?= aw_t('LOX.S3_SEMIKOLON') ?></div>
-<div class="sm-hilfe"><?= aw_t('LOX.S3_KOMPAT') ?></div>
+<div class="sm-hilfe"><?= awm_t('LOX.S3_SEMIKOLON') ?></div>
+<div class="sm-hilfe"><?= awm_t('LOX.S3_KOMPAT') ?></div>
 </div>
 
 <div class="sm-step"><b><?= aw_t('LOX.S4') ?></b><br>
@@ -1181,7 +1253,7 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 </div>
 
 <div class="sm-step"><b><?= aw_t('LOX.S5') ?></b><br>
-<?= aw_t('LOX.S5_TEXT') ?>
+<?= awm_t('LOX.S5_TEXT') ?>
 </div>
 
 <div class="sm-step"><b><?= aw_t('LOX.S6') ?></b>
@@ -1204,8 +1276,8 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 </table>
 <div class="sm-hilfe"><b><?= aw_t('LOX.ZU4') ?></b> <?= aw_t('LOX.ZU4_TEXT') ?></div>
 <div class="sm-hilfe"><b><?= aw_t('LOX.ZU9') ?></b> <?= aw_t('LOX.ZU9_TEXT') ?></div>
-<div class="sm-hilfe"><b><?= aw_t('LOX.ZU12') ?></b> <?= aw_t('LOX.ZU12_TEXT') ?></div>
-<div class="sm-hilfe"><b><?= aw_t('LOX.ZU13') ?></b> <?= aw_t('LOX.ZU13_TEXT') ?></div>
+<div class="sm-hilfe"><b><?= aw_t('LOX.ZU12') ?></b> <?= awm_t('LOX.ZU12_TEXT') ?></div>
+<div class="sm-hilfe"><b><?= aw_t('LOX.ZU13') ?></b> <?= awm_t('LOX.ZU13_TEXT') ?></div>
 </div>
 
 <div class="sm-step"><b><?= aw_t('LOX.S7') ?></b><br>
@@ -1284,6 +1356,11 @@ foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { $aw_pf++; } }
 <tr><td><?= aw_t('TEST.D_UNBEKANNT') ?></td><td><?php
 if ($aw_dg['unbekannt']) { echo '<span class="sm-aus">' . aw_e(implode(', ', $aw_dg['unbekannt'])) . '</span> ' . aw_t('TEST.D_UNBEKANNT_WARN'); }
 else { echo '<span class="sm-an">' . aw_t('TEST.D_ALLES_VERSTANDEN') . '</span>'; } ?></td></tr>
+<tr><td><?= aw_t('TEST.D_REGELFEHLER') ?></td><td><?php
+if (!$aw_dg['regelfehler']) { echo '<span class="sm-an">' . aw_t('TEST.D_REGELFEHLER_KEINE') . '</span>'; }
+else { foreach ($aw_dg['regelfehler'] as $aw_rf) {
+    echo '<span class="sm-aus">' . aw_e($aw_rf) . '</span><br>';
+} } ?></td></tr>
 <tr><td><?= aw_t('TEST.D_LUECKEN') ?></td><td><?php
 if (!$aw_dg['luecken']) { echo '<span class="sm-an">' . aw_t('TEST.D_KEINE_LUECKEN') . '</span>'; }
 else { foreach ($aw_dg['luecken'] as $aw_l) {

@@ -342,71 +342,214 @@ function awm_titel_der_datei($cal = 1)
  * Grundlage: RFC 5545, Abschnitt 3.3.10 (Recurrence Rule).
  * ================================================================== */
 
-/** Wochentagskuerzel nach RFC 5545 -> 1 (Montag) bis 7 (Sonntag). */
+/**
+ * Wochentagskuerzel nach RFC 5545 -> 1 (Montag) bis 7 (Sonntag), 0 = keines.
+ *
+ * Bis 1.4.6 nahm diese Funktion blind die letzten zwei Zeichen. Damit wurde
+ * aus 'X-MO' ein Montag (gemessen 05.09.2026) - Muell wurde zu einem gueltigen
+ * Wochentag, und niemand erfuhr es. Jetzt muss das ganze Kuerzel passen; eine
+ * vorangestellte Ordnungszahl trennt der Aufrufer vorher ab.
+ */
 function awm_wochentag_nr($kuerzel)
 {
     $m = array('MO' => 1, 'TU' => 2, 'WE' => 3, 'TH' => 4,
                'FR' => 5, 'SA' => 6, 'SU' => 7);
-    $k = strtoupper(substr((string) $kuerzel, -2));
+    $k = strtoupper(trim((string) $kuerzel));
+    // Eine Ordnungszahl davor ist zulaessig: "2TH", "-1FR".
+    if (preg_match('/^[+-]?\d+([A-Z]{2})$/', $k, $mm)) { $k = $mm[1]; }
     return isset($m[$k]) ? $m[$k] : 0;
 }
 
-/** Welche RRULE-Bestandteile kann dieses Plugin auswerten? */
+/**
+ * Welche RRULE-Bestandteile kann dieses Plugin auswerten?
+ *
+ * JE FREQUENZ, nicht pauschal. Bis 1.4.6 stand hier eine einzige Liste, und
+ * sie beantwortete die falsche Frage: sie sagte "dieses Plugin kennt den
+ * Namen", nicht "dieses Plugin wertet ihn bei DIESER Frequenz aus". Deshalb
+ * schwieg die Diagnose bei FREQ=DAILY;BYDAY=MO,WE,FR - einer Regel, die
+ * jeden Tag traf statt dreimal die Woche (gemessen 05.09.2026).
+ *
+ * Seit 1.4.7 wertet der Rechenkern alle vier Frequenzen nach RFC 5545 aus -
+ * die Liste stimmt jetzt also fuer jede Frequenz. Was sich an einer Regel
+ * trotzdem nicht lesen laesst, meldet awm_rrule_fehler() je Serie; die
+ * beiden Fragen sind getrennt: "kenne ich den Namen?" und "konnte ich den
+ * Wert lesen?".
+ */
 function awm_rrule_bekannt()
 {
-    return array('FREQ', 'INTERVAL', 'UNTIL', 'COUNT', 'BYDAY',
-                 'BYMONTHDAY', 'BYMONTH', 'BYSETPOS', 'WKST');
+    return array('FREQ', 'INTERVAL', 'UNTIL', 'COUNT', 'WKST',
+                 'BYDAY', 'BYMONTHDAY', 'BYMONTH', 'BYSETPOS');
 }
 
-/** RRULE zerlegen. */
+/**
+ * Traegt ein BYDAY-Glied eine Ordnungszahl, die bei dieser Frequenz nach
+ * RFC 5545 gar nicht stehen darf? (Abschnitt 3.3.10: "MUST NOT be specified
+ * with a numeric value when the FREQ rule part is not set to MONTHLY or
+ * YEARLY".) Wir werten sie dann nicht aus - und sagen es.
+ */
+function awm_rrule_ordnungszahl_erlaubt($freq)
+{
+    return $freq === 'MONTHLY' || $freq === 'YEARLY';
+}
+
+/**
+ * RRULE zerlegen.
+ *
+ * Seit 1.4.7 wird die Regel EINMAL an ';' zerlegt und je Glied ausgewertet,
+ * statt neunmal mit einem Suchmuster ueber die ganze Zeichenkette zu gehen.
+ * Grund: die alten Muster waren nicht verankert und lasen aus dem WERT eines
+ * fremden Gliedes mit - 'FREQ=WEEKLY;X-FOO=INTERVAL=9' ergab interval=9
+ * (gemessen 05.09.2026).
+ *
+ * Was sich nicht lesen laesst, landet in $r['fehler'] und wird angezeigt.
+ * Bis 1.4.6 wurde ein unlesbares BYMONTH still zu "kein BYMONTH" - aus zwei
+ * Terminen im Jahr wurden zwoelf, ohne ein Wort.
+ */
 function awm_rrule_lesen($rrule)
 {
     $r = array('freq' => null, 'interval' => 1, 'until' => '99991231',
                'count' => 0, 'byday' => array(), 'bymonthday' => array(),
-               'bymonth' => array(), 'bysetpos' => array(), 'wkst' => 1);
+               'bymonth' => array(), 'bysetpos' => array(), 'wkst' => 1,
+               'fehler' => array());
     if (!is_string($rrule) || $rrule === '') { return $r; }
-    if (preg_match('/FREQ=([A-Z]+)/i', $rrule, $m)) { $r['freq'] = strtoupper($m[1]); }
-    if (preg_match('/INTERVAL=(\d+)/i', $rrule, $m)) { $r['interval'] = max(1, (int) $m[1]); }
-    if (preg_match('/UNTIL=(\d{8})/i', $rrule, $m)) { $r['until'] = $m[1]; }
-    if (preg_match('/COUNT=(\d+)/i', $rrule, $m)) { $r['count'] = max(0, (int) $m[1]); }
-    if (preg_match('/WKST=([A-Z]{2})/i', $rrule, $m)) {
-        $w = awm_wochentag_nr($m[1]);
-        if ($w > 0) { $r['wkst'] = $w; }
+
+    $gesehen = array();
+    foreach (explode(';', $rrule) as $glied) {
+        $glied = trim($glied);
+        if ($glied === '') { continue; }
+        $gl = strpos($glied, '=');
+        if ($gl === false) {
+            $r['fehler'][] = 'Regelteil ohne Wert: ' . $glied;
+            continue;
+        }
+        $name = strtoupper(trim(substr($glied, 0, $gl)));
+        $wert = trim(substr($glied, $gl + 1));
+        if (isset($gesehen[$name]) && strpos($name, 'BY') !== 0) {
+            // RFC 5545: ausser den BYxxx darf jeder Teil nur einmal stehen.
+            $r['fehler'][] = 'Regelteil doppelt: ' . $name;
+            continue;
+        }
+        $gesehen[$name] = true;
+
+        switch ($name) {
+            case 'FREQ':
+                $r['freq'] = strtoupper($wert);
+                break;
+            case 'INTERVAL':
+                if (!preg_match('/^\d+$/', $wert) || (int) $wert < 1) {
+                    $r['fehler'][] = 'INTERVAL ist keine positive Zahl: ' . $wert;
+                    break;
+                }
+                $r['interval'] = (int) $wert;
+                break;
+            case 'UNTIL':
+                /* Dieselbe Zeitzonenrechnung wie DTSTART. awm_ics_datum()
+                 * rechnet die UTC-Form ("...T230000Z") nach Ortszeit um; bis
+                 * 1.4.6 schnitt diese Stelle stur die ersten acht Ziffern ab,
+                 * und die beiden Datumswege der Linie widersprachen sich um
+                 * einen Tag. Die Funktion wohnt in awm_lib.php - diese Datei
+                 * laesst sich auch allein einbinden, deshalb der Rueckfall. */
+                if (function_exists('awm_ics_datum')) {
+                    $d = awm_ics_datum($wert);
+                } else {
+                    $d = preg_match('/^(\d{8})/', $wert, $mm) ? $mm[1] : '';
+                }
+                if ($d === '') {
+                    $r['fehler'][] = 'UNTIL ist kein Datum: ' . $wert;
+                    break;
+                }
+                $r['until'] = $d;
+                break;
+            case 'COUNT':
+                if (!preg_match('/^\d+$/', $wert) || (int) $wert < 1) {
+                    $r['fehler'][] = 'COUNT ist keine positive Zahl: ' . $wert;
+                    break;
+                }
+                $r['count'] = (int) $wert;
+                break;
+            case 'WKST':
+                $w = awm_wochentag_nr($wert);
+                if ($w < 1) {
+                    $r['fehler'][] = 'WKST ist kein Wochentag: ' . $wert;
+                    break;
+                }
+                $r['wkst'] = $w;
+                break;
+            case 'BYDAY':
+                foreach (explode(',', $wert) as $t) {
+                    $t = trim($t);
+                    if ($t === '') { continue; }
+                    // Form: [+|-]n TAG, etwa "2TH" (zweiter Donnerstag) oder "-1FR"
+                    $pos = 0;
+                    $kuerzel = $t;
+                    if (preg_match('/^([+-]?\d+)([A-Za-z]{2})$/', $t, $mm)) {
+                        $pos = (int) $mm[1];
+                        $kuerzel = $mm[2];
+                    }
+                    $tag = awm_wochentag_nr($kuerzel);
+                    if ($tag < 1) {
+                        $r['fehler'][] = 'BYDAY nennt keinen Wochentag: ' . $t;
+                        continue;
+                    }
+                    $r['byday'][] = array('tag' => $tag, 'pos' => $pos);
+                }
+                if (!$r['byday']) { $r['fehler'][] = 'BYDAY ist leer oder unlesbar: ' . $wert; }
+                break;
+            case 'BYMONTHDAY':
+                foreach (explode(',', $wert) as $t) {
+                    $t = trim($t);
+                    if (!preg_match('/^[+-]?\d+$/', $t) || (int) $t === 0
+                            || abs((int) $t) > 31) {
+                        $r['fehler'][] = 'BYMONTHDAY ist kein Monatstag: ' . $t;
+                        continue;
+                    }
+                    $r['bymonthday'][] = (int) $t;
+                }
+                break;
+            case 'BYMONTH':
+                foreach (explode(',', $wert) as $t) {
+                    $t = trim($t);
+                    if (!preg_match('/^\d+$/', $t) || (int) $t < 1 || (int) $t > 12) {
+                        $r['fehler'][] = 'BYMONTH ist kein Monat: ' . $t;
+                        continue;
+                    }
+                    $r['bymonth'][] = (int) $t;
+                }
+                break;
+            case 'BYSETPOS':
+                foreach (explode(',', $wert) as $t) {
+                    $t = trim($t);
+                    if (!preg_match('/^[+-]?\d+$/', $t) || (int) $t === 0) {
+                        $r['fehler'][] = 'BYSETPOS ist keine Stellenangabe: ' . $t;
+                        continue;
+                    }
+                    $r['bysetpos'][] = (int) $t;
+                }
+                break;
+            default:
+                // Unbekannte Teile meldet awm_rrule_unbekannt().
+                break;
+        }
     }
-    if (preg_match('/BYDAY=([^;\r\n]+)/i', $rrule, $m)) {
-        foreach (explode(',', $m[1]) as $t) {
-            $t = trim($t);
-            if ($t === '') { continue; }
-            // Form: [+|-]n TAG, etwa "2TH" (zweiter Donnerstag) oder "-1FR"
-            $pos = 0;
-            if (preg_match('/^([+-]?\d+)([A-Za-z]{2})$/', $t, $mm)) {
-                $pos = (int) $mm[1];
-                $tag = awm_wochentag_nr($mm[2]);
-            } else {
-                $tag = awm_wochentag_nr($t);
+
+    // Eine Ordnungszahl im BYDAY ist nur bei MONTHLY und YEARLY zulaessig.
+    if (!awm_rrule_ordnungszahl_erlaubt($r['freq'])) {
+        foreach ($r['byday'] as $bd) {
+            if ($bd['pos'] !== 0) {
+                $r['fehler'][] = 'BYDAY mit Ordnungszahl ist bei FREQ='
+                               . (string) $r['freq'] . ' nicht zulaessig - sie wird nicht ausgewertet';
+                break;
             }
-            if ($tag > 0) { $r['byday'][] = array('tag' => $tag, 'pos' => $pos); }
-        }
-    }
-    if (preg_match('/BYMONTHDAY=([^;\r\n]+)/i', $rrule, $m)) {
-        foreach (explode(',', $m[1]) as $t) {
-            $t = (int) trim($t);
-            if ($t !== 0) { $r['bymonthday'][] = $t; }
-        }
-    }
-    if (preg_match('/BYMONTH=([^;\r\n]+)/i', $rrule, $m)) {
-        foreach (explode(',', $m[1]) as $t) {
-            $t = (int) trim($t);
-            if ($t >= 1 && $t <= 12) { $r['bymonth'][] = $t; }
-        }
-    }
-    if (preg_match('/BYSETPOS=([^;\r\n]+)/i', $rrule, $m)) {
-        foreach (explode(',', $m[1]) as $t) {
-            $t = (int) trim($t);
-            if ($t !== 0) { $r['bysetpos'][] = $t; }
         }
     }
     return $r;
+}
+
+/** Was an dieser Regel liess sich nicht lesen? (Fuer den Reiter Test.) */
+function awm_rrule_fehler($rrule)
+{
+    $r = awm_rrule_lesen($rrule);
+    return $r['fehler'];
 }
 
 /**
@@ -497,84 +640,95 @@ function awm_tage_im_monat($ymd)
     return $merker[$k] = (int) date('t', mktime(0, 0, 0, (int) substr($ymd, 4, 2), 1, (int) substr($ymd, 0, 4)));
 }
 
-/** Der wievielte Wochentag seiner Art ist dieses Datum im Monat? (1..5) */
-function awm_wochentag_position($ymd)
-{
-    return (int) floor((((int) substr($ymd, 6, 2)) - 1) / 7) + 1;
-}
 
-/** Wie viele dieses Wochentags hat der Monat? */
-function awm_wochentage_im_monat($ymd)
+/**
+ * Der wievielte Wochentag seiner Art ist dieser Tag in einem Bereich, und
+ * wie viele gibt es dort? Rueckgabe array(Stelle, Gesamtzahl).
+ *
+ * Gebraucht fuer die Ordnungszahl im BYDAY ("2TH", "-1FR"). Der Bereich ist
+ * bei FREQ=MONTHLY der Monat, bei FREQ=YEARLY ohne BYMONTH das ganze Jahr -
+ * genau diese Unterscheidung verlangt RFC 5545, Abschnitt 3.3.10.
+ */
+function awm_wt_stelle($n, $von_n, $bis_n)
 {
-    $tage = awm_tage_im_monat($ymd);
-    $tag = (int) substr($ymd, 6, 2);
-    $rest = $tage - $tag;
-    return awm_wochentag_position($ymd) + (int) floor($rest / 7);
+    $w = awm_wochentag_aus_tagnummer($n);
+    $ersterW = awm_wochentag_aus_tagnummer($von_n);
+    $erster = $von_n + (($w - $ersterW + 7) % 7);
+    if ($erster > $bis_n || $n < $erster) { return array(0, 0); }
+    $stelle = (int) floor(($n - $erster) / 7) + 1;
+    $gesamt = (int) floor(($bis_n - $erster) / 7) + 1;
+    return array($stelle, $gesamt);
 }
 
 /**
- * Welche Tage eines Monats trifft die Regel?
+ * Der Kandidatensatz EINES Zeitraums - das Herzstueck nach RFC 5545.
  *
- * Das ist die Stelle, an der BYSETPOS ueberhaupt erst moeglich wird: nach
- * RFC 5545 wird zuerst der komplette Kandidatensatz des Zeitraums gebildet
- * und ERST DANN daraus die n-te Stelle gezogen. Wer BYSETPOS Tag fuer Tag
- * auswerten will, kann es nicht - genau deshalb fiel es bis 1.3.8 unter
- * den Tisch, und "letzter Werktag des Monats" traf jeden Werktag.
+ * Die Norm bildet erst alle Tage des Zeitraums, die BYMONTH, BYDAY und
+ * BYMONTHDAY zulassen, und zieht ERST DANN mit BYSETPOS die n-te Stelle
+ * daraus. Wer das Tag fuer Tag entscheiden will, kann BYSETPOS nicht
+ * auswerten.
  *
- * Rueckgabe: aufsteigende Liste von Tagen (1..31).
+ * Der Zeitraum ist die Frequenz: bei DAILY ein Tag, bei WEEKLY die Woche ab
+ * WKST, bei MONTHLY der Monat, bei YEARLY das JAHR. Bis 1.4.6 wurde auch bei
+ * YEARLY monatsweise gebildet - "erster Montag im Quartal" ergab damit vier
+ * Termine im Jahr statt einem (gemessen 05.09.2026). Und DAILY und WEEKLY
+ * kamen ueberhaupt nicht hierher: sie warfen BYDAY, BYMONTHDAY und BYSETPOS
+ * weg, ohne es zu melden.
+ *
+ * Rueckgabe: aufsteigende Liste von Tagnummern.
  */
-function awm_monatsliste($s, $jahr, $monat)
+function awm_kandidaten($s, $freq, $von_n, $bis_n)
 {
-    $erster = sprintf('%04d%02d01', $jahr, $monat);
-    $tage = awm_tage_im_monat($erster);
-    $n1 = awm_tagnummer($erster);
-    if ($n1 < 0) { return array(); }
-    $byday = isset($s['byday']) && is_array($s['byday']) ? $s['byday'] : array();
-    $bymd = isset($s['bymonthday']) && is_array($s['bymonthday']) ? $s['bymonthday'] : array();
+    if ($von_n < 0 || $bis_n < $von_n) { return array(); }
+    $byday  = isset($s['byday']) && is_array($s['byday']) ? $s['byday'] : array();
+    $bymd   = isset($s['bymonthday']) && is_array($s['bymonthday']) ? $s['bymonthday'] : array();
+    $bymon  = isset($s['bymonth']) && is_array($s['bymonth']) ? $s['bymonth'] : array();
     $setpos = isset($s['bysetpos']) && is_array($s['bysetpos']) ? $s['bysetpos'] : array();
+    $start  = (string) $s['start'];
+    $ordnung = awm_rrule_ordnungszahl_erlaubt($freq);
 
-    $kand = array();
-    if ($bymd) {
-        foreach ($bymd as $t) {
-            $d = $t > 0 ? $t : $tage + $t + 1;
-            if ($d >= 1 && $d <= $tage) { $kand[$d] = true; }
-        }
-        // BYDAY und BYMONTHDAY zusammen: Schnittmenge (RFC 5545).
-        if ($byday) {
-            foreach (array_keys($kand) as $d) {
-                $w = awm_wochentag_aus_tagnummer($n1 + $d - 1);
-                $ok = false;
-                foreach ($byday as $bd) { if ($bd['tag'] === $w) { $ok = true; break; } }
-                if (!$ok) { unset($kand[$d]); }
+    $liste = array();
+    for ($n = $von_n; $n <= $bis_n; $n++) {
+        $ymd = awm_datum_aus_tagnummer($n);
+        $monat = (int) substr($ymd, 4, 2);
+        if ($bymon && !in_array($monat, $bymon, true)) { continue; }
+
+        if ($bymd) {
+            $tage = awm_tage_im_monat($ymd);
+            $tim = (int) substr($ymd, 6, 2);
+            $treffer = false;
+            foreach ($bymd as $t) {
+                $d = $t > 0 ? $t : $tage + $t + 1;
+                if ($d === $tim) { $treffer = true; break; }
             }
-        }
-    } elseif ($byday) {
-        for ($d = 1; $d <= $tage; $d++) {
-            $w = awm_wochentag_aus_tagnummer($n1 + $d - 1);
-            $ymd = sprintf('%04d%02d%02d', $jahr, $monat, $d);
-            foreach ($byday as $bd) {
-                if ($bd['tag'] !== $w) { continue; }
-                // Die Stellenangabe im BYDAY ("2TH") gilt nur, wenn kein
-                // BYSETPOS danebensteht - sonst bildet BYSETPOS die Auswahl.
-                if ($setpos || $bd['pos'] === 0) { $kand[$d] = true; break; }
-                if ($bd['pos'] > 0 && awm_wochentag_position($ymd) === $bd['pos']) { $kand[$d] = true; break; }
-                if ($bd['pos'] < 0) {
-                    $vonhinten = awm_wochentage_im_monat($ymd) - awm_wochentag_position($ymd) + 1;
-                    if ($vonhinten === -$bd['pos']) { $kand[$d] = true; break; }
+            if (!$treffer) { continue; }
+            // BYDAY und BYMONTHDAY zusammen: Schnittmenge (RFC 5545).
+            if ($byday && !awm_byday_trifft($byday, $n, $ymd, $freq, $ordnung, $von_n, $bis_n, $bymon)) {
+                continue;
+            }
+        } elseif ($byday) {
+            if (!awm_byday_trifft($byday, $n, $ymd, $freq, $ordnung, $von_n, $bis_n, $bymon)) {
+                continue;
+            }
+        } else {
+            // Ohne BYDAY und BYMONTHDAY gilt der Basistermin als Vorgabe -
+            // je Frequenz die Groesse, die der Zeitraum offen laesst.
+            if ($freq === 'WEEKLY') {
+                if (awm_wochentag_aus_tagnummer($n) !== awm_wochentag_aus_tagnummer(awm_tagnummer($start))) {
+                    continue;
+                }
+            } elseif ($freq === 'MONTHLY' || $freq === 'YEARLY') {
+                if ((int) substr($ymd, 6, 2) !== (int) substr($start, 6, 2)) { continue; }
+                if ($freq === 'YEARLY' && !$bymon && $monat !== (int) substr($start, 4, 2)) {
+                    continue;
                 }
             }
+            // DAILY: jeder Tag des Zeitraums, und der Zeitraum ist ein Tag.
         }
-    } else {
-        // Ohne BYDAY/BYMONTHDAY: derselbe Kalendertag wie der Basistermin.
-        $d = (int) substr((string) $s['start'], 6, 2);
-        if ($d >= 1 && $d <= $tage) { $kand[$d] = true; }
+        $liste[] = $n;
     }
 
-    $liste = array_keys($kand);
-    sort($liste);
-    if (!$setpos) {
-        return $liste;
-    }
+    if (!$setpos || !$liste) { return $liste; }
     $aus = array();
     $anz = count($liste);
     foreach ($setpos as $p) {
@@ -585,6 +739,39 @@ function awm_monatsliste($s, $jahr, $monat)
     sort($aus);
     return $aus;
 }
+
+/**
+ * Passt der Tag auf eines der BYDAY-Glieder?
+ *
+ * Die Ordnungszahl ("2TH") wird ausgewertet, wo RFC 5545 sie zulaesst - und
+ * sie wird NEBEN BYSETPOS ausgewertet, nicht statt seiner. Bis 1.4.6 fiel
+ * sie weg, sobald ein BYSETPOS danebenstand: 'BYDAY=2TH;BYSETPOS=1' traf den
+ * ERSTEN Donnerstag statt des zweiten (gemessen 05.09.2026).
+ */
+function awm_byday_trifft($byday, $n, $ymd, $freq, $ordnung, $von_n, $bis_n, $bymon)
+{
+    $w = awm_wochentag_aus_tagnummer($n);
+    foreach ($byday as $bd) {
+        if ($bd['tag'] !== $w) { continue; }
+        if ($bd['pos'] === 0 || !$ordnung) { return true; }
+        // Bezugsraum der Ordnungszahl: bei YEARLY MIT BYMONTH der Monat,
+        // bei YEARLY ohne BYMONTH das Jahr, bei MONTHLY der Monat.
+        if ($freq === 'YEARLY' && !$bymon) {
+            $rvon = $von_n;
+            $rbis = $bis_n;
+        } else {
+            $erster = awm_tagnummer(substr($ymd, 0, 6) . '01');
+            $rvon = $erster;
+            $rbis = $erster + awm_tage_im_monat($ymd) - 1;
+        }
+        list($stelle, $gesamt) = awm_wt_stelle($n, $rvon, $rbis);
+        if ($stelle === 0) { continue; }
+        if ($bd['pos'] > 0 && $stelle === $bd['pos']) { return true; }
+        if ($bd['pos'] < 0 && ($gesamt - $stelle + 1) === -$bd['pos']) { return true; }
+    }
+    return false;
+}
+
 
 /**
  * Trifft die reine Wiederholungsregel dieses Datum?
@@ -605,75 +792,89 @@ function awm_regel_trifft_datum($s, $ymd)
     $until = (string) (isset($s['until']) ? $s['until'] : '99991231');
     if ($ymd > $until) { return false; }
 
-    $interval = max(1, (int) (isset($s['interval']) ? $s['interval'] : 1));
-    $byday = isset($s['byday']) && is_array($s['byday']) ? $s['byday'] : array();
-    $bymonth = isset($s['bymonth']) && is_array($s['bymonth']) ? $s['bymonth'] : array();
+    // Unbekannte Frequenz: NICHT raten. Nur der Basistermin gilt.
+    if (!in_array($freq, array('DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'), true)) {
+        return $start === $ymd;
+    }
 
     $na = awm_tagnummer($start);
     $nb = awm_tagnummer($ymd);
     if ($na < 0 || $nb < 0) { return false; }
-    $tage = $nb - $na;
-    $wtag = awm_wochentag_aus_tagnummer($nb);
-    $jahr = (int) substr($ymd, 0, 4);
-    $monat = (int) substr($ymd, 4, 2);
-    $tagimmonat = (int) substr($ymd, 6, 2);
+    if (!awm_intervall_trifft($s, $freq, $na, $nb)) { return false; }
 
-    // BYMONTH gilt fuer alle Frequenzen. Bis 1.3.8 wurde es nirgends
-    // gelesen: FREQ=MONTHLY;BYMONTH=3,9 traf jeden Monat.
-    if ($bymonth && !in_array($monat, $bymonth, true)) {
-        return false;
+    list($von, $bis) = awm_periode($s, $freq, $nb);
+    if ($von < 0) { return false; }
+    return in_array($nb, awm_kandidaten($s, $freq, $von, $bis), true);
+}
+
+/**
+ * Liegt der Zeitraum dieses Tages auf dem Takt der Regel?
+ *
+ * Gezaehlt wird immer vom Zeitraum des Basistermins aus - Tage, Wochen ab
+ * WKST, Monate, Jahre.
+ */
+function awm_intervall_trifft($s, $freq, $na, $nb)
+{
+    $interval = max(1, (int) (isset($s['interval']) ? $s['interval'] : 1));
+    if ($interval === 1) {
+        return $nb >= $na;
     }
-
     if ($freq === 'DAILY') {
-        return ($tage % $interval) === 0;
+        return (($nb - $na) % $interval) === 0;
     }
-
     if ($freq === 'WEEKLY') {
-        // Ohne BYDAY: derselbe Wochentag wie der Basistermin - das ist das
-        // Verhalten von 1.0.2 und bleibt Wort fuer Wort erhalten.
-        if (!$byday) {
-            if ($tage % 7 !== 0) { return false; }
-            return ((int) ($tage / 7) % $interval) === 0;
-        }
-        $erlaubt = false;
-        foreach ($byday as $d) { if ($d['tag'] === $wtag) { $erlaubt = true; break; } }
-        if (!$erlaubt) { return false; }
-        // Wochennummer seit dem Wochenbeginn des Starttermins. Der
-        // Wochenbeginn ist Montag, sofern die Regel nichts anderes sagt
-        // (WKST) - bei INTERVAL>=2 verschiebt ein WKST=SU sonst jede
-        // zweite Woche. Der Muenchner Kalender schreibt WKST=MO aus; das
-        // Ergebnis ist damit dasselbe wie in 1.3.8.
+        // Der Wochenbeginn ist Montag, sofern die Regel nichts anderes sagt
+        // (WKST) - bei INTERVAL>=2 verschiebt ein WKST=SU sonst jede zweite
+        // Woche. Der Muenchner Kalender schreibt WKST=MO aus.
         $wkst = isset($s['wkst']) ? max(1, min(7, (int) $s['wkst'])) : 1;
         $wa = awm_wochentag_aus_tagnummer($na);
         $wochenanfang = $na - (($wa - $wkst + 7) % 7);
         $wochen = (int) floor(($nb - $wochenanfang) / 7);
-        return ($wochen % $interval) === 0;
+        return $wochen >= 0 && ($wochen % $interval) === 0;
     }
-
+    $a = awm_datum_aus_tagnummer($na);
+    $b = awm_datum_aus_tagnummer($nb);
     if ($freq === 'MONTHLY') {
-        $monate = ($jahr - (int) substr($start, 0, 4)) * 12
-                + ($monat - (int) substr($start, 4, 2));
-        if ($monate < 0 || $monate % $interval !== 0) { return false; }
-        return in_array($tagimmonat, awm_monatsliste($s, $jahr, $monat), true);
+        $monate = ((int) substr($b, 0, 4) - (int) substr($a, 0, 4)) * 12
+                + ((int) substr($b, 4, 2) - (int) substr($a, 4, 2));
+        return $monate >= 0 && ($monate % $interval) === 0;
     }
-
     if ($freq === 'YEARLY') {
-        $jahre = $jahr - (int) substr($start, 0, 4);
-        if ($jahre < 0 || $jahre % $interval !== 0) { return false; }
-        // Ohne BYMONTH gilt der Monat des Basistermins.
-        if (!$bymonth && $monat !== (int) substr($start, 4, 2)) { return false; }
-        // Mit BYDAY oder BYMONTHDAY entscheidet die Monatsliste - damit
-        // kann YEARLY jetzt auch "zweiter Samstag im Maerz" (Schadstoff-
-        // mobil). Bis 1.3.8 verglich der Zweig nur MMTT des Basistermins,
-        // und der Termin verschwand ab dem zweiten Jahr.
-        if ($byday || (isset($s['bymonthday']) && $s['bymonthday'])) {
-            return in_array($tagimmonat, awm_monatsliste($s, $jahr, $monat), true);
-        }
-        return $tagimmonat === (int) substr($start, 6, 2);
+        $jahre = (int) substr($b, 0, 4) - (int) substr($a, 0, 4);
+        return $jahre >= 0 && ($jahre % $interval) === 0;
     }
+    return false;
+}
 
-    // Unbekannte Frequenz: NICHT raten. Nur der Basistermin gilt.
-    return $start === $ymd;
+/**
+ * Anfang und Ende des Zeitraums, in dem dieser Tag liegt.
+ *
+ * Rueckgabe array(von_Tagnummer, bis_Tagnummer); array(-1, -1) bei
+ * unbekannter Frequenz.
+ */
+function awm_periode($s, $freq, $n)
+{
+    if ($freq === 'DAILY') {
+        return array($n, $n);
+    }
+    if ($freq === 'WEEKLY') {
+        $wkst = isset($s['wkst']) ? max(1, min(7, (int) $s['wkst'])) : 1;
+        $w = awm_wochentag_aus_tagnummer($n);
+        $von = $n - (($w - $wkst + 7) % 7);
+        return array($von, $von + 6);
+    }
+    $ymd = awm_datum_aus_tagnummer($n);
+    if ($freq === 'MONTHLY') {
+        $von = awm_tagnummer(substr($ymd, 0, 6) . '01');
+        return array($von, $von + awm_tage_im_monat($ymd) - 1);
+    }
+    if ($freq === 'YEARLY') {
+        $jahr = substr($ymd, 0, 4);
+        $von = awm_tagnummer($jahr . '0101');
+        $bis = awm_tagnummer($jahr . '1231');
+        return array($von, $bis);
+    }
+    return array(-1, -1);
 }
 
 /**
@@ -716,20 +917,85 @@ function awm_serie_ende($s)
     if (isset($merker[$key])) {
         return $merker[$key];
     }
-    $n = awm_tagnummer($start);
-    if ($n < 0) { return $merker[$key] = $start; }
+    $na = awm_tagnummer($start);
+    if ($na < 0) { return $merker[$key] = $start; }
+    if (!in_array($freq, array('DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'), true)) {
+        return $merker[$key] = $start;
+    }
+
+    /* Zeitraumweise, nicht tageweise.
+     *
+     * Bis 1.4.6 lief hier eine Tagesschleife mit der harten Grenze 4000
+     * (rund elf Jahre). Zwei Dinge gingen damit schief, beide am 05.09.2026
+     * gemessen: FREQ=YEARLY;COUNT=20 lieferte als Serienende das ELFTE
+     * Vorkommen, und awm_trifft() strich danach jeden spaeteren Termin, weil
+     * es diesen gekappten Wert fuer das echte Ende hielt. Zweitens kostete
+     * jede COUNT-Serie mit BYSETPOS rund 4000 x 31 innere Durchlaeufe.
+     *
+     * Jetzt wird von Zeitraum zu Zeitraum gesprungen, und wenn die Grenze
+     * doch greift, kommt '99991231' zurueck - "Ende unbekannt" statt eines
+     * zu fruehen Datums. Ein zu frueh gemeldetes Ende streicht Termine, ein
+     * unbekanntes nicht.
+     */
+    $interval = max(1, (int) (isset($s['interval']) ? $s['interval'] : 1));
+    $schritte = $count * $interval + 24;
+    if ($schritte > 20000) { $schritte = 20000; }
+
+    list($pv, $pb) = awm_periode($s, $freq, $na);
     $gefunden = $start;
     $treffer = 0;
-    for ($i = 0; $i < 4000; $i++) {          // harte Obergrenze, ~11 Jahre
-        $ymd = awm_datum_aus_tagnummer($n + $i);
-        if ($ymd > $until) { break; }
-        if (awm_regel_trifft_datum($s, $ymd)) {
+    for ($i = 0; $i < $schritte; $i++) {
+        if (awm_datum_aus_tagnummer($pv) > $until) { break; }
+        foreach (awm_kandidaten($s, $freq, $pv, $pb) as $n) {
+            if ($n < $na) { continue; }
+            $ymd = awm_datum_aus_tagnummer($n);
+            if ($ymd > $until) { break 2; }
             $treffer++;
             $gefunden = $ymd;
-            if ($treffer >= $count) { break; }
+            if ($treffer >= $count) { break 2; }
         }
+        list($pv, $pb) = awm_periode_weiter($s, $freq, $pv, $interval);
+        if ($pv < 0) { break; }
+    }
+    if ($treffer < $count && $until === '99991231') {
+        // Die Grenze hat gegriffen: das Ende ist nicht bekannt.
+        return $merker[$key] = '99991231';
     }
     return $merker[$key] = $gefunden;
+}
+
+/** Den naechsten Zeitraum auf dem Takt der Regel. array(-1,-1) = Ende. */
+function awm_periode_weiter($s, $freq, $von_n, $interval)
+{
+    if ($freq === 'DAILY') {
+        $n = $von_n + $interval;
+        return array($n, $n);
+    }
+    if ($freq === 'WEEKLY') {
+        $n = $von_n + 7 * $interval;
+        return array($n, $n + 6);
+    }
+    $ymd = awm_datum_aus_tagnummer($von_n);
+    $jahr = (int) substr($ymd, 0, 4);
+    $monat = (int) substr($ymd, 4, 2);
+    if ($freq === 'MONTHLY') {
+        $monat += $interval;
+        $jahr += (int) floor(($monat - 1) / 12);
+        $monat = (($monat - 1) % 12) + 1;
+    } elseif ($freq === 'YEARLY') {
+        $jahr += $interval;
+        $monat = 1;
+    } else {
+        return array(-1, -1);
+    }
+    if ($jahr > 9998) { return array(-1, -1); }
+    if ($freq === 'YEARLY') {
+        return array(awm_tagnummer(sprintf('%04d0101', $jahr)),
+                     awm_tagnummer(sprintf('%04d1231', $jahr)));
+    }
+    $erster = sprintf('%04d%02d01', $jahr, $monat);
+    $n = awm_tagnummer($erster);
+    return array($n, $n + awm_tage_im_monat($erster) - 1);
 }
 
 /**
@@ -762,14 +1028,9 @@ function awm_trifft($s, $ymd)
     return true;
 }
 
-/** COUNT beachten: der wievielte Termin ist das? (0 = der erste)
- *  Bleibt fuer Aufrufer aus aelteren Fassungen erhalten. */
-function awm_count_ok($s, $nummer)
-{
-    $c = (int) (isset($s['count']) ? $s['count'] : 0);
-    if ($c <= 0) { return true; }
-    return $nummer < $c;
-}
+/* awm_count_ok() ist in 1.4.7 entfallen: definiert, nie gerufen (gemessen
+ * mit Werkzeuge/tote_helfer.py, 05.09.2026). COUNT wird ueber
+ * awm_serie_ende() beachtet - und zwar an EINER Stelle, in awm_trifft(). */
 
 /* ==================================================================
  * Selbstpruefung
@@ -936,6 +1197,68 @@ function awm_selbstpruefung_regeln()
     // WKST bei INTERVAL>=2
     $p($w('FREQ=WEEKLY;INTERVAL=2;BYDAY=SU;WKST=SU', '20260104', '20260118'),
        'WKST=SU: jede zweite Woche ab Sonntag');
+
+    /* --- 3c. Die Formen, die bis 1.4.6 still danebengingen (05.09.2026) ---
+     *
+     * Alle vier Frequenzen bilden jetzt einen Kandidatensatz je Zeitraum
+     * nach RFC 5545. Jede Zeile hier war vorher rot. */
+    $zaehl = function ($rrule, $start, $von, $bis) use ($w) {
+        $n = 0;
+        $a = awm_tagnummer($von);
+        $b = awm_tagnummer($bis);
+        for ($i = $a; $i <= $b; $i++) {
+            if ($w($rrule, $start, awm_datum_aus_tagnummer($i))) { $n++; }
+        }
+        return $n;
+    };
+
+    // DAILY warf BYDAY und BYMONTHDAY weg: 14 Treffer statt 6.
+    $n = $zaehl('FREQ=DAILY;BYDAY=MO,WE,FR', '20260105', '20260105', '20260118');
+    $p($n === 6, sprintf('DAILY BYDAY: sechs Tage in zwei Wochen (gezaehlt: %d)', $n));
+    $n = $zaehl('FREQ=DAILY;BYMONTHDAY=1,15', '20260101', '20260101', '20260120');
+    $p($n === 2, sprintf('DAILY BYMONTHDAY: zwei Tage im Zeitraum (gezaehlt: %d)', $n));
+
+    // WEEKLY warf BYSETPOS und BYMONTHDAY weg: 10 Treffer statt 2.
+    $n = $zaehl('FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1', '20260105', '20260105', '20260118');
+    $p($n === 2, sprintf('WEEKLY BYSETPOS=-1: der letzte Werktag je Woche (gezaehlt: %d)', $n));
+    $p($w('FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1', '20260105', '20260109'),
+       'WEEKLY BYSETPOS=-1: das ist der Freitag');
+    $n = $zaehl('FREQ=WEEKLY;BYDAY=MO;BYMONTHDAY=5', '20260105', '20260105', '20260209');
+    $p($n === 1, sprintf('WEEKLY BYDAY+BYMONTHDAY: Schnittmenge, ein Treffer (gezaehlt: %d)', $n));
+
+    // Die Ordnungszahl fiel weg, sobald ein BYSETPOS danebenstand.
+    $p($w('FREQ=MONTHLY;BYDAY=2TH;BYSETPOS=1', '20260108', '20260212'),
+       'BYDAY=2TH neben BYSETPOS: der ZWEITE Donnerstag, nicht der erste');
+    $p(!$w('FREQ=MONTHLY;BYDAY=2TH;BYSETPOS=1', '20260108', '20260205'),
+       'BYDAY=2TH neben BYSETPOS: der erste Donnerstag nicht');
+
+    // YEARLY bildete den Satz je MONAT statt je JAHR: vier Treffer statt einem.
+    $n = $zaehl('FREQ=YEARLY;BYMONTH=1,4,7,10;BYDAY=MO;BYSETPOS=1', '20260105', '20260101', '20261231');
+    $p($n === 1, sprintf('YEARLY BYSETPOS: der Satz ist das JAHR, ein Treffer (gezaehlt: %d)', $n));
+    $n = $zaehl('FREQ=YEARLY;BYDAY=MO', '20260105', '20260101', '20261231');
+    $p($n === 52, sprintf('YEARLY BYDAY ohne BYMONTH: jeder Montag des Jahres (gezaehlt: %d)', $n));
+
+    // Die harte Grenze in awm_serie_ende() strich Termine.
+    $sc = array('start' => '20260115', 'exdates' => array(), 'rdates' => array())
+        + awm_rrule_lesen('FREQ=YEARLY;COUNT=20');
+    $p(awm_serie_ende($sc) === '20450115',
+       'COUNT=20 bei YEARLY: das Serienende ist das 20. Vorkommen, nicht das 11.');
+    $p(awm_trifft($sc, '20400115'),
+       'COUNT=20: ein Termin im 15. Jahr wird nicht mehr gestrichen');
+
+    // Ein unlesbarer Regelteil wird GEMELDET statt still zu wirken.
+    $p(count(awm_rrule_fehler('FREQ=MONTHLY;BYMONTH=abc;BYMONTHDAY=15')) > 0,
+       'BYMONTH=abc wird als unlesbar gemeldet');
+    $p(count(awm_rrule_fehler('FREQ=WEEKLY;BYDAY=2MO')) > 0,
+       'Ordnungszahl bei FREQ=WEEKLY wird gemeldet (RFC 5545 verbietet sie)');
+    $p(count(awm_rrule_fehler('FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;WKST=MO')) === 0,
+       'Die Muenchner Regel meldet keinen Fehler');
+
+    // Ein fremder Regelteil darf keinen anderen setzen.
+    $rr = awm_rrule_lesen('FREQ=WEEKLY;BYDAY=MO;X-FOO=INTERVAL=9');
+    $p((int) $rr['interval'] === 1, 'Ein X-Teil setzt INTERVAL nicht mit');
+    $p(awm_wochentag_nr('X-MO') === 0, 'X-MO ist kein Wochentag');
+    $p(awm_wochentag_nr('-1FR') === 5, '-1FR ist ein Freitag');
 
     // COUNT
     $s = array('start' => '20260105', 'exdates' => array()) + awm_rrule_lesen('FREQ=WEEKLY;COUNT=3');

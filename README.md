@@ -121,7 +121,9 @@ Tonnenzuordnung ist eine Einstellung und steht deshalb bei den Einstellungen.
 | `/plugins/awmabfuhr/awm.php?refresh=1&token=…` | Kalender sofort neu abrufen **(Token nötig)** |
 | `/plugins/awmabfuhr/awm.php?selftest=1&token=…` | nur prüfen, ob das Token stimmt — löst nichts aus |
 
-`&cal=2` wählt den zweiten Kalender, `&cal=3` den dritten und so fort.
+`&cal=2` wählt den zweiten Kalender, `&cal=3` den dritten — bis `&cal=4`.
+Mehr Kalender kennt das Plugin nicht; eine höhere Nummer beantwortet der
+Endpunkt mit der Zeile des vierten.
 
 ## Einrichtung (AWM München)
 
@@ -145,6 +147,61 @@ Hausnummer. Externe Verbindungen gibt es nur zum konfigurierten
 Kalender-Server. Beim Deinstallieren werden auch die Sicherungskopien neben
 dem Plugin-Ordner entfernt — sie enthalten dieselbe Adresse und das
 Aktionstoken.
+
+## Fassung 1.4.7 — die Wiederholungsregeln, und wer etwas auslösen darf
+
+**Sicherheit.** `?json=1&refresh=1` löste bis 1.4.6 einen Abruf beim Entsorger
+aus, **ohne Aktionstoken** — und wegen `isset()` tat das sogar
+`?json=1&refresh=0`. Die Prüfung stand nur im Klartext-Zweig. Sie entsteht
+jetzt einmal, oben in `awm.php`, und beide Zweige benutzen sie. Ebenfalls neu:
+`cron.php` liegt zwar weiterhin im unangemeldeten Baum, nimmt aber nur noch
+Aufrufe von der Kommandozeile an — über HTTP war es bis 1.4.6 möglich, damit
+Abruf, MQTT-Meldung, Ansage und die Jahres-Erneuerung auszulösen.
+
+**Wiederholungsregeln nach RFC 5545.** Der Kandidatensatz entsteht jetzt je
+Zeitraum — bei `FREQ=YEARLY` also je **Jahr**, nicht je Monat. Vier Formen
+gingen bis 1.4.6 still daneben:
+
+| Regel | bis 1.4.6 | jetzt |
+|---|---|---|
+| `FREQ=DAILY;BYDAY=MO,WE,FR` | jeden Tag | montags, mittwochs, freitags |
+| `FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1` | jeden Werktag | freitags |
+| `FREQ=YEARLY;BYMONTH=1,4,7,10;BYDAY=MO;BYSETPOS=1` | vier Termine im Jahr | einer |
+| `FREQ=MONTHLY;BYDAY=2TH;BYSETPOS=1` | erster Donnerstag | zweiter Donnerstag |
+
+`COUNT` wird nicht mehr nach elf Jahren abgeschnitten: eine Serie mit
+`COUNT=20` und `FREQ=YEARLY` endete bis 1.4.6 beim elften Termin, und alle
+späteren wurden gestrichen. Was sich an einer Regel **nicht lesen** lässt
+(`BYMONTH=abc`, eine Ordnungszahl bei `FREQ=WEEKLY`), steht jetzt im Reiter
+*Test* statt still zu wirken.
+
+**Herzschlag.** Neu am Ende der Loxone-Zeile: `ZAEHLER` läuft 0…999 um und
+bleibt stehen, sobald der Minutenlauf steht — auf eine Änderungsüberwachung
+verdrahten. Über MQTT kommen dazu `status/ok`, `status/ts` und
+`status/zaehler`; sie gehen bei **jedem** Durchgang hinaus, auch wenn sich
+sonst nichts geändert hat.
+
+**Einstellungen sichern und zurückspielen.** Die Sicherung enthält nur noch
+die bekannten Schlüssel und einen lesbaren Kopf — auf einer aus einer alten
+Fassung fortgeschriebenen Anlage lehnte das Zurückspielen die **eigene**
+Sicherung bis 1.4.6 vollständig ab (wegen `ical_url`). Beim Zurückspielen wird
+jetzt jeder **Wert** geprüft, nicht nur der Schlüsselname; danach wird der
+Zustand neu berechnet und neu veröffentlicht, und die Seite sagt es.
+
+**Kleineres.** Die Konfiguration steht auf `0600` (sie trägt Aktionstoken und
+Anschrift). Die Ruhezeit vergleicht Uhrzeiten nicht mehr als Zeichenketten —
+`9:00` bis `17:00` sperrte bis 1.4.6 von 0:00 bis 16:59. `AGE` zeigt wieder das
+echte Alter der Kalenderdatei. Ein leerer Kalender vom Entsorger überschreibt
+den guten gespeicherten Stand nicht mehr. Eine geleerte Kalender-Adresse löscht
+nicht mehr die Zuordnungsregeln und die eigenen Termine dieses Kalenders. Zahlen
+außerhalb ihrer Grenzen werden abgewiesen und gemeldet statt stillschweigend
+gekappt. Fehlerausgabe geht ins Protokoll statt in die Seite.
+
+## Fassung 1.4.6 — Wortlaut für das MQTT-Gateway V2
+
+Nur Text: der Reiter *MQTT* und der Reiter *Einbindung in Loxone* nennen jetzt
+den Ort im LoxBerry (*System → MQTT Gateway → Subscriptions*) und unterscheiden
+Gateway-Fassung 1 von 2 und neuer. Kein PHP berührt.
 
 ## Fassung 1.4.5 — der Stat-Zwischenspeicher
 Die Protokollkappung (512 000 Byte) stand in

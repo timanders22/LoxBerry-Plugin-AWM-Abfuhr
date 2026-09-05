@@ -63,6 +63,13 @@ fi
 # gleich bleiben, sodass ueber MQTT gar nichts nachkaeme.
 rm -f /tmp/awmabfuhr/state_*.json /tmp/awmabfuhr/mqtt_sig_*.txt 2>/dev/null
 
+# Die Konfiguration traegt das Aktionstoken und die iCal-Adresse mit Strasse
+# und Hausnummer - uninstall/uninstall sagt das selbst. Sie gehoert deshalb
+# auf 0600, wie bei Robonect und MG iSmart. Bis 1.4.6 setzte kein einziges
+# Skript dieser Linie ein chmod, und die Datei stand auf 0664.
+chmod 600 "$CFGDIR/awm.json" 2>/dev/null
+[ -f "$BK" ] && chmod 600 "$BK" 2>/dev/null
+
 # Eigentuemer richtigstellen.
 #
 # cp -p uebernimmt Rechte und Zeitstempel, aber der Eigentuemer richtet sich

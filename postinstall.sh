@@ -38,6 +38,13 @@ if [ -d "$BKDIR" ] && [ -z "$(ls -A "$DATDIR"/kalender_*.ics 2>/dev/null)" ]; th
     done
 fi
 
+# Die Konfiguration traegt das Aktionstoken und die iCal-Adresse mit Strasse
+# und Hausnummer - uninstall/uninstall sagt das selbst. Sie gehoert deshalb
+# auf 0600, wie bei Robonect und MG iSmart. Bis 1.4.6 setzte kein einziges
+# Skript dieser Linie ein chmod, und die Datei stand auf 0664.
+chmod 600 "$CFGDIR/awm.json" 2>/dev/null
+[ -f "$BK" ] && chmod 600 "$BK" 2>/dev/null
+
 # Eigentuemer: die Installation laeuft als root, der Betrieb als loxberry.
 if id loxberry >/dev/null 2>&1; then
     chown -R loxberry:loxberry "$CFGDIR" "$LOGDIR" "$DATDIR" 2>/dev/null

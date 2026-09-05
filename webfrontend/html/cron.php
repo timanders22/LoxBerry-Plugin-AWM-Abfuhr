@@ -9,6 +9,32 @@
  * 5. Alte Tages-Merker aufraeumen.
  */
 
+/* NUR von der Kommandozeile.
+ *
+ * Diese Datei liegt unter webfrontend/html/ und wird damit nach
+ * webfrontend/html/plugins/<ordner>/ installiert - in den Baum OHNE
+ * Anmeldung, denselben wie awm.php. Sie war deshalb bis 1.4.6 von jedem
+ * Geraet im Heimnetz ueber HTTP aufrufbar, ohne Token und ohne jede Wache,
+ * und sie loest alles aus, was das Plugin kann: Abruf beim Entsorger,
+ * MQTT-Meldung, Ansage (das Haus spricht) und die Jahres-Erneuerung, die
+ * die Konfiguration umschreibt.
+ *
+ * Der Minutenlauf ruft sie ueber cron/cron.01min als PHP-CLI - dort ist
+ * PHP_SAPI 'cli'. Ueber den Webserver ist es 'apache2handler', 'fpm-fcgi'
+ * oder aehnliches; dann wird abgewiesen. Fail closed: was nicht
+ * nachweislich die Kommandozeile ist, kommt nicht durch.
+ *
+ * Das Verschieben nach bin/ waere der groessere Schnitt - er beruehrt die
+ * Bibliothekssuche und cron.01min. Diese Wache kostet nichts und schliesst
+ * dieselbe Tuer.
+ */
+if (PHP_SAPI !== 'cli') {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo "CRON;OK=0;ERR=NUR_KOMMANDOZEILE\n";
+    exit;
+}
+
 require_once __DIR__ . '/awm_lib.php';
 
 /* Nur ein Lauf gleichzeitig (Muster FerienFeiertage): der Abruf wartet je
@@ -18,6 +44,10 @@ if ($awm_lock === false) {
     echo "BUSY\n";
     exit(0);
 }
+
+/* Der Herzschlag wird EINMAL je Lauf hochgezaehlt, vor der Schleife -
+ * nicht je Kalender. */
+$awm_zaehler = awm_zaehler(true);
 
 foreach (awm_cals() as $n => $c) {
     awm_fetch(false, $n);
@@ -31,7 +61,14 @@ foreach (awm_cals() as $n => $c) {
      *
      * Mit awm_werte() als Quelle kann das nicht mehr passieren: jeder neue
      * Wert ist automatisch Teil der Signatur. */
-    $sig = json_encode(awm_werte($st, $n));
+    /* Die Signatur entsteht aus DEM, WAS VERSCHICKT WIRD - nicht aus einer
+     * Teilmenge davon. Bis 1.4.6 stand hier awm_werte(): die vier
+     * Zusatzthemen (Hinweistext und die drei fertigen Saetze) fehlten, und
+     * ein geaenderter Hinweistext blieb bis zum halbstuendlichen Lauf
+     * liegen, obwohl der Kommentar das Gegenteil zusicherte. Der Herzschlag
+     * gehoert NICHT hinein - er aendert sich jede Minute und machte den
+     * Doppelt-senden-Filter wertlos. */
+    $sig = json_encode(awm_mqtt_nutzlast($st, $n));
     if ($sig === false) {
         // Waere es false, stimmte es mit keinem gespeicherten Stand ueberein
         // und das Plugin schickte jede Minute dieselben Werte ans Gateway.
@@ -45,6 +82,10 @@ foreach (awm_cals() as $n => $c) {
         awm_datei_schreiben($sigf, $sig);
         @touch($beat);
     }
+    /* Das Lebenszeichen geht bei JEDEM Durchgang hinaus, am Filter vorbei -
+     * Hausstandard seit 26.08.2026. Ein virtueller Eingang behaelt sonst
+     * seine letzte 1, und ein toter Minutenlauf sieht aus wie ein gesunder. */
+    awm_mqtt_lebenszeichen($n, empty($st['ok']) ? 0 : 1, $awm_zaehler);
 }
 
 awm_announce_check();

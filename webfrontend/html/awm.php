@@ -49,7 +49,44 @@
  */
 
 require_once __DIR__ . '/awm_lib.php';
-$cal = isset($_GET['cal']) ? max(1, min(9, (int) $_GET['cal'])) : 1;
+
+/* Auf AWM_MAX_KALENDER geklemmt, nicht auf 9. Bis 1.4.6 standen drei
+ * verschiedene Obergrenzen in einem Plugin: die Konfiguration kennt vier
+ * Kalender, der Endpunkt liess neun zu, und die README sagte "und so fort".
+ * Gemessen am 05.09.2026: ?cal=99 legte einen Zustand fuer Kalender 9 an. */
+$cal = isset($_GET['cal']) ? max(1, min(AWM_MAX_KALENDER, (int) $_GET['cal'])) : 1;
+
+/* ---------- Erzwungener Abruf: EINE Entscheidung fuer ALLE Zweige ----------
+ *
+ * ?refresh geht nach draussen - zum Server des Entsorgers - und schreibt die
+ * Kalenderdatei. Das ist ein AUSLOESENDER Aufruf und verlangt deshalb das
+ * Aktionstoken (Regeln/05).
+ *
+ * Bis 1.4.6 stand diese Pruefung nur im Klartext-Zweig. Der JSON-Zweig rief
+ * awm_fetch(isset($_GET['refresh'])) ohne jede Pruefung - gemessen am
+ * 05.09.2026: '?json=1&refresh=1' UND '?json=1&refresh=0' loesten von jedem
+ * Geraet im Heimnetz eine Anfrage an den Entsorger aus, ohne Token. Genau
+ * das Loch, das der Kommentar weiter unten fuer geschlossen erklaerte, und
+ * genau das, was README und Hilfe als behoben versprechen.
+ *
+ * Jetzt entsteht die Entscheidung EINMAL, oben, und beide Zweige benutzen
+ * sie. Der Wert '0' zaehlt nicht als Wunsch - bis 1.3.8 tat er das wegen
+ * isset(), und damit rief auch '?refresh=0' beim Entsorger an.
+ */
+$awm_refresh = false;
+if (isset($_GET['refresh']) && (string) $_GET['refresh'] !== '0') {
+    $awm_refresh = awm_token_ok();
+    if (!$awm_refresh) {
+        /* Hoechstens eine Zeile je Stunde: sonst kann ein Fremder mit
+         * wiederholten Aufrufen das Protokoll fluten und die aelteren
+         * Eintraege aus der Kappung bei 200 Zeilen draengen. Die Stunde
+         * steht mit drin, damit ein andauernder Versuch trotzdem sichtbar
+         * bleibt - eine Zeile, die nur einmal im Leben kommt, ist keine
+         * Meldung. */
+        awm_log_if_changed('refresh_abgelehnt',
+            'Abruf ueber ?refresh=1 ohne gueltiges Token abgelehnt (' . date('Y-m-d H') . ' Uhr).');
+    }
+}
 
 /* ---------- Kalender zum Abonnieren ----------
  * Wer den Kalender aufs Telefon oder in eine andere Hausautomatik legen
@@ -73,8 +110,9 @@ if (isset($_GET['ics'])) {
 /* ---------- JSON ---------- */
 if (isset($_GET['json'])) {
     header('Content-Type: application/json; charset=utf-8');
-    awm_fetch(isset($_GET['refresh']), $cal);
-    $st = awm_state(isset($_GET['refresh']), $cal);
+    // Dieselbe Entscheidung wie im Klartext-Zweig - siehe oben.
+    awm_fetch($awm_refresh, $cal);
+    $st = awm_state($awm_refresh, $cal);
     // Die Meldeflags und die fertigen Saetze gehoeren mit hinein - sonst
     // muesste Drittsoftware sie nachbauen.
     $st = array_merge($st, awm_meldeflags($st, $cal));
@@ -127,12 +165,26 @@ function awm_token_ok() {
     return hash_equals($soll, isset($_GET['token']) ? (string) $_GET['token'] : '');
 }
 
-/** Einheitliche Abweisung - jeder Aktionsendpunkt antwortet gleich. */
+/**
+ * Einheitliche Abweisung - jeder Aktionsendpunkt antwortet gleich.
+ *
+ * Und zwar wirklich gleich: bis 1.4.6 stand im Fehlergrund, OB ueberhaupt
+ * ein Token eingerichtet ist ('KEIN_TOKEN_EINGERICHTET' gegen 'TOKEN').
+ * Damit erfuhr ein Fremder ohne Anmeldung, dass diese Anlage ungeschuetzt
+ * ist - und der Kommentar darueber behauptete das Gegenteil dessen, was der
+ * Code tat. Der Unterschied gehoert ins Protokoll, nicht in die Antwort.
+ */
 function awm_token_abweisen($praefix) {
     $cfg = awm_config();
     $soll = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    if ($soll === '') {
+        awm_log_if_changed('token_fehlt',
+            'Ein Aktionsaufruf wurde abgewiesen, weil in der Konfiguration noch '
+            . 'kein Aktionstoken steht. Die Plugin-Oberflaeche legt beim ersten '
+            . 'Aufruf eines an (' . date('Y-m-d H') . ' Uhr).');
+    }
     http_response_code(403);
-    echo $praefix . ';OK=0;ERR=' . ($soll === '' ? 'KEIN_TOKEN_EINGERICHTET' : 'TOKEN') . "\n";
+    echo $praefix . ";OK=0;ERR=TOKEN\n";
     exit;
 }
 
@@ -218,18 +270,9 @@ if (isset($_GET['renew'])) {
 
 /* ---------- Abruf / Zustand ----------
  *
- * ?refresh wird nur noch mit Token akzeptiert. Ohne Token konnte jedes
- * Geraet im Heimnetz beliebig oft eine ausgehende Anfrage an den Entsorger
- * ausloesen - und weil isset() geprueft wurde, tat das sogar ?refresh=0.
+ * $awm_refresh steht oben - EINE Entscheidung fuer alle Zweige dieser Datei.
  * Die Oberflaeche und der Reiter Test schicken das Token mit.
  */
-$awm_refresh = false;
-if (isset($_GET['refresh']) && (string) $_GET['refresh'] !== '0') {
-    $awm_refresh = awm_token_ok();
-    if (!$awm_refresh) {
-        awm_log('Abruf ueber ?refresh=1 ohne gueltiges Token abgelehnt.');
-    }
-}
 list($ok, $quelle) = awm_fetch($awm_refresh, $cal);
 $st = awm_state($awm_refresh, $cal);
 
