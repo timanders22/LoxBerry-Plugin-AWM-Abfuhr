@@ -8,6 +8,42 @@ vielen Tagen kommt die nächste Leerung. Dazu **Vorabend-Ansage**
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.4.8
+
+- **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 1.4.7 kam er von der
+  Oberfläche des LoxBerry. Am 05.09.2026 am Gerät gemessen (LoxBerry 4.0.0.15,
+  `system/css/components.css`): deren Regel `.lb-content select`
+  gibt es erst seit der neuen Oberfläche, und jede eigene Feldregel mit der
+  Kurzform `background:` löscht sie wieder. Darauf soll sich eine
+  Plugin-Oberfläche nicht verlassen (`Regeln/04`).
+
+- **Zustände gehen jetzt zurückbehalten (retained) an den Broker.** Bis 1.4.7
+  schickte das Plugin ausnahmslos `publish`; am 06.09.2026 am Broker der
+  Anlage gemessen: **0 zurückbehaltene Themen unter `awm/`**, während der
+  Broker insgesamt 2 158 hielt. Nach einem Neustart des Miniservers oder des
+  MQTT-Gateways standen die virtuellen Eingänge damit leer, bis der nächste
+  Vollversand kam — längstens eine halbe Stunde.
+
+  Dass der UDP-Weg des Gateways das kann, ist am Gerät im Quelltext gemessen
+  (`sbin/mqttgateway.pl`: die vier Befehle `publish`, `retain`, `reconnect`,
+  `save_relayed_states`). Von 64 Themen gehen **59 zurückbehalten** hinaus und
+  **5 nicht**:
+
+  | Thema | warum nicht zurückbehalten |
+  |---|---|
+  | `alter` | Das Alter *ist* der Zeitbezug — zurückbehalten stünde dort die Stundenzahl von damals, und genau dieses Feld soll den Ausfall anzeigen. |
+  | `ptest` | Ein Testmerker mit fünf Minuten Lebensdauer. Zurückbehalten löste er nach jedem Neustart eine Test-Pushnachricht aus, deren Anlass längst vorbei ist. |
+  | `status/ok`, `status/ts`, `status/zaehler` | Das Lebenszeichen zeigte zurückbehalten immer „lebt“ und beantwortete die Frage nicht mehr, für die es da ist. |
+
+  Die Tabelle im Reiter *MQTT* nennt je Thema, ob es zurückbehalten wird, und
+  fragt dafür dieselbe Funktion wie der Sender. Hausstandard: `Regeln/07`;
+  Bauart übernommen von GardenaSmartSystem 1.2.5.
+
+  **Beim Umstieg:** die zurückbehaltenen Werte entstehen mit dem ersten
+  Minutenlauf nach dem Einspielen. Wer das Plugin wieder entfernt, lässt sie
+  auf dem Broker zurück — sie verschwinden erst, wenn jemand auf dasselbe
+  Thema eine leere zurückbehaltene Nachricht schickt.
+
 ## Funktionen
 
 - iCal-/ICS-Import per Adresse **oder als hochgeladene Datei**, Abruf-Intervall

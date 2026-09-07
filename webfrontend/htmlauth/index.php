@@ -735,6 +735,25 @@ if ($aw_frame) {
 .sm-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .sm-row > div { flex: 1 1 220px; }
 .sm-grau { color: #999; font-style: italic; }
+/* Ein Auswahlfeld muss man als Auswahlfeld erkennen. Nachgezogen am
+   05.09.2026 nach Regeln/04; Wortlaut aus VORLAGE_hausstandard.css.html.
+
+   Am Geraet gemessen (LoxBerry 4.0.0.15, components.css): die Rahmen-CSS
+   zeichnet seit der neuen Oberflaeche selbst einen Pfeil - Regel
+   ".lb-content select". Darauf kann sich eine Plugin-Oberflaeche nicht
+   verlassen: die Regel gibt es erst seit dieser Fassung, und die eigene
+   Feldregel loescht sie, sobald sie die Kurzform "background:" benutzt.
+   Dann steht ein Auswahlfeld da, das aussieht wie ein Textfeld.
+
+   Die Raute im SVG wird als %23 geschrieben: eine rohe Raute beendet in
+   einer CSS-Adresse den Wert. */
+.sm-wrap select {
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1 1l6 6 6-6' fill='none' stroke='%234f7d17' stroke-width='2'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 32px; cursor: pointer; }
+.sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+
 </style>
 <div class="sm-wrap">
 
@@ -1188,11 +1207,18 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 <h2><?= aw_t('MQTT.H_THEMEN') ?></h2>
 <div class="sm-hilfe"><?= aw_t('MQTT.H_THEMEN_TEXT') ?></div>
 <table class="sm-tbl">
-<tr><th style="width:230px;"><?= aw_t('MQTT.T_THEMA') ?></th><th><?= aw_t('MQTT.T_BEDEUTUNG') ?></th></tr>
-<?php foreach (awm_mqtt_themen() as $aw_th => $aw_bed) { ?>
-<tr><td><span class="sm-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/<?= aw_e($aw_th) ?></span></td><td><?= aw_e($aw_bed) ?></td></tr>
+<tr><th style="width:230px;"><?= aw_t('MQTT.T_THEMA') ?></th><th style="width:90px;"><?= aw_t('MQTT.T_RETAIN') ?></th><th><?= aw_t('MQTT.T_BEDEUTUNG') ?></th></tr>
+<?php /* Die Spalte fragt DIESELBE Funktion wie der Sender (awm_mqtt_retain).
+     Regeln/07: "Wer ein Thema anlegt, schreibt in die Namenstabelle des
+     Reiters Einbindung in Loxone, ob es retained ist." Eine zweite Liste
+     hier waere eine, die beim naechsten neuen Thema auseinanderlaeuft. */ ?>
+<?php foreach (awm_mqtt_themen() as $aw_th => $aw_bed) { $aw_r = awm_mqtt_retain($aw_th); ?>
+<tr><td><span class="sm-mono"><?= aw_e($aw_cfg['mqtt_topic']) ?>/<?= aw_e($aw_th) ?></span></td>
+<td><span class="<?= $aw_r ? 'sm-an' : 'sm-aus' ?>"><?= aw_t($aw_r ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN') ?></span></td>
+<td><?= aw_e($aw_bed) ?></td></tr>
 <?php } ?>
 </table>
+<div class="sm-hilfe"><?= aw_t('MQTT.H_RETAIN') ?></div>
 <div class="sm-hilfe"><?= sprintf(awm_t('MQTT.H_ZWEITER'), aw_e($aw_cfg['mqtt_topic']), aw_e($aw_cfg['mqtt_topic'])) ?></div>
 
 <div class="sm-legende">

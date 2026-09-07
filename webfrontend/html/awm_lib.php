@@ -1806,6 +1806,54 @@ function awm_mqtt_themen()
 }
 
 /**
+ * Geht dieses Thema zurueckbehalten (retained) hinaus?
+ *
+ * EINE Stelle fuer die Entscheidung - Sender und Thementabelle fragen
+ * dieselbe Funktion, sonst behauptet die Anleitung etwas anderes, als der
+ * Code tut.
+ *
+ * Hausstandard (Regeln/07, Entscheidung vom 03.09.2026): Zustaende
+ * retained, Messwerte mit Zeitbezug nicht, das Lebenszeichen nie. Bis 1.4.7
+ * ging ALLES ohne Retain hinaus; gemessen am 06.09.2026 am Broker der
+ * Anlage: 0 zurueckbehaltene Themen unter awm/, waehrend der Broker
+ * insgesamt 2 158 haelt. Nach einem Neustart des Miniservers oder des
+ * Gateways standen die virtuellen Eingaenge damit leer, bis der naechste
+ * Vollversand kam - laengstens eine halbe Stunde.
+ *
+ * Dass der UDP-Weg des Gateways das ueberhaupt kann, ist am Geraet im
+ * Quelltext gemessen (mqttgateway.pl: die vier Befehle 'publish', 'retain',
+ * 'reconnect', 'save_relayed_states'); die Bauart ist von
+ * GardenaSmartSystem 1.2.5 uebernommen.
+ *
+ * Die Ausnahmen sind einzeln begruendet und werden von der Selbstpruefung
+ * gegen die Themenliste gehalten - eine Ausnahme fuer ein Thema, das es
+ * nicht gibt, ist ein Befund.
+ */
+function awm_mqtt_nicht_retained()
+{
+    return array(
+        // Das Alter IST der Zeitbezug. Ein zurueckbehaltenes Alter ist eine
+        // Falschaussage: nach einem Neustart stuende dort die Stundenzahl
+        // von damals, und genau dieses Feld soll den Ausfall anzeigen.
+        'alter',
+        // Ein Testmerker mit fuenf Minuten Lebensdauer. Zurueckbehalten
+        // wuerde er nach jedem Neustart des Miniservers eine
+        // Test-Pushnachricht ausloesen, deren Anlass laengst vorbei ist.
+        'ptest',
+        // Das Lebenszeichen ist NIE retained - zurueckbehalten zeigte es
+        // immer "lebt", und dann beantwortet es die Frage nicht mehr,
+        // fuer die es da ist.
+        'status/ok', 'status/ts', 'status/zaehler',
+    );
+}
+
+/** Kurzform fuer den Sender und die Thementabelle. */
+function awm_mqtt_retain($thema)
+{
+    return !in_array((string) $thema, awm_mqtt_nicht_retained(), true);
+}
+
+/**
  * Themen ans Gateway geben - EINE Stelle fuer alle Sender.
  *
  * $msgs ist Thema (ohne Praefix) => Wert. Rueckgabe: Zahl der abgesetzten
@@ -1850,7 +1898,14 @@ function awm_mqtt_senden($msgs, $cal = 1)
     }
     $n = 0;
     foreach ($msgs as $k => $v) {
-        $msg = 'publish ' . $prefix . '/' . $k . ' ' . awm_mqtt_wert_saeubern($v);
+        /* 'retain <thema> <wert>' statt 'publish <thema> <wert>' - siehe
+         * awm_mqtt_nicht_retained(). Das erste Wort entscheidet; ein
+         * unbekanntes erstes Wort liest das Gateway als Thema und faellt auf
+         * 'publish' zurueck (mqttgateway.pl), ein Tippfehler waere also
+         * still. Deshalb kommt das Wort aus einer Funktion, nicht aus einer
+         * Zeichenkette an der Sendestelle. */
+        $befehl = awm_mqtt_retain($k) ? 'retain ' : 'publish ';
+        $msg = $befehl . $prefix . '/' . $k . ' ' . awm_mqtt_wert_saeubern($v);
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport);
         $n++;
     }
@@ -2885,6 +2940,38 @@ function awm_selbstpruefung_robust()
     $p(awm_zaehler(false) >= -1 && awm_zaehler(false) <= 999,
        'Der Herzschlag liegt zwischen -1 und 999');
 
+    /* --- 7b. Retain (ab 1.4.8) ---
+     *
+     * Drei Fragen, die auseinanderlaufen koennen: Kennt die Ausnahmeliste
+     * nur Themen, die es gibt? Ist das Lebenszeichen wirklich ausgenommen?
+     * Und sagt die Tabelle dasselbe wie der Sender? */
+    $themen = array_keys(awm_mqtt_themen());
+    $ausnahmen = awm_mqtt_nicht_retained();
+    $geister = array();
+    foreach ($ausnahmen as $a) {
+        if (!in_array($a, $themen, true)) { $geister[] = $a; }
+    }
+    $p(!$geister, 'Jede Retain-Ausnahme nennt ein Thema, das es gibt'
+                  . ($geister ? ' - ohne Thema: ' . implode(', ', $geister) : ''));
+
+    $lz_falsch = array();
+    foreach (array('status/ok', 'status/ts', 'status/zaehler') as $lz) {
+        if (awm_mqtt_retain($lz)) { $lz_falsch[] = $lz; }
+    }
+    $p(!$lz_falsch, 'Das Lebenszeichen geht NICHT zurueckbehalten hinaus'
+                    . ($lz_falsch ? ' - falsch: ' . implode(', ', $lz_falsch) : ''));
+
+    $p(!awm_mqtt_retain('alter'),
+       'Das Alter der Kalenderdatei geht nicht zurueckbehalten hinaus');
+    $p(awm_mqtt_retain('ok') && awm_mqtt_retain('warnung') && awm_mqtt_retain('rest_morgen'),
+       'Zustaende gehen zurueckbehalten hinaus (ok, warnung, rest_morgen)');
+
+    $ret = 0;
+    foreach ($themen as $t2) { if (awm_mqtt_retain($t2)) { $ret++; } }
+    $p($ret === count($themen) - count($ausnahmen),
+       sprintf('Retain-Zaehlung stimmt: %d von %d Themen zurueckbehalten, %d Ausnahmen',
+               $ret, count($themen), count($ausnahmen)));
+
     /* --- 8. Loxone-Zeit --- */
     $p(awm_loxzeit('20090101') === 0, 'Loxone-Zeit: der 01.01.2009 ist die Null');
     $p(awm_loxzeit('') === 0 && awm_loxzeit('nonsens') === 0,
@@ -3161,9 +3248,9 @@ function awm_vorlage_vo($cal = 1) {
     $cmds = array(
         array('title' => 'Ansage jetzt', 'comment' => 'Spricht sofort in den konfigurierten Zonen',
               'on' => $basis . '?say=1' . $suffix),
-        array('title' => 'Test-Pushnachricht', 'comment' => 'Setzt PTEST fuer fuenf Minuten',
+        array('title' => 'Test-Pushnachricht', 'comment' => 'Setzt PTEST für fünf Minuten',
               'on' => $basis . '?ptest=1' . $suffix),
-        array('title' => 'Quittierung Tonne draussen', 'comment' => 'Setzt ACK bis Mitternacht, die Morgen-Ansage entfaellt',
+        array('title' => 'Quittierung Tonne draußen', 'comment' => 'Setzt ACK bis Mitternacht, die Morgen-Ansage entfällt',
               'on' => $basis . '?ack=1' . $suffix),
         array('title' => 'Jahres-Erneuerung', 'comment' => 'Versucht sofort einen frischen Kalender-Link',
               'on' => $basis . '?renew=1' . $suffix),
@@ -3340,6 +3427,33 @@ function awm_sicherung_lesen($roh)
     }
     if ($anzahl === 0) {
         $mangel[] = awm_t('EINST.SICH_LEER');
+    }
+    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
+     *
+     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
+     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
+     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
+     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
+     * zurueck - quittiert mit "1 Wert uebernommen".
+     *
+     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
+     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
+     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
+     * Bestand ausgerollt (30 Linien).
+     *
+     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
+     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
+     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
+     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
+    $fehlend = array();
+    foreach (array_keys(awm_config_vorgaben()) as $fk) {
+        if (!array_key_exists($fk, $daten)) {
+            $fehlend[] = $fk;
+        }
+    }
+    if ($fehlend) {
+        $mangel[] = sprintf(awm_t('EINST.SICH_FEHLEND'), count($fehlend),
+            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
 }
