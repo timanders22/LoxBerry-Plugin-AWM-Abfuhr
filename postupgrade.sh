@@ -61,7 +61,14 @@ fi
 # stehengebliebener Zwischenspeicher aus 1.3.8 wuerde bis zu zehn Minuten
 # lang eine Zeile ohne die neuen Werte liefern - und die Signatur wuerde
 # gleich bleiben, sodass ueber MQTT gar nichts nachkaeme.
-rm -f /tmp/awmabfuhr/state_*.json /tmp/awmabfuhr/mqtt_sig_*.txt 2>/dev/null
+# mqtt_sig_*.txt gibt es seit 1.4.9 nicht mehr (die Signatur ueber ALLE Werte
+# ist durch den Vergleich je Thema ersetzt); mqtt_letzte_*.json ist der neue
+# Merker und wird hier ebenfalls weggeraeumt - damit schickt der erste
+# Minutenlauf nach dem Update den VOLLEN Satz. Regeln/07: wer auf Retain
+# umstellt oder die Themenmenge aendert, braucht danach einen Vollversand,
+# sonst steht der halbe Zustand nicht im Broker.
+rm -f /tmp/awmabfuhr/state_*.json /tmp/awmabfuhr/mqtt_sig_*.txt \
+      /tmp/awmabfuhr/mqtt_letzte_*.json 2>/dev/null
 
 # Die Konfiguration traegt das Aktionstoken und die iCal-Adresse mit Strasse
 # und Hausnummer - uninstall/uninstall sagt das selbst. Sie gehoert deshalb

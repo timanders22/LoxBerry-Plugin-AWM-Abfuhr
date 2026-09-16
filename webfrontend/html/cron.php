@@ -61,27 +61,22 @@ foreach (awm_cals() as $n => $c) {
      *
      * Mit awm_werte() als Quelle kann das nicht mehr passieren: jeder neue
      * Wert ist automatisch Teil der Signatur. */
-    /* Die Signatur entsteht aus DEM, WAS VERSCHICKT WIRD - nicht aus einer
-     * Teilmenge davon. Bis 1.4.6 stand hier awm_werte(): die vier
-     * Zusatzthemen (Hinweistext und die drei fertigen Saetze) fehlten, und
-     * ein geaenderter Hinweistext blieb bis zum halbstuendlichen Lauf
-     * liegen, obwohl der Kommentar das Gegenteil zusicherte. Der Herzschlag
-     * gehoert NICHT hinein - er aendert sich jede Minute und machte den
-     * Doppelt-senden-Filter wertlos. */
-    $sig = json_encode(awm_mqtt_nutzlast($st, $n));
-    if ($sig === false) {
-        // Waere es false, stimmte es mit keinem gespeicherten Stand ueberein
-        // und das Plugin schickte jede Minute dieselben Werte ans Gateway.
-        $sig = 'unlesbar';
-    }
-    $sigf = awm_tmpdir() . '/mqtt_sig_' . $n . '.txt';
+    /* Nur Aenderungen - und der volle Satz in grobem Takt.
+     *
+     * Bis 1.4.8 stand hier eine Signatur ueber ALLE Werte: aenderte sich
+     * einer, gingen alle 61 Themen hinaus. Der UDP-Eingang des Gateways
+     * verwirft unter solchen Stoessen (am Geraet gemessen, 16.09.2026:
+     * 16,5 % ueber die Lebensdauer, Empfangspuffer dauerhaft voll), und seit
+     * die Zustaende zurueckbehalten hinausgehen, bleibt nach einem Verlust
+     * der ALTE Wert im Broker stehen und sieht aus wie der aktuelle.
+     *
+     * awm_mqtt_publish() vergleicht jetzt Thema fuer Thema und schickt nur,
+     * was neu ist; der volle Satz kommt alle 30 Minuten und nach jedem
+     * Update (dann fehlt der Merker). Regeln/07, Abschnitt 2. */
     $beat = awm_tmpdir() . '/mqtt_beat_' . $n;
-    $old = is_file($sigf) ? (string) file_get_contents($sigf) : '';
-    if ($sig !== $old || !is_file($beat) || time() - filemtime($beat) > 1800) {
-        awm_mqtt_publish($st, $n);
-        awm_datei_schreiben($sigf, $sig);
-        @touch($beat);
-    }
+    $voll = !is_file($beat) || time() - filemtime($beat) > 1800;
+    awm_mqtt_publish($st, $n, $voll);
+    if ($voll) { @touch($beat); }
     /* Das Lebenszeichen geht bei JEDEM Durchgang hinaus, am Filter vorbei -
      * Hausstandard seit 26.08.2026. Ein virtueller Eingang behaelt sonst
      * seine letzte 1, und ein toter Minutenlauf sieht aus wie ein gesunder. */

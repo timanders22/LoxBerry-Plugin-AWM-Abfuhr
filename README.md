@@ -8,6 +8,41 @@ vielen Tagen kommt die nächste Leerung. Dazu **Vorabend-Ansage**
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.4.9
+
+- **Es gehen nur noch die Themen hinaus, deren Wert sich geändert hat.** Bis
+  1.4.8 schickte jede Änderung irgendeines Wertes den **ganzen** Satz — 61
+  Datagramme in einem Stoß. Am Gerät gemessen (16.09.2026): der
+  Empfangspuffer des MQTT-Gateways auf Port 11884 steht dauerhaft bei rund
+  46 kB, und der Kernel hat **1 146 176 von 6 933 061 Datagrammen verworfen —
+  16,5 %**. In einer Mitschrift über zwei Minutenläufe kamen 62 der 64 Themen
+  an; zwei fehlten. Der Absender merkt davon nichts: `sendto()` meldet auch
+  für ein verworfenes Datagramm Erfolg.
+
+  Seit 1.4.8 gehen die Zustände zurückbehalten hinaus — und damit wird aus
+  einem verlorenen Datagramm ein Schaden, den man nicht sieht: im Broker
+  bleibt der **alte** Wert stehen und sieht aus wie der aktuelle, bis der
+  nächste Vollversand kommt.
+
+  Gemessen an einem eigenen UDP-Fänger, beide PHP-Fassungen:
+
+  | Lauf | bis 1.4.8 | ab 1.4.9 |
+  |---|---|---|
+  | nichts geändert | 3 (nur Lebenszeichen) | 3 |
+  | ein Wert geändert | **64** | **4** — Lebenszeichen und das eine Thema |
+  | alle 30 Minuten | 64 | 64 |
+  | erster Lauf nach dem Update | 64 | 64 |
+
+  Der volle Satz alle 30 Minuten bleibt: ein neu aufgesetzter Broker hat die
+  zurückbehaltenen Werte sonst nicht. Der Merker wird nur fortgeschrieben,
+  wenn wirklich etwas hinausging — sonst gälte ein Lauf ohne Broker als
+  erledigt, und Felder, die tagelang gleich stehen, fehlten dauerhaft.
+  Bauart von ACTiKamera 1.9.19.
+
+- **Die drei `.cfg` tragen jetzt LF** statt CRLF. Hausbrauch in Plugin-Ordnern
+  seit dem 13.09.2026; das Freigabetor meldete sie. Am Inhalt ändert sich
+  nichts.
+
 ## Neu in 1.4.8
 
 - **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 1.4.7 kam er von der

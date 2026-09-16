@@ -1936,14 +1936,72 @@ function awm_mqtt_lebenszeichen($cal = 1, $ok = 1, $zaehler = null)
     ), $cal);
 }
 
-function awm_mqtt_publish($st = null, $cal = 1) {
+/** Wo der Merker der zuletzt gesendeten Werte liegt - je Kalender einer. */
+function awm_mqtt_merker($cal = 1)
+{
+    return awm_tmpdir() . '/mqtt_letzte_' . max(1, (int) $cal) . '.json';
+}
+
+/**
+ * Welche Themen haben sich gegenueber dem letzten Versand geaendert?
+ *
+ * Eigene Funktion, damit die Selbstpruefung sie messen kann, ohne etwas zu
+ * senden oder zu schreiben. Verglichen wird als Zeichenkette: aus dem
+ * Merker kommen die Werte durch json_decode() zurueck, und dort ist aus der
+ * ganzen Zahl 0 schon einmal die Zeichenkette "0" geworden - ein Vergleich
+ * mit !== haette dann jedes Mal alles gesendet.
+ */
+function awm_mqtt_diff($jetzt, $vorher)
+{
+    $neu = array();
+    foreach ((array) $jetzt as $k => $v) {
+        if (!array_key_exists($k, (array) $vorher)
+                || (string) $vorher[$k] !== (string) $v) {
+            $neu[$k] = $v;
+        }
+    }
+    return $neu;
+}
+
+/**
+ * Zustand veroeffentlichen - nur die Themen, deren Wert sich geaendert hat.
+ *
+ * WARUM NICHT MEHR ALLES AUF EINMAL (neu in 1.4.9):
+ *
+ * Bis 1.4.8 ging bei JEDER Aenderung irgendeines Wertes der GANZE Satz
+ * hinaus - 61 Datagramme in einem Stoss. Der UDP-Eingang des Gateways
+ * vertraegt das nicht. Am Geraet gemessen (16.09.2026): der Empfangspuffer
+ * auf Port 11884 steht dauerhaft bei rund 46 kB, und der Kernel hat
+ * 1 146 176 von 6 933 061 Datagrammen verworfen - 16,5 %. In einer
+ * Mitschrift ueber zwei Minutenlaeufe kamen 62 der 64 Themen an; zwei
+ * fehlten. Der Absender merkt davon nichts: sendto() meldet auch fuer ein
+ * verworfenes Datagramm Erfolg (Regeln/07).
+ *
+ * Seit 1.4.8 gehen die Zustaende zurueckbehalten hinaus - und damit wird aus
+ * einem verlorenen Datagramm ein Schaden, den man nicht sieht: im Broker
+ * bleibt der ALTE Wert stehen und sieht aus wie der aktuelle, bis der
+ * naechste Vollversand kommt. Das kann eine halbe Stunde dauern.
+ *
+ * Die Hausregel dazu ist aelter als der Befund (Regeln/07, Abschnitt 2):
+ * "Wer regelmaessig viele Werte veroeffentlicht, sendet nur Aenderungen und
+ * den vollen Satz in grobem Takt." Genau das tut diese Funktion jetzt.
+ * Bauart wortgleich von ACTiKamera 1.9.19 (cam_mqtt_zustand) uebernommen -
+ * samt der dortigen Lehre: der Merker wird NUR fortgeschrieben, wenn wirklich
+ * etwas hinausging. Sonst gilt ein Lauf ohne Broker, ohne UDP-Port oder ohne
+ * Netz als erledigt, und die Werte kommen erst bei der naechsten Aenderung
+ * wieder - Felder, die tagelang gleich stehen, fehlten dann dauerhaft.
+ *
+ * $erzwingen = true schickt alles (Vollversand, 30-Minuten-Takt und nach
+ * einem Update). Rueckgabe: Zahl der abgesetzten Themen.
+ */
+function awm_mqtt_publish($st = null, $cal = 1, $erzwingen = false) {
     $cfg = awm_config();
     if (empty($cfg['mqtt_enabled'])) {
-        return;
+        return 0;
     }
     $p = awm_paths();
     if ($p['lbhome'] === '') {
-        return;
+        return 0;
     }
     if ($st === null) {
         $st = awm_state(false, $cal);
@@ -1951,7 +2009,23 @@ function awm_mqtt_publish($st = null, $cal = 1) {
     /* Dieselbe Quelle wie die HTTP-Zeile. Bis 1.3.8 rechnete jeder Weg
      * selbst, und sie liefen auseinander: MQTT hatte 23 Werte, HTTP 19. */
     $msgs = awm_mqtt_nutzlast($st, $cal);
-    awm_mqtt_senden($msgs, $cal);
+
+    $merker = awm_mqtt_merker($cal);
+    $vorher = array();
+    if (!$erzwingen && is_file($merker)) {
+        $d = json_decode((string) @file_get_contents($merker), true);
+        if (is_array($d)) { $vorher = $d; }
+    }
+    $neu = awm_mqtt_diff($msgs, $vorher);
+    if (!$neu) {
+        return 0;
+    }
+    if (awm_mqtt_senden($neu, $cal) < 1) {
+        return 0;       // nichts hinausgegangen - Merker NICHT fortschreiben
+    }
+    $js = json_encode($msgs);
+    if ($js !== false) { awm_datei_schreiben($merker, $js); }
+    return count($neu);
 }
 
 /**
@@ -2971,6 +3045,33 @@ function awm_selbstpruefung_robust()
     $p($ret === count($themen) - count($ausnahmen),
        sprintf('Retain-Zaehlung stimmt: %d von %d Themen zurueckbehalten, %d Ausnahmen',
                $ret, count($themen), count($ausnahmen)));
+
+    /* --- 7c. Nur Aenderungen senden (ab 1.4.9) ---
+     *
+     * Gemessen wird die Vergleichsfunktion, nicht das Senden - sie
+     * entscheidet, wie viele Datagramme in den UDP-Eingang gehen. */
+    $a = array('ok' => 1, 'alter' => 5, 'text_heute' => 'Heute: nichts.');
+    $p(count(awm_mqtt_diff($a, $a)) === 0,
+       'Unveraendert: kein einziges Thema geht hinaus');
+    $b = $a;
+    $b['alter'] = 6;
+    $d1 = awm_mqtt_diff($b, $a);
+    $p(count($d1) === 1 && array_key_exists('alter', $d1),
+       'Ein geaenderter Wert: genau dieses eine Thema geht hinaus');
+    $d2 = awm_mqtt_diff($a, array());
+    $p(count($d2) === count($a),
+       'Ohne Merker (erster Lauf, nach einem Update): alles geht hinaus');
+    $c2 = $a;
+    $c2['neu_dazu'] = 1;
+    $d3 = awm_mqtt_diff($c2, $a);
+    $p(count($d3) === 1 && array_key_exists('neu_dazu', $d3),
+       'Ein neues Thema geht hinaus, auch wenn sonst alles gleich blieb');
+    /* Die Falle, wegen der als Zeichenkette verglichen wird: json_decode()
+     * macht aus 0 unter Umstaenden "0". Ein Vergleich mit !== haette dann
+     * bei jedem Lauf alles gesendet - und genau das soll die Aenderung
+     * verhindern. */
+    $p(count(awm_mqtt_diff(array('ok' => 0), array('ok' => '0'))) === 0,
+       'Zahl 0 und Zeichenkette "0" gelten als derselbe Wert');
 
     /* --- 8. Loxone-Zeit --- */
     $p(awm_loxzeit('20090101') === 0, 'Loxone-Zeit: der 01.01.2009 ist die Null');
