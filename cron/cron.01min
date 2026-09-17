@@ -1,6 +1,6 @@
 #!/bin/sh
 # Abfuhrkalender AWM - minutlicher Cron (Abruf-Intervall, Ansage-Zeitpunkt, MQTT)
-# REPLACELBPHTMLDIR wird bei der Installation durch den Plugin-HTML-Pfad ersetzt.
+# Den HTML-Pfad des Plugins setzt der Installer in der Befehlszeile ein.
 #
 # Die Fehlerausgabe geht NICHT nach /dev/null: ein Fatal nach einem
 # PHP-Upgrade oder ein dauerhaft klemmender Lauf waere sonst unsichtbar - zu

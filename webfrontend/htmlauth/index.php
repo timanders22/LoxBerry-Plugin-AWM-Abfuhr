@@ -690,6 +690,11 @@ if ($aw_frame) {
 .sm-tbl { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.9em; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ccc; padding: 5px 7px; text-align: left; vertical-align: top; }
 .sm-tbl th { background: #eef3e6; font-weight: 600; }
+/* Wortgetreu aus VORLAGE_hausstandard.css.html (B54, 17.09.2026): jede Tabelle
+   mit Eingabefeldern kommt in .sm-breit. lb-content schneidet seitlich ab; an
+   BatterieBMS waren so zwei Spalten im Browser nicht erreichbar. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 .sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
     padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
 .sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
@@ -834,6 +839,7 @@ if ($aw_frame) {
 <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
 
 <h2><?= aw_t('EINST.H_QUELLEN') ?></h2>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th style="width:34px;">Nr.</th><th style="width:150px;"><?= aw_t('EINST.T_NAME') ?></th>
     <th><?= aw_t('EINST.T_URL') ?></th>
@@ -852,6 +858,7 @@ if ($aw_frame) {
 </tr>
 <?php } ?>
 </table>
+</div>
 <div class="sm-hilfe"><?= awm_t('EINST.H_QUELLEN_HILFE') ?></div>
 
 <div class="sm-step"><b><?= aw_t('EINST.AWM_TITEL') ?></b><br>
@@ -1034,6 +1041,7 @@ if ($aw_frame) {
   </select>
   <div class="sm-hilfe"><?= aw_t('TONNEN.H_MODUS') ?></div>
 </div>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?= aw_t('TONNEN.T_TITEL') ?></th><th style="width:60px;"><?= aw_t('TONNEN.T_ANZAHL') ?></th>
     <th><?= aw_t('TONNEN.T_JETZT') ?></th><th style="width:170px;"><?= aw_t('TONNEN.T_TONNE') ?></th>
@@ -1070,6 +1078,7 @@ if ($aw_frame) {
 </tr>
 <?php $aw_k++; } ?>
 </table>
+</div>
 <div class="sm-hilfe"><?= aw_t('TONNEN.FUSSNOTE') ?></div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= aw_t('LEGENDE.AKTION') ?></span>
@@ -1086,6 +1095,7 @@ if ($aw_frame) {
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
 <input data-role="none" type="hidden" name="term_cal" value="<?= (int) $aw_bcal ?>">
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th style="width:140px;"><?= aw_t('EIGEN.T_DATUM') ?></th><th style="width:170px;"><?= aw_t('EIGEN.T_TONNE') ?></th><th><?= aw_t('EIGEN.T_TEXT') ?></th></tr>
 <?php
@@ -1103,6 +1113,7 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 </tr>
 <?php } ?>
 </table>
+</div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= aw_t('LEGENDE.AKTION') ?></span>
 </div>
