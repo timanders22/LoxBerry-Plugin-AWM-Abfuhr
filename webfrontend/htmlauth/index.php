@@ -493,11 +493,12 @@ if ($aw_post && isset($_POST['save'])) {
     $aw_new['hinweis_woerter'] = $aw_hw !== '' ? $aw_hw : AWM_HINWEIS_STANDARD;
     $aw_zeit = (string) (isset($_POST['notify_time']) ? $_POST['notify_time'] : '');
     $aw_zeit2 = (string) (isset($_POST['notify_time2']) ? $_POST['notify_time2'] : '');
-    if ($aw_zeit !== '' && !preg_match('/^\d{1,2}:\d{2}$/', $aw_zeit)) {
+    // \z statt $: $ liesse "18:00\n" durch, und gespeichert wird der Rohwert.
+    if ($aw_zeit !== '' && !preg_match('/^\d{1,2}:\d{2}\z/', $aw_zeit)) {
         $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_zeit);
         $aw_zeit = (string) $aw_new['notify']['time'];
     }
-    if ($aw_zeit2 !== '' && !preg_match('/^\d{1,2}:\d{2}$/', $aw_zeit2)) {
+    if ($aw_zeit2 !== '' && !preg_match('/^\d{1,2}:\d{2}\z/', $aw_zeit2)) {
         $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_zeit2);
         $aw_zeit2 = (string) $aw_new['notify']['time2'];
     }
@@ -521,8 +522,8 @@ if ($aw_post && isset($_POST['save'])) {
     $aw_new['ruhe'] = array(
         'urlaub' => isset($_POST['ruhe_urlaub']) ? 1 : 0,
         'nachts' => isset($_POST['ruhe_nachts']) ? 1 : 0,
-        'von' => preg_match('/^\d{1,2}:\d{2}$/', (string) (isset($_POST['ruhe_von']) ? $_POST['ruhe_von'] : '')) ? $_POST['ruhe_von'] : '22:00',
-        'bis' => preg_match('/^\d{1,2}:\d{2}$/', (string) (isset($_POST['ruhe_bis_zeit']) ? $_POST['ruhe_bis_zeit'] : '')) ? $_POST['ruhe_bis_zeit'] : '07:00',
+        'von' => preg_match('/^\d{1,2}:\d{2}\z/', (string) (isset($_POST['ruhe_von']) ? $_POST['ruhe_von'] : '')) ? $_POST['ruhe_von'] : '22:00',
+        'bis' => preg_match('/^\d{1,2}:\d{2}\z/', (string) (isset($_POST['ruhe_bis_zeit']) ? $_POST['ruhe_bis_zeit'] : '')) ? $_POST['ruhe_bis_zeit'] : '07:00',
         'bis_datum' => $aw_bd_ymd,
     );
     $aw_mode = (string) (isset($_POST['tts_mode']) ? $_POST['tts_mode'] : 'musicserver');

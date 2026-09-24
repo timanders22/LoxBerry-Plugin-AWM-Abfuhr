@@ -177,6 +177,19 @@ function awm_config_teilvorgaben()
  * Regeln/05: "Jeder Wert der Sicherungsdatei wird geprueft, nicht nur der
  * Schluessel", und die Pruefung ist DIESELBE wie im Formular - sonst sind es
  * zwei Listen, und sie laufen auseinander.
+ *
+ * Die Muster enden auf \z, nicht auf $: in PCRE passt $ auch vor einem
+ * Zeilenumbruch am Ende. Bis 1.4.10 nahm eine Sicherungsdatei mit
+ * "aktionstoken": "abc123\n" deshalb ohne Beanstandung an, und jede in
+ * Loxone eingetragene Adresse war danach stumm ungueltig (gemessen
+ * 24.09.2026 unter PHP 7.4 und 8.4). Dieselbe Bauart stand im Formular
+ * bei den vier Uhrzeiten (index.php) - dort ebenso berichtigt.
+ *
+ * Die Uhrzeiten hatten dazu einen zweiten Weg: awm_zeit_normal() trimmt,
+ * geprueft wurde also die getrimmte Kopie, gespeichert aber der Rohwert
+ * "18:00\n". awm_ist_zeit() verlangt deshalb, dass der Wert selbst schon
+ * ohne Rand steht. awm_tagnummer() bleibt: das Urlaubsende wird vor der
+ * Benutzung auf Ziffern reduziert.
  * ================================================================== */
 
 /** Uhrzeit auf HH:MM bringen; '' wenn es keine ist. */
@@ -187,6 +200,13 @@ function awm_zeit_normal($t)
     $i = (int) $m[2];
     if ($h > 23 || $i > 59) { return ''; }
     return sprintf('%02d:%02d', $h, $i);
+}
+
+/** Eine Uhrzeit, so wie sie gespeichert wird - ohne Weissraum am Rand? */
+function awm_ist_zeit($v)
+{
+    if (!is_string($v)) { return false; }
+    return $v === trim($v) && awm_zeit_normal($v) !== '';
 }
 
 /** Taugt der Wert ueberhaupt fuer eine Konfigurationsdatei? (Form) */
@@ -255,7 +275,7 @@ function awm_wert_pruefen($schluessel, $wert)
             // Dasselbe Muster wie das MQTT-Formular. '#' und '+' sind
             // Platzhalter des Brokers und haben in einem Thema nichts zu
             // suchen, das ein Plugin selbst belegt.
-            return preg_match('#^[A-Za-z0-9_\-/]+$#', (string) $wert)
+            return preg_match('#^[A-Za-z0-9_\-/]+\z#', (string) $wert)
                 ? '' : 'MQTT-Thema enthaelt unzulaessige Zeichen';
         case 'notify':
             if (!is_array($wert)) { return 'muss eine Liste sein'; }
@@ -263,7 +283,7 @@ function awm_wert_pruefen($schluessel, $wert)
                 if (isset($wert[$k]) && !awm_ist_schalter($wert[$k])) { return $k . ' muss 0 oder 1 sein'; }
             }
             foreach (array('time', 'time2') as $k) {
-                if (isset($wert[$k]) && awm_zeit_normal($wert[$k]) === '') { return $k . ' ist keine Uhrzeit'; }
+                if (isset($wert[$k]) && !awm_ist_zeit($wert[$k])) { return $k . ' ist keine Uhrzeit'; }
             }
             return '';
         case 'tts':
@@ -275,7 +295,7 @@ function awm_wert_pruefen($schluessel, $wert)
             if (isset($wert['port']) && !awm_ist_zahl($wert['port'], 1, 65535)) { return 'Port ausserhalb 1..65535'; }
             if (isset($wert['volume']) && !awm_ist_zahl($wert['volume'], 1, 100)) { return 'Lautstaerke ausserhalb 1..100'; }
             if (isset($wert['zones']) && !awm_ist_zonen($wert['zones'])) { return 'Zonenangabe ist unzulaessig'; }
-            if (isset($wert['lang']) && !preg_match('/^[a-z]{0,8}$/', (string) $wert['lang'])) { return 'Sprachkuerzel ist unzulaessig'; }
+            if (isset($wert['lang']) && !preg_match('/^[a-z]{0,8}\z/', (string) $wert['lang'])) { return 'Sprachkuerzel ist unzulaessig'; }
             return '';
         case 'ruhe':
             if (!is_array($wert)) { return 'muss eine Liste sein'; }
@@ -283,7 +303,7 @@ function awm_wert_pruefen($schluessel, $wert)
                 if (isset($wert[$k]) && !awm_ist_schalter($wert[$k])) { return $k . ' muss 0 oder 1 sein'; }
             }
             foreach (array('von', 'bis') as $k) {
-                if (isset($wert[$k]) && awm_zeit_normal($wert[$k]) === '') { return 'Ruhezeit ' . $k . ' ist keine Uhrzeit'; }
+                if (isset($wert[$k]) && !awm_ist_zeit($wert[$k])) { return 'Ruhezeit ' . $k . ' ist keine Uhrzeit'; }
             }
             if (isset($wert['bis_datum']) && (string) $wert['bis_datum'] !== ''
                     && awm_tagnummer((string) $wert['bis_datum']) < 0) {
@@ -301,7 +321,7 @@ function awm_wert_pruefen($schluessel, $wert)
              * Ein LEERES Token in einer Sicherungsdatei heisst "kein Token
              * gesichert" und ist zulaessig; ob eines fehlt, entscheidet die
              * Oberflaeche beim Erzeugen (Regeln/05, VolkswagenID 0.9.12). */
-            return preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', (string) $wert)
+            return preg_match('/^[A-Za-z0-9_.\-]{0,64}\z/', (string) $wert)
                 ? '' : 'Aktionstoken enthaelt unzulaessige Zeichen';
     }
     return '';
@@ -310,7 +330,7 @@ function awm_wert_pruefen($schluessel, $wert)
 /** Zonenangabe des Music Servers: Nummern, Komma, Tilde, Leerzeichen. */
 function awm_ist_zonen($v)
 {
-    return is_string($v) && preg_match('/^[0-9,~ ]*$/', $v) === 1;
+    return is_string($v) && preg_match('/^[0-9,~ ]*\z/', $v) === 1;
 }
 
 /**
