@@ -21,6 +21,22 @@ CFGDIR="$BASE/config/plugins/$PFOLDER"
 LOGDIR="$BASE/log/plugins/$PFOLDER"
 DATDIR="$BASE/data/plugins/$PFOLDER"
 mkdir -p "$CFGDIR" "$LOGDIR" "$DATDIR" 2>/dev/null
+# Dieselbe Frage wie am Ende von postinstall.sh: mindestens ein Kalender mit
+# Adresse oder hochgeladener Datei?
+awm_eingerichtet() {
+    [ -s "$1" ] || return 1
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d)) { exit(1); }
+        if (isset($d["ical_url"]) && is_string($d["ical_url"]) && trim($d["ical_url"]) !== "") { exit(0); }
+        foreach ((isset($d["cals"]) && is_array($d["cals"])) ? $d["cals"] : array() as $c) {
+            if (!is_array($c)) { continue; }
+            if (isset($c["url"]) && is_string($c["url"]) && trim($c["url"]) !== "") { exit(0); }
+            if (!empty($c["hochgeladen"])) { exit(0); }
+        }
+        exit(1);' "$1" 2>/dev/null
+}
+AWM_VORHER=0; awm_eingerichtet "$CFGDIR/awm.json" && AWM_VORHER=1
+AWM_GESICHERT=0; awm_eingerichtet "$TMPF/awm.json" && AWM_GESICHERT=1
 
 [ -f "$TMPF/awm.json" ] && cp -p "$TMPF/awm.json" "$CFGDIR/awm.json"
 [ -f "$TMPF/awm.log" ] && cp -p "$TMPF/awm.log" "$LOGDIR/awm.log"
@@ -74,6 +90,18 @@ rm -f /tmp/awmabfuhr/state_*.json /tmp/awmabfuhr/mqtt_sig_*.txt \
 # und Hausnummer - uninstall/uninstall sagt das selbst. Sie gehoert deshalb
 # auf 0600, wie bei Robonect und MG iSmart. Bis 1.4.6 setzte kein einziges
 # Skript dieser Linie ein chmod, und die Datei stand auf 0664.
+# Das Schlusswort zur Konfiguration steht hier nur, wenn postinstall.sh es
+# hierher verwiesen hat: dort war awm.json noch nicht eingerichtet, die
+# Ablage von preupgrade.sh aber schon.
+if [ $AWM_VORHER = 0 ] && [ $AWM_GESICHERT = 1 ]; then
+    if awm_eingerichtet "$CFGDIR/awm.json"; then
+        echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen."
+    else
+        echo "<WARNING> Die Einstellungen liessen sich nicht zurueckholen."
+        echo "<WARNING> Bitte Plugin-Oberflaeche oeffnen und iCal-URL eintragen."
+    fi
+fi
+
 chmod 600 "$CFGDIR/awm.json" 2>/dev/null
 [ -f "$BK" ] && chmod 600 "$BK" 2>/dev/null
 

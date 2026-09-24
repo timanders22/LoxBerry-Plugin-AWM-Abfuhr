@@ -8,6 +8,17 @@ vielen Tagen kommt die nächste Leerung. Dazu **Vorabend-Ansage**
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.4.12
+
+**Nach einem Update fordert die Installation nicht mehr dazu auf, die iCal-URL
+einzutragen, wenn die Einstellungen übernommen sind.** Bis 1.4.11 stand dieser
+Rat am Ende jeder Installation. Jetzt meldet sie „Einstellungen übernommen",
+sobald nach dem Zurückholen mindestens ein Kalender mit Adresse oder
+hochgeladener Datei eingetragen ist. Fehlt die Zweitschrift, holt erst
+`postupgrade.sh` die Einstellungen zurück und meldet dort, ob es gelang;
+scheitert es, erscheint der Rat als Warnung. In WSL nachgestellt
+(`Pruefung-AWM-Abfuhr-1.4.12/`), nicht am Gerät.
+
 ## Neu in 1.4.10
 
 - **Tabellen mit Eingabefeldern rollen seitlich, statt abgeschnitten zu werden.**
