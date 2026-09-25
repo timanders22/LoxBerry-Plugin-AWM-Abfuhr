@@ -8,6 +8,18 @@ vielen Tagen kommt die nächste Leerung. Dazu **Vorabend-Ansage**
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.4.14
+
+Die Rückfrage beim Broker, ob früher zurückbehaltene Werte noch dastehen, liest
+jetzt die Antwort auf jedes Abonnement (SUBACK) Thema für Thema. Bis 1.4.13 wurden
+die Antworten nur gezählt: lehnte der Broker das Lesen ab (Rückgabe 0x80, etwa durch
+eine Zugriffsregel), galt das als „nichts belegt“. Jetzt gilt ein abgelehntes oder
+unvollständig beantwortetes Abonnement als „nicht zu fragen“: kein Merker „vom
+Broker bestätigt“, die Altwerte werden weiter unmittelbar vor dem gültigen Wert
+gelöscht, das Protokoll sagt es, und die Deinstallation leert, statt „nichts zu
+leeren“ zu melden (gemessen in WSL, `Pruefung-AWM-Abfuhr-1.4.14`, Fälle S3, S4, S7,
+S9, S11).
+
 ## Neu in 1.4.13
 
 - **Nur noch drei Themen gehen zurückbehalten (retained) an den Broker:

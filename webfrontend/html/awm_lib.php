@@ -2218,6 +2218,23 @@ function awm_mqtt_behalten_liste(array $themen)
                 if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
                 $art = $pk[0] >> 4;
                 if ($art === 9) {
+                    /* Hinter der Paketkennung je Filter ein Rueckgabebyte, in der
+                       Reihenfolge des SUBSCRIBE mit dieser Kennung; ab 0x80 heisst
+                       abgelehnt (etwa durch eine ACL). Danach schickt der Broker
+                       nichts - bis 1.4.13 wurde das SUBACK nur gezaehlt, und das hiess
+                       "nichts belegt": der Merker laege auf einer Antwort, die keine
+                       war (in WSL gemessen, Pruefung-AWM-Abfuhr-1.4.14, Faelle S3, S4,
+                       S7, S9, S11). Bauart bw_mqtt_behalten_liste(),
+                       Beschattungswaechter 0.9.21. Ein abgelehntes oder unpassendes
+                       SUBACK zaehlt nicht, die Rueckfrage endet "nicht zu fragen". */
+                    $rc = (string) substr($pk[1], 2);
+                    $nr = (strlen($pk[1]) >= 2) ? (int) unpack('n', substr($pk[1], 0, 2))[1] : 0;
+                    if (!isset($pakete[$nr - 1]) || strlen($rc) !== count($pakete[$nr - 1])) { break; }
+                    $abgelehnt = false;
+                    for ($i = 0; $i < strlen($rc); $i++) {
+                        if (ord($rc[$i]) >= 0x80) { $abgelehnt = true; }
+                    }
+                    if ($abgelehnt) { break; }
                     $bestaetigt++;
                     // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
                     if ($bestaetigt >= count($pakete)) {
