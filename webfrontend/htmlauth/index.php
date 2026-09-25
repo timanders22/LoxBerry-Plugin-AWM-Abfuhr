@@ -30,61 +30,45 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
 
-/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
+/* ---- Bibliothek finden: installiert im html-Zweig, im Archiv daneben ----
  *
- * Steht VOR seinem ersten Aufruf: PHP zieht Funktionen, die in einem
- * if-Block stehen, nicht vor - sie entstehen erst, wenn die Zeile
- * ausgefuehrt wird. Bis 1.3.8 stand dieser Block weiter unten und wurde
- * oben schon gerufen; das ging nur gut, weil awm_lib.php ihn mitbringt.
+ * Installiert liegen html/ und htmlauth/ in GETRENNTEN Baeumen. Welche Lage
+ * gilt, entscheidet der eigene Ablageort, nicht die Reihenfolge der
+ * Versuche: liegt diese Datei unter <Wurzel>/webfrontend/htmlauth/plugins/
+ * <ordner>, ist sie installiert, sonst liegt sie in einem ausgepackten
+ * Archiv. Bis 1.4.12 wurden zwei Kandidaten der Reihe nach probiert, der
+ * installierte VOR der eigenen Bibliothek - aus einem Archiv unter /plugin
+ * war das //html/plugins/htmlauth/awm_lib.php ab der Laufwerkswurzel, und
+ * was dort lag, lief als Bibliothek (in WSL gemessen,
+ * Pruefung-AWM-Abfuhr-1.4.13, Fall C6; Bauart Spotpreis-Octopus 1.1.12).
+ *
+ * Wurzel und Ordnername kommen danach aus awm_paths() - EINE Stelle fuer die
+ * Wurzelregel (general.json, Archivmodus). Bis 1.4.12 stand hier eine eigene
+ * Kopie der Wurzelsuche, die ohne general.json auskam.
  */
-if (!function_exists('lb_wurzel_ermitteln')) {
-    function lb_wurzel_ermitteln()
-    {
-        $d = __DIR__;
-        for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
-                return $d;
-            }
-            $eltern = dirname($d);
-            if ($eltern === $d) { break; }
-            $d = $eltern;
-        }
-        return '';
-    }
+$aw_ordner = basename(__DIR__);
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'htmlauth') {
+    $aw_libcand = dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . $aw_ordner . '/awm_lib.php';
+} else {
+    $aw_libcand = dirname(__DIR__) . '/html/awm_lib.php';
 }
-
-$aw_lbhome = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-$aw_plugin = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-if ($aw_lbhome && is_dir($aw_lbhome . '/config/plugins/' . $aw_plugin) === false) {
-    $aw_plugin = basename(dirname(__DIR__));
-    if (is_dir($aw_lbhome . '/config/plugins/' . $aw_plugin) === false) {
-        $aw_plugin = 'awmabfuhr';
-    }
-}
-if ($aw_lbhome) {
-    $aw_sdk = $aw_lbhome . '/libs/phplib/loxberry_system.php';
-    if (file_exists($aw_sdk)) {
-        require_once $aw_sdk;
-        require_once $aw_lbhome . '/libs/phplib/loxberry_web.php';
-    }
-}
-
-// Bibliothek einbinden. Installiert liegen html/ und htmlauth/ in GETRENNTEN
-// Baeumen - der Pfad ueber dirname(__DIR__) trifft nur das entpackte Archiv.
-foreach (array(
-    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . $aw_plugin . '/awm_lib.php',
-    dirname(__DIR__) . '/html/awm_lib.php',
-) as $aw_libcand) {
-    if (is_file($aw_libcand)) {
-        require_once $aw_libcand;
-        break;
-    }
+if (is_file($aw_libcand)) {
+    require_once $aw_libcand;
 }
 if (!function_exists('awm_config')) {
     echo '<p style="font-family:sans-serif;color:#b00">Die Programmbibliothek '
        . '<code>awm_lib.php</code> wurde nicht gefunden. Das Plugin ist unvollstaendig '
        . 'installiert.</p>';
     exit;
+}
+$aw_lbhome = awm_paths()['lbhome'];
+$aw_plugin = awm_paths()['plugin'];
+if ($aw_lbhome !== '') {
+    $aw_sdk = $aw_lbhome . '/libs/phplib/loxberry_system.php';
+    if (file_exists($aw_sdk)) {
+        require_once $aw_sdk;
+        require_once $aw_lbhome . '/libs/phplib/loxberry_web.php';
+    }
 }
 
 $aw_p = awm_paths();

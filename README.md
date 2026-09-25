@@ -8,6 +8,49 @@ vielen Tagen kommt die nächste Leerung. Dazu **Vorabend-Ansage**
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.4.13
+
+- **Nur noch drei Themen gehen zurückbehalten (retained) an den Broker:
+  `audio`, `push` und `letzter`.** Alles, was allein durch die Uhr falsch
+  wird — morgen, heute, „in N Tagen", die nächste Abholung, Hinweis,
+  Fenster, fertige Sätze —, und jede Aussage des Plugins über sich selbst
+  (`ok` „Kalenderdaten vorhanden", `abruf`) gehen flüchtig hinaus. Bis 1.4.12
+  gingen 59 von 64 Themen zurückbehalten hinaus; nach einem Neustart von
+  Broker oder Gateway stand dann zum Beispiel „Restmüll morgen" oder `ok=1`
+  aus einem Lauf, der Tage zurücklag, als aktueller Wert im Miniserver.
+  Entschieden wird jetzt über eine Positivliste — ein neues Thema geht nie
+  still zurückbehalten hinaus, ein leerer Wert nie. Preis: nach einem solchen
+  Neustart fehlen die flüchtigen Werte, bis der nächste volle Satz kommt
+  (spätestens nach 30 Minuten).
+- **Die Altwerte räumt das Plugin selbst ab.** Solange der Broker noch einen
+  zurückbehaltenen Wert einer Vorfassung hält, geht unmittelbar vor dem
+  gültigen Wert eine leere zurückbehaltene Nachricht hinaus. Ob das gewirkt
+  hat, fragt das Plugin beim Broker nach (eigenes MQTT-Abonnement mit den
+  Zugangsdaten aus der `general.json`); erst wenn er bestätigt, dass nichts
+  mehr steht, wird ein Merker gesetzt. Ist der Broker nicht zu fragen, wird
+  ohne Merker in jedem Lauf vor dem Wert abgeräumt — der UDP-Eingang des
+  Gateways verwirft unter Last Datagramme, und das Senden meldet trotzdem
+  Erfolg.
+- **Die Deinstallation leert die zurückbehaltenen Themen** unter dem
+  eingestellten Präfix (Kalender 1 bis 4) und liest beim Broker nach. Ist er
+  nicht zu fragen, leert sie nur die eingerichteten Kalender und sagt, dass
+  nicht nachgelesen wurde. Themen unter einem früher eingestellten Präfix
+  bleiben stehen.
+- **Ein ausgepacktes Archiv wirkt nicht mehr auf die Anlage.** Der
+  Minutenlauf (`cron.php`) arbeitet nur noch aus der Installation oder mit
+  ausdrücklich gesetztem `LBHOMEDIR` und `LBPPLUGINDIR`, sonst bricht er mit
+  einer Meldung ab. Die Wurzelsuche verlangt `config/system/general.json`;
+  die Hakenskripte und die Deinstallation warnen ohne brauchbare Wurzel,
+  statt Pfade ab `/` zu bilden. Sprachdateien, die Bibliothek der Oberfläche
+  und das Ferien-Plugin werden nicht mehr über Pfade ab `/` gesucht.
+- **Eine Sicherung ohne Inhalt wird nicht mehr zurückgespielt,** und die
+  Installation meldet nicht mehr „wiederhergestellt", wenn die Sicherung
+  kaputt oder leer war. Die Jahres-Erneuerung schreibt die Konfiguration mit
+  den Rechten 0600 statt 0664.
+
+Alles in WSL nachgestellt (`Pruefung-AWM-Abfuhr-1.4.13/`, 71 Fälle), nicht
+am Gerät.
+
 ## Neu in 1.4.12
 
 **Nach einem Update fordert die Installation nicht mehr dazu auf, die iCal-URL

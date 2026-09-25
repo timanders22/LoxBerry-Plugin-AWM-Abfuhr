@@ -69,11 +69,18 @@ require_once __DIR__ . '/awm_regeln.php';
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer ohnehin abfangen muss).
+ *
+ * general.json ist die entscheidende Bedingung. Bis 1.4.12 genuegten
+ * config/plugins und webfrontend - genau diese Ordner hinterlaesst ein
+ * Pruefstand auf einem Arbeitsrechner (Regeln/06, Raumklima-Vorfall). In WSL
+ * gemessen (Pruefung-AWM-Abfuhr-1.4.13, Faelle H1 und H2): in einem fremden
+ * Baum ohne general.json nahm diese Bibliothek den Baum als Wurzel, und
+ * cron.php schrieb dort hinein.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -83,7 +90,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -94,34 +102,135 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die Wurzel in der Reihenfolge der Hausregel: erst die Umgebung, dann die
+ * Suche - und danach nichts mehr.
+ *
+ * Ein gesetztes LBHOMEDIR gilt mit config/plugins UND data/plugins darunter -
+ * general.json wird hier nicht verlangt, damit die Attrappen der
+ * Pruefwerkzeuge (Werkzeuge/lb) weiter tragen. Rueckgabe '' heisst "keine
+ * Wurzel"; jeder Aufrufer muss das abfangen. Bauart oc_lbhome() aus
+ * Spotpreis-Octopus 1.1.12. */
+function awm_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if ($h && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
+    }
+    return lb_wurzel_ermitteln();
+}
+
+/* Fuer cron.php: ohne Wurzel (oder aus einem ausgepackten Archiv) nichts tun,
+ * eine Meldung auf stderr, Rueckgabewert 1. Steht dort VOR der Sperre, denn
+ * schon die legt eine Datei an. Bauart oc_keine_wurzel_abbruch() aus
+ * Spotpreis-Octopus 1.1.12. */
+function awm_keine_wurzel_abbruch($programm)
+{
+    $p = awm_paths();
+    if ($p['lbhome'] !== '') { return; }
+    if ($p['archiv'] !== '') {
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde nichts abgerufen, nichts gesendet und nichts geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/webfrontend/html/plugins/<ordner>' . "\n"
+            . 'aufrufen oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
+        . 'Es wurde nichts abgerufen, nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
+}
+
+/**
+ * Die Pfade - der Anlage, oder im Archivmodus die Ersatzpfade.
+ *
+ * Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek dort installiert
+ * liegt (<Wurzel>/webfrontend/html/plugins/<ordner>, physisch verglichen)
+ * oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt ($LBHOMEDIR und
+ * $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit ihrer Attrappe, und so
+ * ruft die Deinstallation cron.php). Sonst ist das ein ausgepacktes Archiv
+ * oder ein Pruefordner, und es gelten die Ersatzpfade im Temp-Ordner.
+ *
+ * Bis 1.4.12 nahm ein Archiv unterhalb einer echten Wurzel diese Wurzel und
+ * den festen Namen 'awmabfuhr' - Konfiguration, Daten, Protokoll der Anlage;
+ * mit $LBHOMEDIR allein, wie es am Geraet in /etc/environment steht, ebenso
+ * (in WSL gemessen, Pruefung-AWM-Abfuhr-1.4.13, Faelle B1, B2, B6, B7). Und
+ * ohne Wurzel lagen die Ersatzpfade im Archiv selbst - aus /webfrontend/html
+ * also ab der Laufwerkswurzel, //config/awm.json (Fall C10) - mit dem
+ * Zwischenspeicher /tmp/awmabfuhr DER ANLAGE (Fall B11). Bauart
+ * oc_paths() aus Spotpreis-Octopus 1.1.12.
+ *
+ * Einmal je Prozess bestimmt: awm_daytype() setzt LBPPLUGINDIR fuer die
+ * Bibliothek des Ferien-Plugins voruebergehend um - danach darf diese
+ * Funktion nicht auf fremde Pfade zeigen.
+ */
 function awm_paths() {
-    $lbhomedir = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
-    $plugindir = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-    if ($lbhomedir && is_dir($lbhomedir . '/config/plugins/' . $plugindir) === false) {
-        $plugindir = 'awmabfuhr';
+    static $p = null;
+    if ($p !== null) {
+        return $p;
     }
-    if ($lbhomedir) {
-        return array(
-            'config' => $lbhomedir . '/config/plugins/' . $plugindir . '/awm.json',
-            'backup' => $lbhomedir . '/config/plugins/' . $plugindir . '.backup.json',
-            'icsbackup' => $lbhomedir . '/config/plugins/' . $plugindir . '.backup.ics',
-            'log' => $lbhomedir . '/log/plugins/' . $plugindir . '/awm.log',
-            'datadir' => $lbhomedir . '/data/plugins/' . $plugindir,
+    $home = awm_lbhome();
+    $ordner = basename(__DIR__);        // installiert: .../html/plugins/<ordner>
+    /* LBPPLUGINDIR ist die Auskunft von LoxBerry SELBST und hat Vorrang. Von
+     * ihr zaehlt nur der letzte Pfadteil, und die Namen, die nachweislich
+     * kein Pluginordner sind, gelten auch dort nicht. Der feste Name greift
+     * nur, wo der abgeleitete kein Pluginordner sein KANN - aus dem
+     * ausgepackten Archiv heisst er 'html'. */
+    $nie = array('', '.', '/', 'html', 'htmlauth', 'bin', 'plugins', 'webfrontend');
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = !in_array($lbp, $nie, true);
+    if ($lbp_gilt) {
+        $ordner = $lbp;
+    } elseif (in_array($ordner, $nie, true)) {
+        $ordner = 'awmabfuhr';           // Archiv: .../webfrontend/html
+    }
+    $gefunden = $home;
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) { $home = ''; }
+    }
+    if ($home !== '') {
+        $p = array(
+            'config' => $home . '/config/plugins/' . $ordner . '/awm.json',
+            'backup' => $home . '/config/plugins/' . $ordner . '.backup.json',
+            'icsbackup' => $home . '/config/plugins/' . $ordner . '.backup.ics',
+            'log' => $home . '/log/plugins/' . $ordner . '/awm.log',
+            'datadir' => $home . '/data/plugins/' . $ordner,
             'tmp' => '/tmp/awmabfuhr',
-            'lbhome' => $lbhomedir,
-            'plugin' => $plugindir,
+            'lbhome' => $home,
+            'plugin' => $ordner,
+            'general' => $home . '/config/system/general.json',
+            'archiv' => '',
         );
+        return $p;
     }
-    return array(
-        'config' => dirname(dirname(__DIR__)) . '/config/awm.json',
-        'backup' => dirname(dirname(__DIR__)) . '/config/awm.backup.json',
-        'icsbackup' => dirname(dirname(__DIR__)) . '/config/awm.backup.ics',
-        'log' => sys_get_temp_dir() . '/awmabfuhr/awm.log',
-        'datadir' => sys_get_temp_dir() . '/awmabfuhr/data',
-        'tmp' => sys_get_temp_dir() . '/awmabfuhr',
+    /* Keine Wurzel (Entwicklung, Pruefstand, fremder Baum) oder Archivmodus:
+     * die Ersatzpfade unter dem Temp-Ordner, unter einem EIGENEN Namen -
+     * nie ein Pfad der Anlage, nie einer ab der Laufwerkswurzel und nie der
+     * Zwischenspeicher /tmp/awmabfuhr der Anlage. cron.php steigt in beiden
+     * Faellen vorher aus (awm_keine_wurzel_abbruch()); MQTT und Meldungen
+     * verlangen eine Wurzel. */
+    $tmp = sys_get_temp_dir() . '/awmabfuhr-archiv';
+    $p = array(
+        'config' => $tmp . '/awm.json',
+        'backup' => $tmp . '/awm.backup.json',
+        'icsbackup' => $tmp . '/awm.backup.ics',
+        'log' => $tmp . '/awm.log',
+        'datadir' => $tmp . '/data',
+        'tmp' => $tmp,
         'lbhome' => '',
-        'plugin' => 'awmabfuhr',
+        'plugin' => $ordner,
+        'general' => '',
+        // Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+        // liegt (Archivmodus) - fuer die Meldung; sonst leer.
+        'archiv' => $gefunden,
     );
+    return $p;
 }
 
 /**
@@ -342,11 +451,41 @@ function awm_ist_zonen($v)
  * unangemeldeten Teil. Die Hausregel verlangt zwei Zugriffswege: einen, der
  * nur liest, und einen, der bei Bedarf anlegt.
  */
+/**
+ * Traegt diese Datei eine Konfiguration, die sich zurueckzuspielen lohnt?
+ *
+ * "Inhalt" heisst nach der Hausregel zur Selbstheilung: ein lesbares
+ * JSON-Objekt UND ein Geheimnis bzw. eine Einrichtung - hier das
+ * Aktionstoken oder mindestens ein Kalender mit Adresse oder hochgeladener
+ * Datei (dieselbe Frage wie awm_eingerichtet() in postinstall.sh, dazu das
+ * Token). Gleichlautend als awm_hat_inhalt() in postinstall.sh und
+ * postupgrade.sh.
+ *
+ * Bis 1.4.12 wurde die Zweitschrift ungeprueft ueber eine leere awm.json
+ * kopiert; eine beschaedigte Zweitschrift ersetzte damit das "{}" (in WSL
+ * gemessen, Pruefung-AWM-Abfuhr-1.4.13, Fall N4).
+ */
+function awm_zweitschrift_hat_inhalt($datei)
+{
+    $d = json_decode(trim((string) @file_get_contents($datei)), true);
+    if (!is_array($d)) { return false; }
+    if (isset($d['aktionstoken']) && is_string($d['aktionstoken'])
+            && trim($d['aktionstoken']) !== '') { return true; }
+    if (isset($d['ical_url']) && is_string($d['ical_url'])
+            && trim($d['ical_url']) !== '') { return true; }
+    foreach ((isset($d['cals']) && is_array($d['cals'])) ? $d['cals'] : array() as $c) {
+        if (!is_array($c)) { continue; }
+        if (isset($c['url']) && is_string($c['url']) && trim($c['url']) !== '') { return true; }
+        if (!empty($c['hochgeladen'])) { return true; }
+    }
+    return false;
+}
+
 function awm_config($anlegen = false) {
     $p = awm_paths();
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
     $leer = ($roh === '' || $roh === '{}' || strpos($roh, '"') === false);
-    if ($leer && is_file($p['backup'])) {
+    if ($leer && is_file($p['backup']) && awm_zweitschrift_hat_inhalt($p['backup'])) {
         if ($anlegen) {
             /* Wie jede andere mkdir-Stelle dieser Datei geklammert. Ohne das
              * is_dir() meldete ein Fehlerbehandler bei jedem Aufruf mit
@@ -1426,7 +1565,13 @@ function awm_daytype($tag = null)
     if ($p['lbhome'] !== '') {
         $kandidaten[] = $p['lbhome'] . '/webfrontend/html/plugins/ferien/ferien_lib.php';
     }
-    $kandidaten[] = dirname(dirname(__DIR__)) . '/html/plugins/ferien/ferien_lib.php';
+    /* Bis 1.4.12 stand hier ein zweiter Kandidat relativ zum eigenen
+     * Ablageort, zwei Ebenen hoch und dann html/plugins/ferien. Installiert
+     * ist das <Wurzel>/webfrontend/html/html/plugins/... und existiert nie;
+     * aus einem ausgepackten Archiv band er fremden Code aus der Umgebung
+     * des Archivs ein, aus /webfrontend/html sogar ab der Laufwerkswurzel
+     * (in WSL gemessen, Pruefung-AWM-Abfuhr-1.4.13, Fall C9). Ohne Wurzel
+     * gibt es kein Ferien-Plugin, das gefragt werden koennte. */
     foreach ($kandidaten as $cand) {
         if (!is_file($cand)) { continue; }
         $merker = getenv('LBPPLUGINDIR');
@@ -1826,60 +1971,449 @@ function awm_mqtt_themen()
 }
 
 /**
- * Geht dieses Thema zurueckbehalten (retained) hinaus?
+ * Welche Themen gehen ZURUECKBEHALTEN (retained) hinaus? Eine POSITIVLISTE.
  *
- * EINE Stelle fuer die Entscheidung - Sender und Thementabelle fragen
- * dieselbe Funktion, sonst behauptet die Anleitung etwas anderes, als der
- * Code tut.
+ * EINE Stelle fuer die Entscheidung - Sender, Thementabelle im Reiter MQTT
+ * und Selbstpruefung fragen dieselbe Funktion, sonst behauptet die
+ * Anleitung etwas anderes, als der Code tut.
  *
- * Hausstandard (Regeln/07, Entscheidung vom 03.09.2026): Zustaende
- * retained, Messwerte mit Zeitbezug nicht, das Lebenszeichen nie. Bis 1.4.7
- * ging ALLES ohne Retain hinaus; gemessen am 06.09.2026 am Broker der
- * Anlage: 0 zurueckbehaltene Themen unter awm/, waehrend der Broker
- * insgesamt 2 158 haelt. Nach einem Neustart des Miniservers oder des
- * Gateways standen die virtuellen Eingaenge damit leer, bis der naechste
- * Vollversand kam - laengstens eine halbe Stunde.
+ * Bis 1.4.12 stand hier eine Ausnahmeliste mit der Vorgabe "retained": 59
+ * von 64 Themen gingen zurueckbehalten hinaus (gemessen an den Archiven
+ * 1.4.8 bis 1.4.12), und jedes neue Thema waere still dazugekommen. Jetzt
+ * geht nur zurueckbehalten hinaus, was hier steht.
  *
- * Dass der UDP-Weg des Gateways das ueberhaupt kann, ist am Geraet im
- * Quelltext gemessen (mqttgateway.pl: die vier Befehle 'publish', 'retain',
- * 'reconnect', 'save_relayed_states'); die Bauart ist von
- * GardenaSmartSystem 1.2.5 uebernommen.
+ * Die Frage je Thema (Regeln/07, Entscheidungen vom 18. und 19.09.2026):
+ * Wer sagt das - ein Geraet bzw. eine Einstellung, oder der Dienst ueber
+ * sich selbst? Und wird der Wert allein durch den Lauf der Uhr falsch?
+ *   ok      "Kalenderdaten vorhanden" - der Dienst ueber seinen eigenen
+ *           Speicher. Stirbt der Minutenlauf, stuende die 1 nach jedem
+ *           Neustart von Broker oder Gateway wieder da. Nie retained.
+ *   abruf   "der letzte Abrufversuch war erfolgreich" - Ergebnis des
+ *           eigenen Abrufs, ebenso eine Aussage des Dienstes ueber sich.
+ *   *_morgen, *_heute, datum_morgen, tage_*, tage_next, luecke, warnung,
+ *   hinweis, hinweis_da, ann, ack, ruhe, text_*
+ *           rechnen von HEUTE aus: um Mitternacht bzw. mit dem Ende ihres
+ *           Fensters werden sie falsch, ohne dass jemand sendet.
+ *   datum_*, zeit_*, datum_next, zeit_next
+ *           die NAECHSTE Abholung - nach dem Termin allein durch die Uhr
+ *           falsch.
+ *   alter, ptest, status/*  wie bisher nicht (Alter, Testmerker,
+ *           Lebenszeichen).
+ * Zurueckbehalten bleibt, was wahr bleibt, bis jemand es aendert.
  *
- * Die Ausnahmen sind einzeln begruendet und werden von der Selbstpruefung
- * gegen die Themenliste gehalten - eine Ausnahme fuer ein Thema, das es
- * nicht gibt, ist ein Befund.
+ * Preis: nach einem Neustart von Broker oder Gateway fehlen die
+ * fluechtigen Themen, bis der naechste volle Satz hinausgeht (spaetestens
+ * nach 30 Minuten, cron.php). Die Altwerte der Vorfassungen raeumt
+ * awm_mqtt_altlast() ab. In WSL gemessen: Pruefung-AWM-Abfuhr-1.4.13,
+ * Faelle R1 bis R15.
  */
-function awm_mqtt_nicht_retained()
+function awm_mqtt_retain_liste()
 {
     return array(
-        // Das Alter IST der Zeitbezug. Ein zurueckbehaltenes Alter ist eine
-        // Falschaussage: nach einem Neustart stuende dort die Stundenzahl
-        // von damals, und genau dieses Feld soll den Ausfall anzeigen.
-        'alter',
-        // Ein Testmerker mit fuenf Minuten Lebensdauer. Zurueckbehalten
-        // wuerde er nach jedem Neustart des Miniservers eine
-        // Test-Pushnachricht ausloesen, deren Anlass laengst vorbei ist.
-        'ptest',
-        // Das Lebenszeichen ist NIE retained - zurueckbehalten zeigte es
-        // immer "lebt", und dann beantwortet es die Frage nicht mehr,
-        // fuer die es da ist.
-        'status/ok', 'status/ts', 'status/zaehler',
+        // Die Freigaben aus der Konfiguration.
+        'audio'   => 1,
+        'push'    => 1,
+        // Der letzte Termin im Kalender - eine Eigenschaft der Datei, kein
+        // Bezug auf heute.
+        'letzter' => 1,
     );
 }
 
-/** Kurzform fuer den Sender und die Thementabelle. */
-function awm_mqtt_retain($thema)
+/**
+ * Geht dieses Thema zurueckbehalten hinaus?
+ *
+ * $wert wird mitgegeben, wo er schon feststeht: eine LEERE Nutzlast LOESCHT
+ * ein zurueckbehaltenes Thema im Broker (mqttgateway.pl; am Geraet am
+ * 19.09.2026 belegt, Regeln/07). Sie geht deshalb immer als publish hinaus.
+ * Bis 1.4.12 ging sie mit retain hinaus (Bestandsliste Klasse E vom
+ * 19.09.2026, Nebenbefund; Fall R12).
+ */
+function awm_mqtt_retain($thema, $wert = null)
 {
-    return !in_array((string) $thema, awm_mqtt_nicht_retained(), true);
+    if ($wert !== null && (string) $wert === '') { return false; }
+    $l = awm_mqtt_retain_liste();
+    return isset($l[(string) $thema]);
+}
+
+/** Das Praefix eines Kalenders - Kalender 1 behaelt die kurzen Themen. */
+function awm_mqtt_praefix($cal = 1)
+{
+    $cfg = awm_config();
+    $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'awm';
+    if ((int) $cal > 1) {
+        $prefix .= '/' . (int) $cal;
+    }
+    return $prefix;
+}
+
+/**
+ * Die Themen, die frueher zurueckbehalten hinausgingen und es heute nicht
+ * mehr tun. Die Liste ist die der Archive 1.4.8 bis 1.4.12, gemessen am
+ * 25.09.2026 (bis 1.4.7 ging nichts zurueckbehalten hinaus); abgezogen wird,
+ * was heute noch in awm_mqtt_retain_liste() steht. Ihre Altwerte stehen auf
+ * bestehenden Anlagen im Broker, bis jemand sie loescht - ein spaeteres
+ * publish ersetzt einen zurueckbehaltenen Wert nicht.
+ */
+function awm_mqtt_frueher_behalten()
+{
+    $frueher = array(
+        'rest_morgen', 'bio_morgen', 'papier_morgen', 'datum_morgen', 'wert_morgen',
+        'ok', 'warnung', 'rest_heute', 'bio_heute', 'papier_heute', 'wert_heute',
+        'tage_rest', 'tage_bio', 'tage_papier', 'tage_wert', 'ann', 'audio', 'push',
+        'glas_morgen', 'sperr_morgen', 'gruen_morgen', 'schad_morgen',
+        'glas_heute', 'sperr_heute', 'gruen_heute', 'schad_heute',
+        'tage_glas', 'tage_sperr', 'tage_gruen', 'tage_schad',
+        'datum_rest', 'datum_bio', 'datum_papier', 'datum_wert',
+        'datum_glas', 'datum_sperr', 'datum_gruen', 'datum_schad',
+        'zeit_rest', 'zeit_bio', 'zeit_papier', 'zeit_wert',
+        'zeit_glas', 'zeit_sperr', 'zeit_gruen', 'zeit_schad',
+        'tage_next', 'datum_next', 'zeit_next', 'abruf', 'letzter', 'hinweis_da',
+        'luecke', 'ack', 'ruhe', 'hinweis', 'text_morgen', 'text_heute', 'text_naechste',
+    );
+    return array_values(array_diff($frueher, array_keys(awm_mqtt_retain_liste())));
+}
+
+/**
+ * Alle Themen, die diese Linie je zurueckbehalten gesendet hat - fuer die
+ * Deinstallation: die heutige Retain-Liste und die frueheren Eintraege.
+ */
+function awm_mqtt_leer_themen()
+{
+    $t = array();
+    foreach (awm_mqtt_frueher_behalten() as $k) { $t[$k] = true; }
+    foreach (array_keys(awm_mqtt_retain_liste()) as $k) { $t[$k] = true; }
+    ksort($t);
+    return array_keys($t);
+}
+
+/**
+ * Den Broker fragen, welche der Themen $themen er zurueckbehaelt - in EINER
+ * Verbindung.
+ *
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true)).
+ * 'ok' heisst: der Broker hat JEDES Abonnement bestaetigt; was dann nicht
+ * unter 'belegt' steht, ist leer. 'unbekannt': er war nicht zu fragen
+ * (keine Wurzel, keine Verbindung, Anmeldung abgewiesen, keine Antwort).
+ *
+ * Warum ueberhaupt fragen: gesendet wird ueber den UDP-Eingang des Gateways,
+ * und dort meldet sendto() auch fuer ein verworfenes Datagramm Erfolg. Am
+ * Geraet gemessen (Regeln/07, "Ein Absender merkt nichts davon", Nachtraege
+ * vom 19.09.2026): Beschattungswaechter 0.9.19 und KODI-NG 1.2.7 setzten
+ * ihren Merker nach dem Senden, der Eingang verwarf, und der Altwert stand
+ * weiter im Broker. Belegt ist das Abraeumen erst, wenn der Broker selbst
+ * sagt, dass nichts mehr dasteht.
+ *
+ * MQTT 3.1.1 von Hand, nur CONNECT, SUBSCRIBE (QoS 0) und DISCONNECT - ohne
+ * fremde Bibliothek; Bauart oc_mqtt_behalten_liste() aus Spotpreis-Octopus
+ * 1.1.12 (dort aus Spotpreis-Tibber 0.9.19). Anders als dort gehen die
+ * Filter in Paketen zu hoechstens 50 hinaus (die Deinstallation fragt bis zu
+ * 236 Themen), und 'ok' verlangt eine Bestaetigung fuer JEDES Paket. Die
+ * Anmeldung nimmt Brokeruser/Brokerpass aus der general.json (Regeln/07,
+ * Abschnitt 2); das Kennwort steht nur im CONNECT-Paket, nie in einem
+ * Protokoll und nie auf einer Kommandozeile.
+ */
+function awm_mqtt_behalten_liste(array $themen)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $p = awm_paths();
+    if ($p['lbhome'] === '' || !is_file($p['general'])) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($p['general']), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross])) { return (string) $m[$gross]; }
+        return isset($m[$klein]) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    /* Ein Paket: array(kopfbyte, rumpf) oder null. */
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('awmrueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu (Abschnitt
+        // CONNECT, Kennwort-Merkmal).
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $pakete = array_chunk(array_keys($soll), 50);
+            $kennung = 0;
+            foreach ($pakete as $teil) {
+                $kennung++;
+                $sub = pack('n', $kennung);
+                foreach ($teil as $t) { $sub .= $zk($t) . chr(0); }
+                @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            }
+            $bestaetigt = 0;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    $bestaetigt++;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    if ($bestaetigt >= count($pakete)) {
+                        $ende = min($ende, microtime(true) + 1.0);
+                    }
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = true;
+                    }
+                }
+            }
+            if ($bestaetigt >= count($pakete)) { $aus['lage'] = 'ok'; }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Welche Altwerte muessen in diesem Lauf noch abgeraeumt werden?
+ *
+ * Rueckgabe array('lage' => 'erledigt'|'belegt'|'unbekannt',
+ *                 'themen' => array(<thema ohne praefix>, ...)).
+ *
+ * Je Lauf, bis der Merker liegt:
+ *   1. den Broker nach allen Themen aus awm_mqtt_frueher_behalten() fragen;
+ *   2. keines belegt -> Merker schreiben, nichts abraeumen ('erledigt');
+ *      einige belegt -> genau diese abraeumen, kein Merker ('belegt'); der
+ *      Aufrufer sendet dann VOLL, damit die leere retain-Nutzlast
+ *      unmittelbar vor dem gueltigen Wert steht;
+ *      nicht zu fragen -> alle, aber nur unmittelbar vor einem Wert, der
+ *      ohnehin hinausgeht ('unbekannt'), KEIN Merker.
+ * Ueber den UDP-Eingang gibt es keinen Merker auf den Sendeerfolg (Regeln/07,
+ * Nachtrag 19.09.2026). Der Merker traegt die Kennung
+ * "leer-bestaetigt <praefix>: <Themenliste>" - ein anderer Inhalt, ein
+ * anderes Praefix, eine andere Liste gilt nicht, ebenso wenig ein Merker,
+ * den eine Vorfassung angelegt haette. Er liegt je Kalender im Datenordner;
+ * purge_installation raeumt ihn bei jedem Upgrade mit ab, dann wird genau
+ * einmal nachgefragt. Bauart oc_mqtt_altlast() aus Spotpreis-Octopus 1.1.12.
+ */
+function awm_mqtt_altlast($praefix, $cal = 1)
+{
+    static $cache = array();
+    $praefix = (string) $praefix;
+    if (isset($cache[$praefix])) { return $cache[$praefix]; }
+    $liste = awm_mqtt_frueher_behalten();
+    $merker = awm_datadir() . '/.mqtt_altlast_geraeumt_' . max(1, (int) $cal);
+    $kennung = 'leer-bestaetigt ' . $praefix . ': ' . implode(' ', $liste);
+    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    $voll = array();
+    foreach ($liste as $t) { $voll[] = $praefix . '/' . $t; }
+    $f = awm_mqtt_behalten_liste($voll);
+    if ($f['lage'] === 'ok' && !$f['belegt']) {
+        if (@file_put_contents($merker, $kennung . "\n") === false) {
+            awm_log_if_changed('mqtt_merker', 'Der Merker ' . $merker . ' liess sich nicht schreiben - '
+                . 'der Broker wird im naechsten Lauf wieder gefragt.');
+        } else {
+            awm_log('MQTT: unter ' . $praefix . '/ steht keines der ' . count($liste)
+                . ' frueher zurueckbehaltenen Themen mehr im Broker (vom Broker bestaetigt).');
+        }
+        return $cache[$praefix] = array('lage' => 'erledigt', 'themen' => array());
+    }
+    if ($f['lage'] === 'ok') {
+        $l = strlen($praefix) + 1;
+        $t = array();
+        foreach (array_keys($f['belegt']) as $v) { $t[] = substr($v, $l); }
+        return $cache[$praefix] = array('lage' => 'belegt', 'themen' => $t);
+    }
+    awm_log_if_changed('mqtt_rueckfrage_' . max(1, (int) $cal), 'Der Broker liess sich nicht befragen, ob unter '
+        . $praefix . '/ noch frueher zurueckbehaltene Werte stehen. Sie werden deshalb '
+        . 'unmittelbar vor jedem Senden geloescht, bis der Broker antwortet.');
+    return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $liste);
+}
+
+/**
+ * Aus der Deinstallation (cron.php --mqtt-leeren): die zurueckbehaltenen
+ * Themen der Linie leeren - unter dem eingestellten Praefix, Kalender 1 bis
+ * AWM_MAX_KALENDER.
+ *
+ * Der Weg ist derselbe wie beim Senden - der UDP-Eingang des Gateways,
+ * "retain <thema> " mit leerer Nutzlast (am Geraet belegt: die leere
+ * Nachricht geht als Loeschung an den Broker, Regeln/07, Nachtraege vom
+ * 19.09.2026). VOR der ersten Runde und nach jeder wird der Broker gefragt
+ * (awm_mqtt_behalten_liste()); hinaus geht nur, was dort noch steht,
+ * hoechstens $runden Runden. Ist der Broker nicht zu fragen, gehen die
+ * Themen der EINGERICHTETEN Kalender in jeder Runde hinaus, und die Ausgabe
+ * sagt, dass nicht nachgelesen wurde - der Eingang verwirft unter Last
+ * Datagramme (Regeln/07), ein blosses Senden ist kein Beleg.
+ *
+ * Bis 1.4.12 raeumte die Deinstallation nichts ab: die zurueckbehaltenen
+ * Themen blieben im Broker, und nach jedem Neustart von Broker oder Gateway
+ * bekam der Miniserver sie wieder - von einem Plugin, das es nicht mehr gibt
+ * (in WSL gemessen, Pruefung-AWM-Abfuhr-1.4.13, Faelle U1 bis U8). Bauart
+ * oc_mqtt_leeren() aus Spotpreis-Octopus 1.1.12.
+ *
+ * Liest die Konfiguration ohne Selbstheilung und schreibt weder Protokoll
+ * noch Datei. Ausgabe im Format der Hakenskripte (<OK>/<INFO>/<WARNING>).
+ * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw.
+ * der Eingang war nicht erreichbar, 2 nicht moeglich.
+ */
+function awm_mqtt_leeren($runden = 3, $pause = 1.0)
+{
+    $p = awm_paths();
+    $cfg = awm_config();
+    $basis = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'awm';
+    $gen = ($p['general'] !== '') ? @json_decode((string) @file_get_contents($p['general']), true) : null;
+    $udpport = 0;
+    if (isset($gen['Mqtt']['Udpinport'])) { $udpport = (int) $gen['Mqtt']['Udpinport']; }
+    if (!$udpport && isset($gen['mqtt']['udpinport'])) { $udpport = (int) $gen['mqtt']['udpinport']; }
+    if (!$udpport) {
+        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $basis . "/ wurden nicht geleert.\n";
+        return 2;
+    }
+    $n_kal = max(1, count(awm_cals()));
+    $alle = array();
+    $eingerichtet = array();
+    for ($k = 1; $k <= AWM_MAX_KALENDER; $k++) {
+        $pr = $k > 1 ? $basis . '/' . $k : $basis;
+        foreach (awm_mqtt_leer_themen() as $t) {
+            $alle[] = $pr . '/' . $t;
+            if ($k <= $n_kal) { $eingerichtet[] = $pr . '/' . $t; }
+        }
+    }
+    $n = count($alle);
+    $f = awm_mqtt_behalten_liste($alle);
+    $nachgelesen = ($f['lage'] === 'ok');
+    $offen = $nachgelesen ? array_keys($f['belegt']) : $eingerichtet;
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $basis
+           . "/ (Kalender 1 bis " . AWM_MAX_KALENDER . ") steht zurueckbehalten - nichts zu leeren.\n";
+        return 0;
+    }
+    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $udpport, $errno, $errstr, 2);
+    if (!$strom) {
+        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $basis . "/ wurden nicht geleert.\n";
+        return 1;
+    }
+    $zu_leeren = count($offen);
+    $datagramme = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) ($pause * 1000000)); }
+        foreach ($offen as $t) {
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest.
+            @fwrite($strom, 'retain ' . $t . ' ');
+            $datagramme++;
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = awm_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($strom);
+    echo "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $basis . "/ mit leerer "
+       . "Nutzlast an den UDP-Eingang " . (int) $udpport . " des Gateways gesendet ("
+       . $datagramme . " Datagramme).\n";
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
+           . "zurueckbehalten.\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
+       . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
+       . "mosquitto_pub -r -n -t <thema> von Hand loeschen. Geleert wurden nur die Themen "
+       . "der eingerichteten Kalender (" . $n_kal . " von " . AWM_MAX_KALENDER . ").\n";
+    return 0;
 }
 
 /**
  * Themen ans Gateway geben - EINE Stelle fuer alle Sender.
  *
- * $msgs ist Thema (ohne Praefix) => Wert. Rueckgabe: Zahl der abgesetzten
- * Themen, -1 wenn gar nicht gesendet werden konnte.
+ * $msgs ist Thema (ohne Praefix) => Wert. $raeumen (Thema => beliebig):
+ * vor diesen Themen geht zuerst eine leere retain-Nutzlast hinaus, die den
+ * Altwert einer Vorfassung loescht (awm_mqtt_altlast()). Rueckgabe: Zahl
+ * der abgesetzten Themen, -1 wenn gar nicht gesendet werden konnte.
  */
-function awm_mqtt_senden($msgs, $cal = 1)
+function awm_mqtt_senden($msgs, $cal = 1, $raeumen = array())
 {
     $cfg = awm_config();
     if (empty($cfg['mqtt_enabled'])) {
@@ -1907,10 +2441,7 @@ function awm_mqtt_senden($msgs, $cal = 1)
               . 'Ohne sie erreicht das Plugin das MQTT-Gateway nicht.'), 'sockets');
         return -1;
     }
-    $prefix = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'awm';
-    if ((int) $cal > 1) { // Kalender 1 behaelt die kurzen Topics
-        $prefix .= '/' . (int) $cal;
-    }
+    $prefix = awm_mqtt_praefix($cal);   // Kalender 1 behaelt die kurzen Topics
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) {
         awm_log('MQTT: UDP-Buchse liess sich nicht oeffnen - keine Veroeffentlichung.');
@@ -1918,14 +2449,24 @@ function awm_mqtt_senden($msgs, $cal = 1)
     }
     $n = 0;
     foreach ($msgs as $k => $v) {
+        $wert = awm_mqtt_wert_saeubern($v);
+        /* Den Altwert einer Vorfassung abraeumen: die leere retain-Nutzlast
+         * geht UNMITTELBAR vor dem gueltigen Wert hinaus (mqttgateway.pl liest
+         * sie als Loeschung; am Geraet am 19.09.2026 belegt, Regeln/07). Wer
+         * das Thema abonniert hat, bekommt die Loeschung als leere Nachricht
+         * und den Wert gleich dahinter. */
+        if (isset($raeumen[$k])) {
+            $leer = 'retain ' . $prefix . '/' . $k . ' ';
+            @socket_sendto($s, $leer, strlen($leer), 0, '127.0.0.1', $udpport);
+        }
         /* 'retain <thema> <wert>' statt 'publish <thema> <wert>' - siehe
-         * awm_mqtt_nicht_retained(). Das erste Wort entscheidet; ein
+         * awm_mqtt_retain_liste(). Das erste Wort entscheidet; ein
          * unbekanntes erstes Wort liest das Gateway als Thema und faellt auf
          * 'publish' zurueck (mqttgateway.pl), ein Tippfehler waere also
          * still. Deshalb kommt das Wort aus einer Funktion, nicht aus einer
          * Zeichenkette an der Sendestelle. */
-        $befehl = awm_mqtt_retain($k) ? 'retain ' : 'publish ';
-        $msg = $befehl . $prefix . '/' . $k . ' ' . awm_mqtt_wert_saeubern($v);
+        $befehl = awm_mqtt_retain($k, $wert) ? 'retain ' : 'publish ';
+        $msg = $befehl . $prefix . '/' . $k . ' ' . $wert;
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport);
         $n++;
     }
@@ -1943,8 +2484,8 @@ function awm_mqtt_senden($msgs, $cal = 1)
  * ganz ohne Lebenszeichen, und bei unveraenderter Signatur schwieg es bis zu
  * einer halben Stunde.
  *
- * Nicht retained - ein zurueckbehaltenes Lebenszeichen zeigt immer "lebt".
- * Der UDP-Weg des Gateways kennt ohnehin nur 'publish'.
+ * Nicht retained - ein zurueckbehaltenes Lebenszeichen zeigt immer "lebt";
+ * die drei Themen stehen nicht in awm_mqtt_retain_liste().
  */
 function awm_mqtt_lebenszeichen($cal = 1, $ok = 1, $zaehler = null)
 {
@@ -2030,6 +2571,15 @@ function awm_mqtt_publish($st = null, $cal = 1, $erzwingen = false) {
      * selbst, und sie liefen auseinander: MQTT hatte 23 Werte, HTTP 19. */
     $msgs = awm_mqtt_nutzlast($st, $cal);
 
+    /* Die Altwerte frueher zurueckbehaltener Themen abraeumen, solange der
+     * Broker sie noch haelt - awm_mqtt_altlast() fragt ihn VORHER. Meldet er
+     * welche, geht dieser Lauf VOLL hinaus: sonst stuende die Loeschung nur
+     * vor den Themen, die sich gerade geaendert haben, und ein Altwert mit
+     * unveraendertem Wert bliebe bis zum halbstuendlichen Vollsatz stehen
+     * (in WSL gemessen, Pruefung-AWM-Abfuhr-1.4.13, Fall R10). */
+    $alt = awm_mqtt_altlast(awm_mqtt_praefix($cal), $cal);
+    if ($alt['lage'] === 'belegt') { $erzwingen = true; }
+
     $merker = awm_mqtt_merker($cal);
     $vorher = array();
     if (!$erzwingen && is_file($merker)) {
@@ -2040,7 +2590,7 @@ function awm_mqtt_publish($st = null, $cal = 1, $erzwingen = false) {
     if (!$neu) {
         return 0;
     }
-    if (awm_mqtt_senden($neu, $cal) < 1) {
+    if (awm_mqtt_senden($neu, $cal, array_flip($alt['themen'])) < 1) {
         return 0;       // nichts hinausgegangen - Merker NICHT fortschreiben
     }
     $js = json_encode($msgs);
@@ -2637,7 +3187,13 @@ function awm_renew($cal = 1) {
     }
     // Erst die Konfiguration, dann die Sicherung - und nur, wenn das
     // Schreiben wirklich geklappt hat.
-    if (!awm_json_schreiben($p['config'], $raw, 0664, true)) {
+    /* 0600 wie jede andere Schreibstelle der Konfiguration (aw_speichern()
+     * in index.php, awm_config_speichern(), postinstall.sh): in der Datei
+     * stehen das Aktionstoken und die iCal-Adresse mit Hausnummer. Bis
+     * 1.4.12 stand hier 0664, und nach jeder gelungenen Jahres-Erneuerung
+     * war die Datei fuer jeden Benutzer lesbar (in WSL gemessen,
+     * Pruefung-AWM-Abfuhr-1.4.13, Fall N6). */
+    if (!awm_json_schreiben($p['config'], $raw, 0600, true)) {
         awm_log('Jahres-Erneuerung: neuer Link gefunden, liess sich aber NICHT speichern - alter Link bleibt gueltig');
         if ($sperre) { flock($sperre, LOCK_UN); fclose($sperre); }
         return false;
@@ -3034,37 +3590,69 @@ function awm_selbstpruefung_robust()
     $p(awm_zaehler(false) >= -1 && awm_zaehler(false) <= 999,
        'Der Herzschlag liegt zwischen -1 und 999');
 
-    /* --- 7b. Retain (ab 1.4.8) ---
+    /* --- 7b. Retain (ab 1.4.8; Positivliste ab 1.4.13) ---
      *
-     * Drei Fragen, die auseinanderlaufen koennen: Kennt die Ausnahmeliste
-     * nur Themen, die es gibt? Ist das Lebenszeichen wirklich ausgenommen?
-     * Und sagt die Tabelle dasselbe wie der Sender? */
+     * Bis 1.4.12 VERLANGTE diese Pruefung, dass ok, warnung und rest_morgen
+     * zurueckbehalten hinausgehen - sie haette jede Behebung rot gemeldet
+     * (Bestandsliste Klasse E vom 19.09.2026). Nach den Entscheidungen vom
+     * 18./19.09.2026 (Regeln/07) und der Nachlese vom 24.09.2026 ist es
+     * umgekehrt: Dienstaussagen und Werte, die allein durch die Uhr falsch
+     * werden, gehen fluechtig hinaus. Geprueft wird deshalb:
+     * Kennt die Liste nur Themen, die es gibt? Ist das Lebenszeichen
+     * ausgenommen? Gehen ok, abruf und alles mit Zeitbezug fluechtig hinaus?
+     * Geht ein unbekanntes Thema fluechtig hinaus (Positivliste)? Und nie
+     * ein leerer Wert zurueckbehalten? */
     $themen = array_keys(awm_mqtt_themen());
-    $ausnahmen = awm_mqtt_nicht_retained();
+    $positiv = array_keys(awm_mqtt_retain_liste());
     $geister = array();
-    foreach ($ausnahmen as $a) {
+    foreach ($positiv as $a) {
         if (!in_array($a, $themen, true)) { $geister[] = $a; }
     }
-    $p(!$geister, 'Jede Retain-Ausnahme nennt ein Thema, das es gibt'
+    $p(!$geister, 'Jeder Eintrag der Retain-Liste nennt ein Thema, das es gibt'
                   . ($geister ? ' - ohne Thema: ' . implode(', ', $geister) : ''));
 
     $lz_falsch = array();
     foreach (array('status/ok', 'status/ts', 'status/zaehler') as $lz) {
-        if (awm_mqtt_retain($lz)) { $lz_falsch[] = $lz; }
+        if (awm_mqtt_retain($lz, '1')) { $lz_falsch[] = $lz; }
     }
     $p(!$lz_falsch, 'Das Lebenszeichen geht NICHT zurueckbehalten hinaus'
                     . ($lz_falsch ? ' - falsch: ' . implode(', ', $lz_falsch) : ''));
 
-    $p(!awm_mqtt_retain('alter'),
+    $p(!awm_mqtt_retain('alter', '1'),
        'Das Alter der Kalenderdatei geht nicht zurueckbehalten hinaus');
-    $p(awm_mqtt_retain('ok') && awm_mqtt_retain('warnung') && awm_mqtt_retain('rest_morgen'),
-       'Zustaende gehen zurueckbehalten hinaus (ok, warnung, rest_morgen)');
+
+    $zeit_falsch = array();
+    foreach (array('ok', 'abruf', 'rest_morgen', 'rest_heute', 'datum_morgen', 'tage_rest',
+                   'datum_rest', 'zeit_rest', 'tage_next', 'datum_next', 'zeit_next', 'warnung',
+                   'hinweis', 'hinweis_da', 'luecke', 'ann', 'ack', 'ruhe', 'ptest',
+                   'text_morgen', 'text_heute', 'text_naechste') as $t0) {
+        if (awm_mqtt_retain($t0, '1')) { $zeit_falsch[] = $t0; }
+    }
+    $p(!$zeit_falsch, 'Dienstaussagen (ok, abruf) und Werte mit Zeitbezug gehen NICHT '
+                      . 'zurueckbehalten hinaus'
+                      . ($zeit_falsch ? ' - falsch: ' . implode(', ', $zeit_falsch) : ''));
+
+    $p(awm_mqtt_retain('audio', '1') && awm_mqtt_retain('push', '1')
+       && awm_mqtt_retain('letzter', '1'),
+       'Freigaben und Kalenderende gehen zurueckbehalten hinaus (audio, push, letzter)');
+    $p(!awm_mqtt_retain('neu_unbekannt', '1'),
+       'Ein Thema, das nicht in der Retain-Liste steht, geht fluechtig hinaus');
+    $p(!awm_mqtt_retain('audio', ''),
+       'Ein leerer Wert geht nie zurueckbehalten hinaus - er loeschte das Thema');
 
     $ret = 0;
-    foreach ($themen as $t2) { if (awm_mqtt_retain($t2)) { $ret++; } }
-    $p($ret === count($themen) - count($ausnahmen),
-       sprintf('Retain-Zaehlung stimmt: %d von %d Themen zurueckbehalten, %d Ausnahmen',
-               $ret, count($themen), count($ausnahmen)));
+    foreach ($themen as $t2) { if (awm_mqtt_retain($t2, '1')) { $ret++; } }
+    $p($ret === count($positiv),
+       sprintf('Retain-Zaehlung stimmt: %d von %d Themen zurueckbehalten',
+               $ret, count($themen)));
+
+    $frueher = awm_mqtt_frueher_behalten();
+    $p(!array_intersect($frueher, $positiv),
+       'Die abzuraeumenden Altwerte enthalten kein heute zurueckbehaltenes Thema');
+    $fr_geister = array_values(array_diff($frueher, $themen));
+    $p(!$fr_geister, sprintf('Jeder der %d abzuraeumenden Altwerte nennt ein Thema, das es gibt',
+                             count($frueher))
+                     . ($fr_geister ? ' - ohne Thema: ' . implode(', ', $fr_geister) : ''));
 
     /* --- 7c. Nur Aenderungen senden (ab 1.4.9) ---
      *
@@ -3159,17 +3747,20 @@ function awm_t($schluessel)
     static $texte = null;
     if ($texte === null) {
         // Installiert liegen die Dateien unter
-        // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
-        // sich aus dem Ablageort dieser Datei.
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) { $home = $k; break; }
-            }
+        // <Wurzel>/templates/plugins/<ordner>/lang/ - Wurzel und Ordner
+        // kommen aus awm_paths(), EINER Stelle fuer die Wurzelregel.
+        //
+        // Bis 1.4.12 stand hier eine eigene Suche mit dem fest verdrahteten
+        // Heimatverzeichnis des Benutzers loxberry als Rueckfall, und ohne
+        // Wurzel wurde der Pfad ab der Laufwerkswurzel gebildet - VOR den
+        // eigenen Sprachdateien. Was dort lag, lieferte die Texte (in WSL
+        // gemessen, Pruefung-AWM-Abfuhr-1.4.13, Faelle C1 und C4).
+        $wo = awm_paths();
+        $pfad = '';
+        if ($wo['lbhome'] !== '') {
+            $pfad = $wo['lbhome'] . '/templates/plugins/' . $wo['plugin'] . '/lang';
         }
-        $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        if ($pfad === '' || !is_dir($pfad)) {
             // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }

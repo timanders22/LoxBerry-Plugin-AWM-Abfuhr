@@ -37,6 +37,25 @@ if (PHP_SAPI !== 'cli') {
 
 require_once __DIR__ . '/awm_lib.php';
 
+/* Nur aus der Installation - oder mit LBHOMEDIR UND LBPPLUGINDIR, wie die
+ * Deinstallation und die Pruefwerkzeuge es ausdruecklich setzen.
+ *
+ * Bis 1.4.12 lief der ganze Minutenlauf (Abruf, MQTT, Ansage,
+ * Jahres-Erneuerung) auch aus einem ausgepackten Archiv gegen die
+ * Konfiguration DER ANLAGE: unterhalb einer echten Wurzel, und mit
+ * LBHOMEDIR allein, wie es am Geraet in /etc/environment steht. Gemessen: er
+ * schrieb in Protokoll und Zwischenspeicher der Anlage, in einem fremden Baum
+ * ohne general.json ebenso (in WSL, Pruefung-AWM-Abfuhr-1.4.13, Faelle B6,
+ * B7, H2). Jetzt: eine Meldung auf stderr und Rueckgabe 1 - VOR der Sperre,
+ * denn schon die legt eine Datei an. */
+if (in_array('--mqtt-leeren', array_slice($argv, 1), true)) {
+    /* Aus uninstall/uninstall: die zurueckbehaltenen Themen der Linie
+     * leeren (awm_mqtt_leeren()). Kein Abruf, keine Sperre, keine Datei. */
+    awm_keine_wurzel_abbruch('cron.php');
+    exit(awm_mqtt_leeren());
+}
+awm_keine_wurzel_abbruch('cron.php');
+
 /* Nur ein Lauf gleichzeitig (Muster FerienFeiertage): der Abruf wartet je
  * Kalender bis zu 20 s - der naechste Minutenlauf soll nicht hineinlaufen. */
 $awm_lock = awm_sperre('cron');

@@ -31,6 +31,65 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-awmabfuhr}"
 BASE="${ARGV5:-$LBHOMEDIR}"
+# Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
+# und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
+# ein Verzeichnis config/plugins, data/plugins UND config/system/general.json
+# traegt. Keine feste Ebenenzahl und kein fest verdrahteter Systempfad danach.
+#
+# Bis 1.4.12 stand hier nur BASE="${5:-$LBHOMEDIR}", ohne jede Pruefung. Ohne
+# beides wurden die Pfade ab der Laufwerkswurzel gebildet (/config/plugins/...,
+# /data/plugins/...), und das Skript meldete trotzdem <OK> bzw. <INFO> (in WSL
+# gemessen, Pruefung-AWM-Abfuhr-1.4.13, Faelle H3 bis H12 und C11 bis C14).
+# general.json ist die Bedingung aus dem Raumklima-Vorfall (Regeln/06): ein
+# LoxBerry hat die Datei immer, ein Pruefstandsrest nie. Findet sich nichts,
+# wird GEWARNT statt vollzogen. Bauart Spotpreis-Octopus 1.1.12.
+awm_wurzel_suchen() {
+    awm_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    awm_i=0
+    while [ -n "$awm_v" ] && [ "$awm_v" != "/" ] && [ "$awm_i" -lt 8 ]; do
+        if [ -d "$awm_v/config/plugins" ] && [ -d "$awm_v/data/plugins" ] \
+           && [ -f "$awm_v/config/system/general.json" ]; then
+            echo "$awm_v"
+            return 0
+        fi
+        awm_v=$(dirname "$awm_v")
+        awm_i=$((awm_i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(awm_wurzel_suchen "$(dirname "$(readlink -f "$0")")") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von"
+    echo "<WARNING> $(dirname "$(readlink -f "$0")") traegt kein Verzeichnis"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde NICHTS geloescht."
+    exit 1
+fi
+
+# Die zurueckbehaltenen MQTT-Themen der Linie leeren - VOR dem Loeschen, denn
+# das Praefix steht in der Konfiguration. Bis 1.4.12 blieben sie nach dem
+# Deinstallieren im Broker stehen, und nach jedem Neustart von Broker oder
+# Gateway bekam der Miniserver sie wieder (in WSL gemessen,
+# Pruefung-AWM-Abfuhr-1.4.13, Faelle U1 bis U8). Geleert wird ueber den Weg
+# der Linie, den UDP-Eingang des Gateways, und beim Broker nachgelesen
+# (awm_mqtt_leeren() in webfrontend/html/awm_lib.php; Bauart
+# Spotpreis-Octopus 1.1.12). Als loxberry, nicht als root; stdin geschlossen,
+# damit su nie auf eine Eingabe wartet.
+AWM_CRON="$BASE/webfrontend/html/plugins/$PFOLDER/cron.php"
+if command -v php >/dev/null 2>&1 && [ -f "$AWM_CRON" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+            timeout 120 php "$AWM_CRON" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 120 php "$AWM_CRON" --mqtt-leeren \
+            < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> PHP oder cron.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
 
 rm -rf "/tmp/$PFOLDER" 2>/dev/null
 rm -rf /tmp/awmabfuhr 2>/dev/null
