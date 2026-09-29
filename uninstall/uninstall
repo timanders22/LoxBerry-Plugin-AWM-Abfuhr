@@ -102,6 +102,23 @@ if [ -n "$BASE" ]; then
     if [ -d "$BASE/config/plugins/$PFOLDER.backup.ics" ]; then
         rm -rf "$BASE/config/plugins/$PFOLDER.backup.ics" 2>/dev/null && ENTFERNT=1
     fi
+    # I1: die bei einer Neuinstallation beiseitegelegten Zweitschriften (.alt)
+    # und die Marke eines abgebrochenen Updates gehoeren mit weg. Nachgezaehlt
+    # wird, ob sie wirklich fort sind.
+    for awm_alt in "$BASE/config/plugins/$PFOLDER.backup.json.alt" "$BASE/config/plugins/$PFOLDER.backup.ics.alt"; do
+        if [ -e "$awm_alt" ] || [ -L "$awm_alt" ]; then
+            rm -rf "${awm_alt:?}" 2>/dev/null
+            if [ -e "$awm_alt" ] || [ -L "$awm_alt" ]; then
+                echo "<WARNING> $awm_alt liess sich nicht entfernen - bitte von Hand loeschen."
+            else
+                ENTFERNT=1
+            fi
+        fi
+    done
+    rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
+    if [ -e "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ]; then
+        echo "<WARNING> Die Marke $BASE/data/plugins/$PFOLDER.upgrade_laeuft liess sich nicht entfernen."
+    fi
 fi
 
 echo "<OK> Arbeitsdateien entfernt."

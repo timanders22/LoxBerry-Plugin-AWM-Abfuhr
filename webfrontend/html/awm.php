@@ -111,11 +111,16 @@ if (isset($_GET['ics'])) {
 if (isset($_GET['json'])) {
     header('Content-Type: application/json; charset=utf-8');
     // Dieselbe Entscheidung wie im Klartext-Zweig - siehe oben.
-    awm_fetch($awm_refresh, $cal);
+    list($awm_fok, $awm_fq) = awm_fetch($awm_refresh, $cal);
     $st = awm_state($awm_refresh, $cal);
     // Die Meldeflags und die fertigen Saetze gehoeren mit hinein - sonst
     // muesste Drittsoftware sie nachbauen.
     $st = array_merge($st, awm_meldeflags($st, $cal));
+    /* C5: eine gebremste Anforderung sagt es ausdruecklich (Regeln/03). */
+    if ($awm_fq === 'gebremst') {
+        $st['refresh'] = 'GEBREMST';
+        $st['refresh_warte'] = awm_sofortabruf_warte($cal);
+    }
     $st['werte'] = awm_werte($st, $cal);
     $st['text'] = array(
         'morgen' => awm_text_morgen($st),
@@ -160,9 +165,13 @@ if (isset($_GET['text'])) {
  */
 function awm_token_ok() {
     $cfg = awm_config();
-    $soll = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
-    if ($soll === '') { return false; }
-    return hash_equals($soll, isset($_GET['token']) ? (string) $_GET['token'] : '');
+    $soll = isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '';
+    /* U2: fail closed - das GESPEICHERTE Token muss eine Zeichenkette nach
+     * dem Muster des Erzeugers sein. Bis 1.4.14 wurde eine Liste zu "Array",
+     * und ?selftest=1&token=Array bekam SELFTEST;OK=1. */
+    if (!awm_token_gueltig($soll)) { return false; }
+    $ist = isset($_GET['token']) ? $_GET['token'] : '';
+    return is_string($ist) && hash_equals($soll, $ist);
 }
 
 /**
@@ -176,12 +185,12 @@ function awm_token_ok() {
  */
 function awm_token_abweisen($praefix) {
     $cfg = awm_config();
-    $soll = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
-    if ($soll === '') {
+    $soll = isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '';
+    if (!awm_token_gueltig($soll)) {
         awm_log_if_changed('token_fehlt',
-            'Ein Aktionsaufruf wurde abgewiesen, weil in der Konfiguration noch '
-            . 'kein Aktionstoken steht. Die Plugin-Oberflaeche legt beim ersten '
-            . 'Aufruf eines an (' . date('Y-m-d H') . ' Uhr).');
+            'Ein Aktionsaufruf wurde abgewiesen, weil in der Konfiguration kein '
+            . 'gueltiges Aktionstoken steht. Die Plugin-Oberflaeche legt beim '
+            . 'naechsten Aufruf eines an (' . date('Y-m-d H') . ' Uhr).');
     }
     http_response_code(403);
     echo $praefix . ";OK=0;ERR=TOKEN\n";
@@ -226,7 +235,16 @@ if (isset($_GET['ptest'])) {
     if (!awm_token_ok()) {
         awm_token_abweisen('PTEST');
     }
-    @file_put_contents(awm_tmpdir() . '/ptest', '1');
+    /* C6: das Schreiben auswerten. Bis 1.4.14 antwortete dieser Zweig
+     * "PTEST;OK=1" auch bei schreibgeschuetztem Zwischenspeicher, und die
+     * Zeile fuer Loxone zeigte danach PTEST=0 (gemessen, WSL). */
+    if (@file_put_contents(awm_tmpdir() . '/ptest', '1') !== 1) {
+        awm_log('Test-Pushnachricht NICHT gesetzt: der Merker ' . awm_tmpdir()
+              . '/ptest liess sich nicht schreiben.');
+        http_response_code(500);
+        echo "PTEST;OK=0;ERR=SCHREIBEN\n";
+        exit;
+    }
     awm_log('Test-Pushnachricht angefordert (PTEST=1 fuer 5 Minuten; Loxone fragt im 300-s-Takt ab)');
     /* Sofort melden, statt bis zu einer Minute auf den Cron zu warten.
      * Ueber HTTP holt sich der Miniserver den Merker beim naechsten Abruf;
@@ -248,7 +266,11 @@ if (isset($_GET['ack'])) {
     if (!awm_token_ok()) {
         awm_token_abweisen('ACK');
     }
-    awm_ack_setzen();
+    if (!awm_ack_setzen()) {                  // C6: fail closed
+        http_response_code(500);
+        echo "ACK;OK=0;ERR=SCHREIBEN\n";
+        exit;
+    }
     foreach (array_keys(awm_cals()) as $awm_n) {
         awm_mqtt_publish(null, $awm_n);
     }
@@ -263,6 +285,27 @@ if (isset($_GET['renew'])) {
     if (!awm_token_ok()) {
         awm_token_abweisen('RENEW');
     }
+    /* C5: hoechstens einmal je Stunde und Kalender. Bis 1.4.14 hatte
+     * ?renew=1 weder Tagesmerker noch Mindestabstand - jeder Aufruf ging mit
+     * bis zu 25 s je Kandidat ins Netz. Der Merker wird VOR dem Versuch
+     * gesetzt, damit auch ein Fehlschlag zaehlt; laesst er sich nicht
+     * schreiben, wird nicht erneuert (fail closed). */
+    $awm_rmerk = awm_tmpdir() . '/renew_hand_' . (int) $cal;
+    clearstatcache(true, $awm_rmerk);
+    $awm_rw = is_file($awm_rmerk) ? filemtime($awm_rmerk) + AWM_RENEW_ABSTAND - time() : 0;
+    if ($awm_rw > 0) {
+        awm_log_if_changed('renew_gebremst_' . (int) $cal, 'Jahres-Erneuerung von Hand fuer Kalender '
+            . (int) $cal . ' gebremst - hoechstens einmal je Stunde (' . date('Y-m-d H') . ' Uhr).');
+        http_response_code(429);
+        echo 'RENEW;OK=0;ERR=GEBREMST;WARTE=' . min(AWM_RENEW_ABSTAND, $awm_rw) . "\n"
+           . "Die Jahres-Erneuerung von Hand ist hoechstens einmal je Stunde erlaubt.\n";
+        exit;
+    }
+    if (@file_put_contents($awm_rmerk, (string) time()) === false) {
+        http_response_code(500);
+        echo "RENEW;OK=0;ERR=SCHREIBEN\n";
+        exit;
+    }
     $ok = awm_renew($cal);
     echo 'RENEW;OK=' . ($ok ? 1 : 0) . "\n" . ($ok ? 'Neuer Link gespeichert.' : 'Erneuerung fehlgeschlagen - Details im Protokoll.') . "\n";
     exit;
@@ -275,6 +318,13 @@ if (isset($_GET['renew'])) {
  */
 list($ok, $quelle) = awm_fetch($awm_refresh, $cal);
 $st = awm_state($awm_refresh, $cal);
+/* C5: ein gebremster Sofortabruf wird ausdruecklich gemeldet - mit dem
+ * Debug-Kopf davor, sonst als eigene Zeile HINTER der Zeile fuer Loxone
+ * (die Suchtexte treffen so weiter zuerst die Zeile MUELL;...). */
+$awm_bremse = ($quelle === 'gebremst')
+    ? 'HINWEIS: ?refresh=1 gebremst - hoechstens ein Sofortabruf je ' . AWM_SOFORT_ABSTAND
+      . ' s und Kalender, naechster in ' . awm_sofortabruf_warte($cal) . ' s. Es gilt der gespeicherte Stand.'
+    : '';
 
 if (isset($_GET['debug'])) {
     $c = awm_cal($cal);
@@ -283,6 +333,7 @@ if (isset($_GET['debug'])) {
     if (isset($_GET['refresh']) && !$awm_refresh) {
         echo "HINWEIS: ?refresh=1 verlangt das Aktionstoken - es wurde der gespeicherte Stand benutzt.\n";
     }
+    if ($awm_bremse !== '') { echo $awm_bremse . "\n"; $awm_bremse = ''; }
     if (!$st['abruf_ok'] && $st['abruf_grund'] !== '') {
         echo 'ABRUF-FEHLER: ' . $st['abruf_grund'] . "\n";
     }
@@ -310,3 +361,4 @@ if (isset($_GET['debug'])) {
  * MQTT-Meldung. Zur Reihenfolge der Felder siehe awm_feldliste(): die
  * ersten neunzehn duerfen sich nicht aendern, neue kommen hinten dazu. */
 echo awm_zeile(awm_werte($st, $cal)) . "\n";
+if ($awm_bremse !== '') { echo $awm_bremse . "\n"; }

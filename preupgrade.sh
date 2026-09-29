@@ -65,6 +65,33 @@ if [ -z "$BASE" ]; then
     exit 1
 fi
 
+# ---------- I1: Marke "Aktualisierung laeuft" - als Erstes ----------
+# Entscheidung 1 (29.09.2026): postinstall.sh spielt Zweitschrift und
+# Kalenderbestand NUR zurueck, wenn diese Marke liegt - ohne Altersvergleich.
+# Bis 1.4.14 gab es sie nicht, und eine Neuinstallation holte Aktionstoken und
+# Kalenderadresse einer frueheren Installation zurueck (Installer-Pruefer,
+# Fall D). cron.php laesst den Takt aus, solange sie liegt (M10); postupgrade.sh
+# raeumt sie ab. Sie liegt NEBEN dem Datenordner, weil purge_installation den
+# Ordner selbst loescht. Laesst sie sich nicht anlegen, hielte postinstall.sh
+# das Update fuer eine Neuinstallation und legte die Einstellungen beiseite -
+# deshalb Abbruch mit rc 2, vor purge_installation (Bauform KODI-NG 1.2.12,
+# APC-UPS 1.2.14). Vorher festhalten, ob schon eine Marke lag: dann hat ein
+# frueherer Versuch DIESES Updates abgebrochen (I3).
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+AWM_MARKE_VORHER=0
+[ -f "$MARKE" ] && AWM_MARKE_VORHER=1
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+# In geschweiften Klammern: sonst schreibt die Schale ihre eigene Meldung
+# ("cannot create ...") am 2>/dev/null vorbei ins Protokoll.
+{ date +%s > "$MARKE"; } 2>/dev/null
+if ! grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen."
+    echo "<FAIL> Ohne sie hielte postinstall.sh dieses Update fuer eine Neuinstallation"
+    echo "<FAIL> und legte die Einstellungen beiseite. Die Aktualisierung wird"
+    echo "<FAIL> abgebrochen; die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
+fi
+
 # Sechstes Argument, wenn es da ist; sonst der alte Weg ueber das
 # Arbeitsverzeichnis, in dem der Installer uns startet.
 if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
@@ -89,6 +116,18 @@ done
 # data/plugins/<ordner> - genau das loescht der Installer im Schritt
 # "Removing old installation", eine Sekunde nachdem preupgrade es hinschreibt.
 BKDIR="$BASE/config/plugins/$PFOLDER.backup.ics"
+# I3 (Entscheidung 1): einen alten Bestand wegraeumen, BEVOR der neue angelegt
+# wird. Bis 1.4.14 blieb eine kalender_3.ics aus einem frueheren Vorgang in
+# $BKDIR liegen und kam mit dem Update zurueck - awm.php?cal=3 meldete danach
+# OK=1 mit einem Termin von 2024 (Installer-Pruefer, Fall E). Ausnahme: die
+# Marke lag schon vor diesem Lauf (abgebrochener Versuch dieses Updates) -
+# dann ist der Bestand dessen Abschrift und bleibt.
+if [ "$AWM_MARKE_VORHER" != "1" ] && [ -d "$BKDIR" ]; then
+    for f in "$BKDIR"/kalender_*.ics; do
+        { [ -e "$f" ] || [ -L "$f" ]; } || continue
+        rm -f "$f" 2>/dev/null
+    done
+fi
 mkdir -p "$BKDIR" 2>/dev/null
 for f in "$BASE/data/plugins/$PFOLDER"/kalender_*.ics; do
     [ -f "$f" ] && [ -s "$f" ] || continue

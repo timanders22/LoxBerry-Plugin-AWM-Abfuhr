@@ -48,6 +48,20 @@ if [ -z "$BASE" ]; then
     exit 1
 fi
 
+# I1: die Marke von preupgrade.sh (data/plugins/<ordner>.upgrade_laeuft) raeumt
+# dieses Skript ab - per trap, also auch, wenn es vorzeitig endet. Der
+# Rueckgabewert bleibt der des Skripts.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+awm_marke_weg() {
+    awm_rc=$?
+    rm -f "$MARKE" 2>/dev/null
+    if [ -e "$MARKE" ]; then
+        echo "<WARNING> Die Marke $MARKE liess sich nicht entfernen - der Minutenlauf setzt bis zu einer Stunde aus."
+    fi
+    exit $awm_rc
+}
+trap awm_marke_weg EXIT
+
 if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
     TMPF="$ARGV6"
 else
@@ -72,10 +86,28 @@ awm_eingerichtet() {
         }
         exit(1);' "$1" 2>/dev/null
 }
+# I2: Ist die Datei ein lesbares JSON-Objekt? ({} zaehlt, eine Liste nicht.)
+awm_json_objekt() {
+    [ -s "$1" ] || return 1
+    php -r '$d = json_decode((string) @file_get_contents($argv[1])); exit(is_object($d) ? 0 : 1);' "$1" 2>/dev/null
+}
 AWM_VORHER=0; awm_eingerichtet "$CFGDIR/awm.json" && AWM_VORHER=1
 AWM_GESICHERT=0; awm_eingerichtet "$TMPF/awm.json" && AWM_GESICHERT=1
 
-[ -f "$TMPF/awm.json" ] && cp -p "$TMPF/awm.json" "$CFGDIR/awm.json"
+# I2: nur ein lesbares JSON-Objekt zurueckspielen. Bis 1.4.14 wurde die Ablage
+# von preupgrade.sh ungeprueft kopiert: eine abgeschnittene awm.json ersetzte
+# die Fassung, die postinstall.sh gerade aus der Zweitschrift repariert hatte,
+# und in fuenf Minutenlaeufen und drei Abrufen standen 287 Zeilen "unlesbar" im
+# Protokoll (Installer-Pruefer, Fall C). Jetzt bleibt die eingespielte Fassung
+# stehen, und es wird gewarnt.
+if [ -f "$TMPF/awm.json" ]; then
+    if awm_json_objekt "$TMPF/awm.json"; then
+        cp -p "$TMPF/awm.json" "$CFGDIR/awm.json"
+    else
+        echo "<WARNING> Die gesicherte Konfiguration aus der Aktualisierung ist kein lesbares JSON-Objekt -"
+        echo "<WARNING> sie wurde nicht zurueckgespielt; es bleibt die von postinstall.sh eingespielte Fassung."
+    fi
+fi
 [ -f "$TMPF/awm.log" ] && cp -p "$TMPF/awm.log" "$LOGDIR/awm.log"
 
 # Kalender zurueckspielen - alle, die gesichert wurden.

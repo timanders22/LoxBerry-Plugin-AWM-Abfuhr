@@ -38,8 +38,20 @@ date_default_timezone_set('Europe/Berlin');
 /** Wartezeit bis zum naechsten Versuch, wenn der Entsorger nicht antwortet. */
 define('AWM_WIEDERHOLUNG', 3600);
 
+/** C5: Mindestabstand eines erzwungenen Abrufs je Kalender (Sekunden). Der
+ *  taktmaessige Abruf zaehlt mit (Regeln/03, Vorgabe 60 s). */
+define('AWM_SOFORT_ABSTAND', 60);
+
+/** C5: Mindestabstand der Jahres-Erneuerung von Hand (?renew=1) je Kalender. */
+define('AWM_RENEW_ABSTAND', 3600);
+
 /** Loxone rechnet in Sekunden seit dem 01.01.2009. */
 define('AWM_LOXEPOCHE', 1230768000);
+
+/** M5: Pause nach jedem Datagramm an den UDP-Eingang des Gateways (Mikro-
+ *  sekunden). Regeln/07: der Eingang verwirft unter Stoessen 17-70 %, "mit
+ *  5 ms 0 von 90". */
+define('AWM_MQTT_PAUSE_US', 5000);
 
 /** So viele Kalender bietet die Oberflaeche an (awm.php nimmt 1..9). */
 define('AWM_MAX_KALENDER', 4);
@@ -318,6 +330,52 @@ function awm_ist_zeit($v)
     return $v === trim($v) && awm_zeit_normal($v) !== '';
 }
 
+/**
+ * Das Muster eines Aktionstokens (U2): 16 bis 64 Kleinbuchstaben und Ziffern,
+ * mit \z. Der Erzeuger (awm_token_erzeugen) bildet 24 Zeichen aus a-z ohne
+ * i, l, o und 2-9. Das Muster laesst das ganze kleine Alphabet und alle
+ * Ziffern zu, damit ein Token einer frueheren Fassung nicht ausgesperrt wird
+ * (den Erzeuger vor 1.4.4 gibt es im Arbeitsordner nicht zum Nachmessen).
+ * Bis 1.4.14 wurde ein Token, das als LISTE in einer Sicherung stand, zu
+ * "Array" und passte auf das alte Muster: awm.php?selftest=1&token=Array
+ * antwortete SELFTEST;OK=1 (Oberflaechen-Pruefer, Befund 2).
+ */
+function awm_token_gueltig($t)
+{
+    return is_string($t) && preg_match('/^[a-z0-9]{16,64}\z/', $t) === 1;
+}
+
+/** Rechnername oder IPv4-Adresse des Music Servers (U4/U5): leer, oder
+ *  Buchstaben, Ziffern, Punkt, Bindestrich - kein Schraegstrich, kein
+ *  Fragezeichen, kein Doppelpunkt (der Port hat ein eigenes Feld). Bis
+ *  1.4.14 wurde "192.0.2.4/x?y" ungeprueft gespeichert, und die Ansage ging an
+ *  http://192.0.2.4/x?y:7091/... */
+function awm_ist_host($v)
+{
+    return is_string($v)
+        && ($v === '' || preg_match('/^[A-Za-z0-9](?:[A-Za-z0-9.\-]{0,251}[A-Za-z0-9])?\z/', $v) === 1);
+}
+
+/** Sprachkuerzel der Ansage: 2 bis 8 Kleinbuchstaben (U4/U5). */
+function awm_ist_sprache($v)
+{
+    return is_string($v) && preg_match('/^[a-z]{2,8}\z/', $v) === 1;
+}
+
+/** Eine Liste von Eintraegen, deren genannte Felder - wenn vorhanden -
+ *  Zeichenketten sind (U6: Zuordnungsregeln, eigene Termine). */
+function awm_ist_objektliste($v, $felder)
+{
+    if (!is_array($v)) { return false; }
+    foreach ($v as $e) {
+        if (!is_array($e)) { return false; }
+        foreach ($felder as $f) {
+            if (isset($e[$f]) && !is_string($e[$f])) { return false; }
+        }
+    }
+    return true;
+}
+
 /** Taugt der Wert ueberhaupt fuer eine Konfigurationsdatei? (Form) */
 function awm_wert_taugt($v)
 {
@@ -350,88 +408,131 @@ function awm_ist_schalter($v)
  */
 function awm_wert_pruefen($schluessel, $wert)
 {
+    /* U2 (Bauart E): eine LISTE nur fuer die Schluessel, die Unterbaeume
+     * sind. Bis 1.4.14 liess awm_wert_taugt() jede Liste durch, und die
+     * Einzelpruefungen machten mit (string) "Array" daraus. */
+    if (is_array($wert) && !in_array($schluessel, array('cals', 'notify', 'tts', 'ruhe', 'ansage'), true)) {
+        return awm_t_oder('PRUEF.G_LISTE', 'muss ein einzelner Wert sein, keine Liste');
+    }
     if (!awm_wert_taugt($wert)) {
-        return 'unzulaessiger Wert (Steuerzeichen, zu lang oder falscher Typ)';
+        return awm_t_oder('PRUEF.G_TAUGT', 'unzulaessiger Wert (Steuerzeichen, zu lang oder falscher Typ)');
     }
     switch ($schluessel) {
         case 'cals':
-            if (!is_array($wert)) { return 'muss eine Liste sein'; }
+            if (!is_array($wert)) { return awm_t_oder('PRUEF.G_KEINE_LISTE', 'muss eine Liste sein'); }
             if (count($wert) > AWM_MAX_KALENDER) {
-                return 'mehr als ' . AWM_MAX_KALENDER . ' Kalender';
+                return sprintf(awm_t_oder('PRUEF.G_ZU_VIELE', 'mehr als %d Kalender'), AWM_MAX_KALENDER);
             }
             foreach ($wert as $c) {
-                if (!is_array($c)) { return 'Kalendereintrag ist keine Liste'; }
+                if (!is_array($c)) { return awm_t_oder('PRUEF.G_EINTRAG', 'Kalendereintrag ist keine Liste'); }
+                /* U6: die Unterschluessel nach Typ - bis 1.4.14 wurden
+                 * name als Liste, termine[].datum als Liste und
+                 * regeln[].muster als Liste angenommen, und unter 8.x stand
+                 * danach bei jedem Seitenaufruf eine Warnung im
+                 * php_fehler.log. */
+                foreach (array('name', 'url', 'regeln_modus') as $tk) {
+                    if (isset($c[$tk]) && !is_string($c[$tk])) {
+                        return sprintf(awm_t_oder('PRUEF.G_CAL_TEXT', '%s eines Kalenders muss Text sein'), $tk);
+                    }
+                }
                 $u = trim((string) (isset($c['url']) ? $c['url'] : ''));
                 if ($u !== '' && !preg_match('#^https?://#i', $u)) {
-                    return 'Kalenderadresse ist keine http(s)-Adresse';
+                    return awm_t_oder('PRUEF.G_URL', 'Kalenderadresse ist keine http(s)-Adresse');
                 }
                 if (isset($c['zonen']) && !awm_ist_zonen($c['zonen'])) {
-                    return 'Zonenangabe eines Kalenders ist unzulaessig';
+                    return awm_t_oder('PRUEF.G_CAL_ZONEN', 'Zonenangabe eines Kalenders ist unzulaessig');
+                }
+                if (isset($c['regeln']) && !awm_ist_objektliste($c['regeln'], array('muster', 'tonne', 'art'))) {
+                    return awm_t_oder('PRUEF.G_CAL_REGELN', 'die Zuordnungsregeln eines Kalenders sind unzulaessig');
+                }
+                if (isset($c['termine']) && !awm_ist_objektliste($c['termine'], array('datum', 'tonne', 'text'))) {
+                    return awm_t_oder('PRUEF.G_CAL_TERMINE', 'die eigenen Termine eines Kalenders sind unzulaessig');
                 }
             }
             return '';
         case 'fetch_days':
-            return awm_ist_zahl($wert, 1, 60) ? '' : 'Abrufabstand ausserhalb 1..60 Tage';
+            return awm_ist_zahl($wert, 1, 60) ? '' : awm_t_oder('PRUEF.G_ABRUF', 'Abrufabstand ausserhalb 1..60 Tage');
         case 'lookahead':
-            return awm_ist_zahl($wert, 7, 90) ? '' : 'Vorschau ausserhalb 7..90 Tage';
+            return awm_ist_zahl($wert, 7, 90) ? '' : awm_t_oder('PRUEF.G_VORSCHAU', 'Vorschau ausserhalb 7..90 Tage');
         case 'autorenew':
         case 'mqtt_enabled':
         case 'melden':
-            return awm_ist_schalter($wert) ? '' : 'muss 0 oder 1 sein';
+            return awm_ist_schalter($wert) ? '' : awm_t_oder('PRUEF.G_SCHALTER', 'muss 0 oder 1 sein');
         case 'hinweis_woerter':
-            return is_string($wert) ? '' : 'muss Text sein';
+            return is_string($wert) ? '' : awm_t_oder('PRUEF.G_TEXT', 'muss Text sein');
         case 'mqtt_topic':
             // Dasselbe Muster wie das MQTT-Formular. '#' und '+' sind
             // Platzhalter des Brokers und haben in einem Thema nichts zu
-            // suchen, das ein Plugin selbst belegt.
-            return preg_match('#^[A-Za-z0-9_\-/]+\z#', (string) $wert)
-                ? '' : 'MQTT-Thema enthaelt unzulaessige Zeichen';
+            // suchen, das ein Plugin selbst belegt. U2: erst der Typ.
+            return is_string($wert) && preg_match('#^[A-Za-z0-9_\-/]+\z#', $wert)
+                ? '' : awm_t_oder('PRUEF.G_THEMA', 'MQTT-Thema enthaelt unzulaessige Zeichen');
         case 'notify':
-            if (!is_array($wert)) { return 'muss eine Liste sein'; }
+            if (!is_array($wert)) { return awm_t_oder('PRUEF.G_KEINE_LISTE', 'muss eine Liste sein'); }
             foreach (array('audio', 'push', 'audio2') as $k) {
-                if (isset($wert[$k]) && !awm_ist_schalter($wert[$k])) { return $k . ' muss 0 oder 1 sein'; }
+                if (isset($wert[$k]) && !awm_ist_schalter($wert[$k])) {
+                    return sprintf(awm_t_oder('PRUEF.G_SCHALTER_K', '%s muss 0 oder 1 sein'), $k);
+                }
             }
             foreach (array('time', 'time2') as $k) {
-                if (isset($wert[$k]) && !awm_ist_zeit($wert[$k])) { return $k . ' ist keine Uhrzeit'; }
+                if (isset($wert[$k]) && !awm_ist_zeit($wert[$k])) {
+                    return sprintf(awm_t_oder('PRUEF.G_ZEIT_K', '%s ist keine Uhrzeit'), $k);
+                }
             }
             return '';
         case 'tts':
-            if (!is_array($wert)) { return 'muss eine Liste sein'; }
-            if (isset($wert['mode']) && !in_array((string) $wert['mode'],
-                    array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
-                return 'unbekannte Ansageart';
+            if (!is_array($wert)) { return awm_t_oder('PRUEF.G_KEINE_LISTE', 'muss eine Liste sein'); }
+            foreach (array('mode', 'ip', 'template', 'zones', 'lang') as $tk) {        // U6
+                if (isset($wert[$tk]) && !is_string($wert[$tk])) {
+                    return sprintf(awm_t_oder('PRUEF.G_TEXT_K', '%s muss Text sein'), $tk);
+                }
             }
-            if (isset($wert['port']) && !awm_ist_zahl($wert['port'], 1, 65535)) { return 'Port ausserhalb 1..65535'; }
-            if (isset($wert['volume']) && !awm_ist_zahl($wert['volume'], 1, 100)) { return 'Lautstaerke ausserhalb 1..100'; }
-            if (isset($wert['zones']) && !awm_ist_zonen($wert['zones'])) { return 'Zonenangabe ist unzulaessig'; }
-            if (isset($wert['lang']) && !preg_match('/^[a-z]{0,8}\z/', (string) $wert['lang'])) { return 'Sprachkuerzel ist unzulaessig'; }
+            if (isset($wert['mode']) && !in_array($wert['mode'],
+                    array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
+                return awm_t_oder('PRUEF.G_MODUS', 'unbekannte Ansageart');
+            }
+            if (isset($wert['ip']) && !awm_ist_host($wert['ip'])) {                    // U4
+                return awm_t_oder('PRUEF.G_HOST', 'IP-Adresse bzw. Rechnername des Music Servers ist unzulaessig');
+            }
+            if (isset($wert['port']) && !awm_ist_zahl($wert['port'], 1, 65535)) { return awm_t_oder('PRUEF.G_PORT', 'Port ausserhalb 1..65535'); }
+            if (isset($wert['volume']) && !awm_ist_zahl($wert['volume'], 1, 100)) { return awm_t_oder('PRUEF.G_LAUT', 'Lautstaerke ausserhalb 1..100'); }
+            if (isset($wert['zones']) && !awm_ist_zonen($wert['zones'])) { return awm_t_oder('PRUEF.G_ZONEN', 'Zonenangabe ist unzulaessig'); }
+            if (isset($wert['lang']) && !awm_ist_sprache($wert['lang'])) { return awm_t_oder('PRUEF.G_SPRACHE', 'Sprachkuerzel ist unzulaessig'); }
             return '';
         case 'ruhe':
-            if (!is_array($wert)) { return 'muss eine Liste sein'; }
+            if (!is_array($wert)) { return awm_t_oder('PRUEF.G_KEINE_LISTE', 'muss eine Liste sein'); }
             foreach (array('urlaub', 'nachts') as $k) {
-                if (isset($wert[$k]) && !awm_ist_schalter($wert[$k])) { return $k . ' muss 0 oder 1 sein'; }
+                if (isset($wert[$k]) && !awm_ist_schalter($wert[$k])) {
+                    return sprintf(awm_t_oder('PRUEF.G_SCHALTER_K', '%s muss 0 oder 1 sein'), $k);
+                }
             }
             foreach (array('von', 'bis') as $k) {
-                if (isset($wert[$k]) && !awm_ist_zeit($wert[$k])) { return 'Ruhezeit ' . $k . ' ist keine Uhrzeit'; }
+                if (isset($wert[$k]) && !awm_ist_zeit($wert[$k])) {
+                    return sprintf(awm_t_oder('PRUEF.G_RUHEZEIT_K', 'Ruhezeit %s ist keine Uhrzeit'), $k);
+                }
             }
-            if (isset($wert['bis_datum']) && (string) $wert['bis_datum'] !== ''
-                    && awm_tagnummer((string) $wert['bis_datum']) < 0) {
-                return 'Urlaubsende ist kein Datum';
+            if (isset($wert['bis_datum']) && !is_string($wert['bis_datum'])) {                  // U6
+                return awm_t_oder('PRUEF.G_URLAUB', 'Urlaubsende ist kein Datum');
+            }
+            if (isset($wert['bis_datum']) && $wert['bis_datum'] !== ''
+                    && awm_tagnummer($wert['bis_datum']) < 0) {
+                return awm_t_oder('PRUEF.G_URLAUB', 'Urlaubsende ist kein Datum');
             }
             return '';
         case 'ansage':
-            if (!is_array($wert)) { return 'muss eine Liste sein'; }
+            if (!is_array($wert)) { return awm_t_oder('PRUEF.G_KEINE_LISTE', 'muss eine Liste sein'); }
             foreach (array('vorlage', 'vorlage2') as $k) {
-                if (isset($wert[$k]) && !is_string($wert[$k])) { return $k . ' muss Text sein'; }
+                if (isset($wert[$k]) && !is_string($wert[$k])) {
+                    return sprintf(awm_t_oder('PRUEF.G_TEXT_K', '%s muss Text sein'), $k);
+                }
             }
             return '';
         case 'aktionstoken':
-            /* Weit gefasst - was ohne Kodierung in eine Adresse passt.
-             * Ein LEERES Token in einer Sicherungsdatei heisst "kein Token
-             * gesichert" und ist zulaessig; ob eines fehlt, entscheidet die
-             * Oberflaeche beim Erzeugen (Regeln/05, VolkswagenID 0.9.12). */
-            return preg_match('/^[A-Za-z0-9_.\-]{0,64}\z/', (string) $wert)
-                ? '' : 'Aktionstoken enthaelt unzulaessige Zeichen';
+            /* Ein LEERES Token in einer Sicherungsdatei heisst "kein Token
+             * gesichert" und ist zulaessig - das Zurueckspielen behaelt dann
+             * das geltende (U3, Regeln/05). Sonst U2: eine Zeichenkette nach
+             * dem Muster des Erzeugers, mit \z (awm_token_gueltig). */
+            return (is_string($wert) && ($wert === '' || awm_token_gueltig($wert)))
+                ? '' : awm_t_oder('PRUEF.G_TOKEN', 'Aktionstoken passt nicht zum Muster (16 bis 64 Kleinbuchstaben und Ziffern)');
     }
     return '';
 }
@@ -482,6 +583,8 @@ function awm_zweitschrift_hat_inhalt($datei)
 }
 
 function awm_config($anlegen = false) {
+    /* I1: die Selbstheilung liest nur $p['backup'] (<ordner>.backup.json),
+     * nie die bei einer Neuinstallation beiseitegelegte <ordner>.backup.json.alt. */
     $p = awm_paths();
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
     $leer = ($roh === '' || $roh === '{}' || strpos($roh, '"') === false);
@@ -497,6 +600,10 @@ function awm_config($anlegen = false) {
                 @mkdir(dirname($p['config']), 0775, true);
             }
             @copy($p['backup'], $p['config']);
+            /* C7: copy() uebernimmt die Rechte der Quelle nicht - bis 1.4.14
+             * stand die wiederhergestellte awm.json danach auf 644 (in WSL
+             * gemessen, umask 022), mit Aktionstoken und Kalenderadresse. */
+            @chmod($p['config'], 0600);
             $roh = trim((string) @file_get_contents($p['config']));
         } else {
             // Nur lesen: die Sicherung unmittelbar verwenden, ohne zu schreiben.
@@ -517,15 +624,22 @@ function awm_config($anlegen = false) {
     if ($roh !== '') {
         $cfg = json_decode($roh, true);
         if (!is_array($cfg)) {
-            awm_log('Die Konfigurationsdatei ist unlesbar (' . json_last_error_msg()
-                  . '). Es wird die Zweitschrift verwendet, falls es eine gibt.');
+            /* C13: hoechstens eine Zeile je Stunde. Bis 1.4.14 stand sie bei
+             * JEDEM Aufruf von awm_config() im Protokoll - nach einem
+             * gescheiterten Update 287 Zeilen in fuenf Minutenlaeufen und drei
+             * Abrufen (in WSL gemessen, Installer-Pruefer 29.09.2026), und die
+             * Kappung auf 200 Zeilen verdraengte jede andere Meldung. */
+            awm_log_if_changed('config_unlesbar', 'Die Konfigurationsdatei ist unlesbar ('
+                  . json_last_error_msg() . '). Es wird die Zweitschrift verwendet, falls es '
+                  . 'eine gibt (' . date('Y-m-d H') . ' Uhr).');
             $cfg = array();
             if (is_file($p['backup'])) {
                 $zweit = json_decode(trim((string) @file_get_contents($p['backup'])), true);
                 if (is_array($zweit)) {
                     $cfg = $zweit;
                 } else {
-                    awm_log('Auch die Zweitschrift ist unlesbar - es gelten die Vorgaben.');
+                    awm_log_if_changed('zweitschrift_unlesbar', 'Auch die Zweitschrift ist '
+                        . 'unlesbar - es gelten die Vorgaben (' . date('Y-m-d H') . ' Uhr).');
                 }
             }
         }
@@ -554,10 +668,34 @@ function awm_config($anlegen = false) {
     return $cfg;
 }
 
-/** Sperre gegen parallele Laeufe - 1:1 nach fer_sperre (FerienFeiertage):
- *  flock auf eine Sperrdatei, nicht blockierend; false = ein Lauf laeuft schon. */
-function awm_sperre($name = 'cron') {
-    $f = awm_tmpdir() . '/' . preg_replace('/[^a-z0-9_]/', '', $name) . '.lock';
+/** Die in diesem Prozess gehaltenen Sperren (fuer awm_sperre()). */
+function &awm_sperren_liste()
+{
+    static $l = array();
+    return $l;
+}
+
+/** Sperre gegen parallele Laeufe - nach fer_sperre (FerienFeiertage): flock
+ *  auf eine Sperrdatei; false = ein anderer haelt sie.
+ *
+ *  $warte > 0 (C9): so viele Sekunden auf die Sperre warten, statt sofort
+ *  aufzugeben. Bis 1.4.14 war auch die Konfigurationssperre nicht
+ *  blockierend, und awm_renew() und das Speichern der Oberflaeche schrieben
+ *  AUCH OHNE sie - der Schutz, den awm_renew() verspricht, fehlte.
+ *
+ *  Innerhalb EINES Prozesses ist die Sperre wiedereintrittsfaehig: die
+ *  Oberflaeche haelt sie fuer den ganzen Weg Lesen-Aendern-Schreiben, und
+ *  aw_speichern() bzw. awm_config_speichern() nehmen sie darin noch einmal.
+ *  Ein zweites flock() auf eine neue Kennung derselben Datei schluege im
+ *  selben Prozess fehl. Freigeben mit awm_sperre_frei(). */
+function awm_sperre($name = 'cron', $warte = 0) {
+    $name = preg_replace('/[^a-z0-9_]/', '', $name);
+    $l =& awm_sperren_liste();
+    if (isset($l[$name])) {
+        $l[$name]['n']++;
+        return $l[$name]['fh'];
+    }
+    $f = awm_tmpdir() . '/' . $name . '.lock';
     $fh = @fopen($f, 'c');
     if ($fh === false) {
         // Nicht stillschweigend weiterlaufen: ohne Sperre ist der Schaden
@@ -566,11 +704,32 @@ function awm_sperre($name = 'cron') {
               . 'Platz im Verzeichnis und Eigentuemer pruefen.');
         return false;
     }
-    if (!flock($fh, LOCK_EX | LOCK_NB)) {
-        fclose($fh);
-        return false;
+    $bis = microtime(true) + max(0, (float) $warte);
+    while (!flock($fh, LOCK_EX | LOCK_NB)) {
+        if (microtime(true) >= $bis) {
+            fclose($fh);
+            return false;
+        }
+        usleep(100000);
     }
+    $l[$name] = array('fh' => $fh, 'n' => 1);
     return $fh;
+}
+
+/** Eine mit awm_sperre() genommene Sperre abgeben (C9). */
+function awm_sperre_frei($fh)
+{
+    if (!$fh) { return; }
+    $l =& awm_sperren_liste();
+    foreach ($l as $name => $e) {
+        if ($e['fh'] !== $fh) { continue; }
+        $l[$name]['n']--;
+        if ($l[$name]['n'] > 0) { return; }
+        unset($l[$name]);
+        break;
+    }
+    @flock($fh, LOCK_UN);
+    @fclose($fh);
 }
 
 /** Stichwoerter fuer Feiertagsverschiebungen, bereinigt. Nie leer. */
@@ -588,12 +747,48 @@ function awm_hinweis_woerter() {
     return $out ? $out : array('achtung');
 }
 
+/** Ist dieser Eintrag aus 'cals' ein eingerichteter Kalender (Adresse oder
+ *  hochgeladene Datei)? Dieselbe Frage wie in awm_cals(). */
+function awm_cal_eingerichtet($c)
+{
+    $c = (array) $c;
+    return trim((string) (isset($c['url']) ? $c['url'] : '')) !== '' || !empty($c['hochgeladen']);
+}
+
+/**
+ * Kalendernummer (1-basiert, gezaehlt wie in awm_cals()) -> Platz in 'cals'
+ * (0-basiert, Reihenfolge von array_values). -1 = diese Nummer gibt es nicht.
+ *
+ * EINE Stelle fuer diese Rechnung (C2). Bis 1.4.14 lasen Zuordnungsregeln,
+ * Regelmodus und eigene Termine den PLATZ mit der Nummer: stand auf Platz 1
+ * nichts, wirkten die gespeicherten Regeln und Termine von Kalender 1 nicht
+ * (gemessen: morgen=[] statt ["sperr","gruen"]). awm_renew() zaehlte nur
+ * Eintraege mit Adresse und traf nach einem hochgeladenen Kalender den
+ * falschen Eintrag.
+ */
+function awm_cal_platz($cals, $nr)
+{
+    $nr = (int) $nr;
+    $n = 0;
+    foreach (array_values(is_array($cals) ? $cals : array()) as $i => $c) {
+        if (!awm_cal_eingerichtet($c)) { continue; }
+        $n++;
+        if ($n === $nr) { return $i; }
+    }
+    return -1;
+}
+
 /** Kalenderliste (nur Eintraege mit URL oder hochgeladener Datei), 1-basiert. */
 function awm_cals() {
-    $cfg = awm_config();
+    return awm_cals_aus(awm_config());
+}
+
+/** Dieselbe Liste aus einer gegebenen Konfiguration - fuer den Vergleich
+ *  vorher/nachher beim Speichern (M4). */
+function awm_cals_aus($cfg) {
     $out = array();
     $n = 0;
-    foreach ((array) $cfg['cals'] as $idx => $c) {
+    foreach ((isset($cfg['cals']) ? (array) $cfg['cals'] : array()) as $idx => $c) {
         $c = (array) $c;
         $url = trim((string) (isset($c['url']) ? $c['url'] : ''));
         $hoch = !empty($c['hochgeladen']);
@@ -602,7 +797,8 @@ function awm_cals() {
         }
         $n++;
         $out[$n] = array(
-            'name' => trim((string) (isset($c['name']) ? $c['name'] : '')) !== '' ? trim((string) $c['name']) : ('Kalender ' . $n),
+            'name' => trim((string) (isset($c['name']) ? $c['name'] : '')) !== '' ? trim((string) $c['name'])
+                      : sprintf(awm_t_oder('EINST.KALENDER_N', 'Kalender %d'), $n),       // U10
             'url' => $url,
             'hochgeladen' => $hoch ? 1 : 0,
             'ansage' => !empty($c['ansage']) || $n === 1 ? 1 : 0,
@@ -664,13 +860,27 @@ function awm_datei_schreiben($pfad, $inhalt, $rechte = 0664)
         @mkdir($dir, 0775, true);
     }
     $neben = $pfad . '.neu' . getmypid();
-    $laenge = strlen((string) $inhalt);
-    if (@file_put_contents($neben, (string) $inhalt) !== $laenge) {
-        @unlink($neben);
+    $inhalt = (string) $inhalt;
+    $laenge = strlen($inhalt);
+    /* C7: Rechte VOR dem Inhalt (Regeln/03, atomar schreiben). Bis 1.4.14
+     * schrieb file_put_contents den Inhalt mit den Rechten der umask
+     * (gemessen 644), chmod kam erst danach - Aktionstoken und Kalender-
+     * adresse lagen einen Augenblick fuer jeden lesbar. Jetzt: leer
+     * anlegen, Rechte setzen, fuellen, Laenge pruefen, auf die Platte
+     * bringen, dann umbenennen. Laesst sich eine schuetzende Rechtemaske
+     * (ohne Lesen fuer andere) nicht setzen, wird nicht geschrieben. */
+    $fh = @fopen($neben, 'cb');
+    if ($fh === false) {
         return false;
     }
-    @chmod($neben, $rechte);
-    if (!@rename($neben, $pfad)) {
+    $ok = @chmod($neben, $rechte) || ($rechte & 0044) !== 0;
+    $ok = $ok && @ftruncate($fh, 0);
+    if ($ok) {
+        $n = $laenge > 0 ? @fwrite($fh, $inhalt) : 0;
+        $ok = ($n === $laenge) && @fflush($fh);
+    }
+    $zu = @fclose($fh);
+    if (!$ok || !$zu || !@rename($neben, $pfad)) {
         @unlink($neben);
         return false;
     }
@@ -685,14 +895,19 @@ function awm_datei_schreiben($pfad, $inhalt, $rechte = 0664)
  * noch als Erfolg. Deshalb wird das Ergebnis hier geprueft, bevor
  * ueberhaupt etwas geschrieben wird.
  */
-function awm_json_schreiben($pfad, $daten, $rechte = 0664, $huebsch = false)
+function awm_json_schreiben($pfad, $daten, $rechte = 0664, $huebsch = false, $protokoll = true)
 {
     $flaggen = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
     if ($huebsch) { $flaggen |= JSON_PRETTY_PRINT; }
     $js = json_encode($daten, $flaggen);
     if ($js === false || $js === '' || $js === 'null') {
-        awm_log('Schreibfehler ' . basename($pfad) . ': ' . json_last_error_msg()
-                . ' - Datei bleibt unveraendert');
+        /* $protokoll = false nur fuer die Selbstpruefung, die ABSICHTLICH
+         * ungueltiges UTF-8 probt (C12): bis 1.4.14 stand bei jedem Oeffnen
+         * der Oberflaeche ein scheinbarer Schreibfehler im Protokoll. */
+        if ($protokoll) {
+            awm_log('Schreibfehler ' . basename($pfad) . ': ' . json_last_error_msg()
+                    . ' - Datei bleibt unveraendert');
+        }
         return false;
     }
     return awm_datei_schreiben($pfad, $js, $rechte);
@@ -836,7 +1051,8 @@ function awm_http_get($url, $tmo = 20, &$grund = '', &$status = 0) {
         $errno = curl_errno($ch);
         $fehler = curl_error($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        // C10: seit PHP 8.0 wirkungslos, seit 8.5 veraltet.
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         $grund = awm_http_grund($errno, $fehler, $status);
         if ($rumpf === false || $errno !== 0 || $status >= 400) {
             return false;
@@ -850,12 +1066,7 @@ function awm_http_get($url, $tmo = 20, &$grund = '', &$status = 0) {
         'max_redirects' => 2,          // 1 Weiterleitung, wie oben
         'ignore_errors' => true,
     ), 'ssl' => array('verify_peer' => true)));
-    $rumpf = @file_get_contents($url, false, $ctx);
-    if (isset($http_response_header) && is_array($http_response_header)) {
-        foreach ($http_response_header as $z) {
-            if (preg_match('#^HTTP/\S+\s+(\d{3})#', $z, $m)) { $status = (int) $m[1]; }
-        }
-    }
+    list($rumpf, $status) = awm_http_abruf($url, $ctx);
     if ($rumpf === false) {
         $grund = 'Abruf nicht moeglich - es antwortet nichts (Zeitueberschreitung oder kein Weg dorthin)';
         return false;
@@ -865,6 +1076,32 @@ function awm_http_get($url, $tmo = 20, &$grund = '', &$status = 0) {
         return false;
     }
     return $rumpf;
+}
+
+/**
+ * Ein Abruf ueber den Datenstrom-Weg: array(Rumpf oder false, HTTP-Code).
+ *
+ * C10, Bauform eb_http_abruf() (Einspeisebremse 0.9.28): die Kopfzeilen kommen
+ * aus stream_get_meta_data()['wrapper_data']. Die alte, von PHP selbst
+ * angelegte Kopfzeilen-Variable ist seit 8.5 veraltet und erzeugte schon beim
+ * Uebersetzen dieser Datei zwei Deprecated-Zeilen - vor error_reporting(),
+ * also unter display_errors=On vor der Antwort des Endpunkts. Bei mehreren
+ * Weiterleitungen gilt, wie bisher, der letzte Statuscode.
+ */
+function awm_http_abruf($url, $ctx)
+{
+    $fp = @fopen($url, 'r', false, $ctx);
+    if ($fp === false) { return array(false, 0); }
+    $meta = @stream_get_meta_data($fp);
+    $t = @stream_get_contents($fp);
+    @fclose($fp);
+    $code = 0;
+    $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+        ? $meta['wrapper_data'] : array();
+    foreach ($kopf as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) { $code = (int) $m[1]; }
+    }
+    return array($t, $code);
 }
 
 /* ---------------- ICS holen ---------------- */
@@ -886,6 +1123,25 @@ function awm_fetchstand($cal = 1) {
                       'naechster' => 0);
 }
 
+/** Kennung einer Kalenderadresse fuer den Abrufstand (C3) - eine Pruefsumme,
+ *  nicht die Adresse selbst: fetch_N.json liegt im Zwischenspeicher unter
+ *  /tmp, und die AWM-Adresse traegt Strasse und Hausnummer. */
+function awm_adresse_kennung($url)
+{
+    return substr(hash('sha256', trim((string) $url)), 0, 16);
+}
+
+/** Sekunden bis zum naechsten erlaubten Sofortabruf dieses Kalenders, 0 =
+ *  jetzt erlaubt (C5). Gezaehlt ab dem letzten VERSUCH, auch dem des
+ *  Minutenlaufs; ein Stand bis 1.4.14 kennt nur den letzten Erfolg. */
+function awm_sofortabruf_warte($cal = 1)
+{
+    $s = awm_fetchstand($cal);
+    $letzt = isset($s['versuch']) ? (int) $s['versuch'] : (int) $s['zeit'];
+    $rest = $letzt + AWM_SOFORT_ABSTAND - time();
+    return $rest > 0 ? min(AWM_SOFORT_ABSTAND, $rest) : 0;
+}
+
 /**
  * Kalender laden, wenn aelter als Intervall (oder $force).
  * Rueckgabe: [ok, quelle].
@@ -895,11 +1151,27 @@ function awm_fetch($force = false, $cal = 1) {
     $c = awm_cal($cal);
     $f = awm_icsfile($cal);
     if ($c === null) {
-        return array(is_file($f) ? 1 : 0, 'keine URL konfiguriert');
+        /* C14: ein nicht eingerichteter Platz meldet nie Erfolg - auch wenn
+         * eine alte kalender_N.ics daliegt. Bis 1.4.14 stand hier
+         * is_file($f) ? 1 : 0, und awm.php?cal=3 meldete OK=1 mit den
+         * Terminen einer frueheren Einrichtung (Installer-Pruefer, Fall E). */
+        return array(0, 'keine URL konfiguriert');
     }
     // Hochgeladene Kalender werden nicht abgerufen - es gibt keine Adresse.
     if ($c['url'] === '' && !empty($c['hochgeladen'])) {
         return array(is_file($f) ? 1 : 0, 'hochgeladen');
+    }
+    /* C5: Bremse fuer erzwungene Abrufe (?refresh, ?json&refresh, "Jetzt
+     * abrufen"): hoechstens einer je AWM_SOFORT_ABSTAND Sekunden und
+     * Kalender, der Minutenlauf zaehlt mit. Bis 1.4.14 ergaben fuenf Aufrufe
+     * fuenf Abrufe beim Entsorger; ein flatternder Baustein in Loxone haette
+     * im Sekundentakt abgerufen (Regeln/03). Der Aufrufer erfaehrt es an der
+     * Quelle 'gebremst'. */
+    if ($force && awm_sofortabruf_warte($cal) > 0) {
+        awm_log_if_changed('sofort_gebremst_' . (int) $cal, 'Kalender ' . $cal
+            . ': Sofortabruf gebremst - der letzte Abrufversuch liegt weniger als '
+            . AWM_SOFORT_ABSTAND . ' s zurueck (' . date('Y-m-d H:i') . ').');
+        return array(is_file($f) ? 1 : 0, 'gebremst');
     }
     /* WANN der naechste Versuch faellig ist, steht in der Merkdatei - nicht
      * in der Aenderungszeit der Kalenderdatei.
@@ -914,7 +1186,17 @@ function awm_fetch($force = false, $cal = 1) {
     $maxage = max(1, (int) $cfg['fetch_days']) * 86400;
     $stand0 = awm_fetchstand($cal);
     $faellig = (int) (isset($stand0['naechster']) ? $stand0['naechster'] : 0);
-    if (!$force && is_file($f)) {
+    /* C3: Der Abrufstand merkt sich, fuer WELCHE Adresse er gilt. Bis 1.4.14
+     * hingen Kalenderdatei und Merkdatei nur an der Nummer: nach einer neuen
+     * Adresse - oder wenn Kalender 2 auf Platz 1 nachrueckte - blieb bis zu
+     * fetch_days lang der alte Kalender stehen (gemessen: quelle=cache, REST
+     * und FETCH der alten Adresse). Weicht die Adresse ab, ist der Abruf
+     * sofort faellig - einmal: danach steht die neue Adresse im Stand, und
+     * nach einem Fehlversuch gilt wieder die Wartezeit. Ein Stand ohne
+     * Adresse (bis 1.4.14) gilt als passend. */
+    $kennung = awm_adresse_kennung($c['url']);
+    $adresse_neu = isset($stand0['adresse']) && (string) $stand0['adresse'] !== $kennung;
+    if (!$force && !$adresse_neu && is_file($f)) {
         if ($faellig > 0 && time() < $faellig) {
             return array(1, 'cache');
         }
@@ -930,9 +1212,10 @@ function awm_fetch($force = false, $cal = 1) {
      * antwortet ein abgelaufener Link - ueberschrieb damit den guten
      * gespeicherten Stand. Danach war ok=0, und die Jahreswechsel-Warnung
      * steht hinter "if ($st['ok'] && ...)", kam also nicht. */
-    $ics_grund = $neu === false ? '' : awm_ics_pruefen(awm_utf8((string) $neu));
+    // C1: erst entfalten, dann awm_utf8() - auch hier, bevor gespeichert wird.
+    if ($neu !== false) { $neu = awm_utf8(awm_ics_entfalten((string) $neu)); }
+    $ics_grund = $neu === false ? '' : awm_ics_pruefen($neu);
     if ($neu !== false && $ics_grund === '') {
-        $neu = awm_utf8($neu);
         /* Den Rueckgabewert AUSWERTEN. Bis 1.4.6 wurde er verworfen: bei
          * vollem Dateisystem oder falschem Eigentuemer meldete das Plugin
          * FETCH=1 und "abgerufen: N Bytes", ohne etwas geschrieben zu
@@ -947,13 +1230,15 @@ function awm_fetch($force = false, $cal = 1) {
             awm_json_schreiben(awm_fetchstand_datei($cal),
                 array('ok' => 0, 'zeit' => (int) $stand0['zeit'], 'grund' => 'Schreibfehler',
                       'fehler' => (int) $stand0['fehler'] + 1,
-                      'naechster' => time() + AWM_WIEDERHOLUNG));
+                      'naechster' => time() + AWM_WIEDERHOLUNG,
+                      'adresse' => $kennung, 'versuch' => time()));
             return array(is_file($f) ? 1 : 0, 'SCHREIBFEHLER');
         }
         @unlink(awm_tmpdir() . '/state_' . (int) $cal . '.json');
         awm_json_schreiben(awm_fetchstand_datei($cal),
             array('ok' => 1, 'zeit' => time(), 'grund' => '', 'fehler' => 0,
-                  'naechster' => time() + $maxage));
+                  'naechster' => time() + $maxage,
+                  'adresse' => $kennung, 'versuch' => time()));
         awm_log('Kalender ' . $cal . ' (' . $c['name'] . ') abgerufen: ' . strlen($neu) . ' Bytes, ' . substr_count($neu, 'BEGIN:VEVENT') . ' Ereignisse');
         return array(1, 'frisch');
     }
@@ -971,7 +1256,8 @@ function awm_fetch($force = false, $cal = 1) {
      * traegt weiter ihr echtes Alter. */
     awm_json_schreiben(awm_fetchstand_datei($cal),
         array('ok' => 0, 'zeit' => (int) $stand['zeit'], 'grund' => $grund,
-              'fehler' => $fehlerzahl, 'naechster' => time() + AWM_WIEDERHOLUNG));
+              'fehler' => $fehlerzahl, 'naechster' => time() + AWM_WIEDERHOLUNG,
+              'adresse' => $kennung, 'versuch' => time()));
     if (is_file($f)) {
         awm_log('Kalender ' . $cal . ': Abruf fehlgeschlagen (' . $grund . ') - nutze letzten gespeicherten Stand, naechster Versuch in '
                 . (int) (AWM_WIEDERHOLUNG / 60) . ' Minuten');
@@ -1016,6 +1302,23 @@ function awm_fetch($force = false, $cal = 1) {
  * der Schaden dauerhaft.
  * ================================================================== */
 
+/**
+ * Zeilenfaltung aufloesen (RFC 5545, Abschnitt 3.1): ein Zeilenende, gefolgt
+ * von Leerzeichen oder Tabulator, gehoert zur vorigen Zeile.
+ *
+ * Auf den ROHEN Bytes, ohne /u - auch eine Datei mit ungueltigem UTF-8 geht
+ * durch. Muss VOR awm_utf8() laufen (C1): manche Erzeuger falten nach 75
+ * Byte, auch mitten in einem Mehrbytezeichen. Bis 1.4.14 pruefte awm_utf8()
+ * die gefaltete Datei, hielt sie fuer ungueltiges UTF-8 und rechnete sie
+ * GANZ als Windows-1252 um: aus jedem Umlaut wurden zwei falsche Zeichen,
+ * eine Zuordnungsregel griff nicht mehr, und beim Abruf wurde das Ergebnis
+ * dauerhaft gespeichert (gemessen unter 7.4, 8.4 und 8.5).
+ */
+function awm_ics_entfalten($text)
+{
+    return preg_replace("/\r?\n[ \t]/", '', (string) $text);
+}
+
 function awm_utf8($text)
 {
     $text = (string) $text;
@@ -1057,14 +1360,15 @@ function awm_utf8($text)
 function awm_ics_pruefen($text)
 {
     $text = (string) $text;
+    // U10: die Gruende ueber Sprachschluessel (die englische Seite war deutsch).
     if (trim($text) === '') {
-        return 'Die Datei ist leer.';
+        return awm_t_oder('PRUEF.ICS_LEER', 'Die Datei ist leer.');
     }
     if (strpos($text, 'BEGIN:VCALENDAR') === false) {
-        return 'Das ist keine iCal-Datei - BEGIN:VCALENDAR fehlt.';
+        return awm_t_oder('PRUEF.ICS_KEIN', 'Das ist keine iCal-Datei - BEGIN:VCALENDAR fehlt.');
     }
     if (substr_count($text, 'BEGIN:VEVENT') < 1) {
-        return 'Die Datei enthaelt keinen einzigen Termin (BEGIN:VEVENT).';
+        return awm_t_oder('PRUEF.ICS_OHNE', 'Die Datei enthaelt keinen einzigen Termin (BEGIN:VEVENT).');
     }
     return '';
 }
@@ -1080,17 +1384,40 @@ function awm_ics_pruefen($text)
  * Europe/Berlin bereits der 05.01., und die Ansage kam einen Tag zu frueh.
  * Gemessen am 20.08.2026.
  */
-function awm_ics_datum($wert)
+function awm_ics_datum($wert, $tzid = '')
 {
     $wert = trim((string) $wert);
     if (preg_match('/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/', $wert, $m)) {
         $ts = gmmktime((int) $m[4], (int) $m[5], (int) $m[6], (int) $m[2], (int) $m[3], (int) $m[1]);
         return date('Ymd', $ts);       // date() rechnet in Europe/Berlin
     }
+    /* C11: eine Ortszeit mit TZID in die eigene Zeitzone umrechnen. Bis
+     * 1.4.14 wurde der Parameter nicht gelesen: DTSTART;TZID=UTC:20260111T230000
+     * ergab den 11.01., dieselbe Zeit als ...Z den 12.01. Eine unbekannte
+     * Zone (etwa ein Windows-Name) faellt auf die ersten acht Ziffern zurueck,
+     * wie bisher. */
+    $tzid = trim((string) $tzid);
+    if ($tzid !== '' && preg_match('/^(\d{8})T(\d{6})$/', $wert, $m)) {
+        try {
+            $d = DateTime::createFromFormat('YmdHis', $m[1] . $m[2], new DateTimeZone($tzid));
+            if ($d !== false) {
+                $d->setTimezone(new DateTimeZone(date_default_timezone_get()));
+                return $d->format('Ymd');
+            }
+        } catch (Exception $e) {
+            // unbekannte Zone - weiter unten die ersten acht Ziffern
+        }
+    }
     if (preg_match('/^(\d{8})/', $wert, $m)) {
         return $m[1];
     }
     return '';
+}
+
+/** Die TZID aus den Parametern einer Eigenschaft (";TZID=Europe/Berlin"), sonst ''. */
+function awm_ics_tzid($param)
+{
+    return preg_match('/;TZID=("?)([^";:]+)\1/i', (string) $param, $m) ? trim($m[2]) : '';
 }
 
 /** Alle Datumsangaben einer Eigenschaft (EXDATE/RDATE koennen Listen sein). */
@@ -1104,12 +1431,13 @@ function awm_ics_datumsliste($ev, $name)
     // und an den beiden anderen Tagen meldete das Plugin eine Abholung, die
     // der Entsorger abgesagt hatte. (Der Muenchner Export schreibt je Zeile
     // ein Datum - der Fehler traf also andere Entsorger.)
-    if (!preg_match_all('/^' . $name . '[^:\r\n]*:([^\r\n]+)/mi', $ev, $mm)) {
+    if (!preg_match_all('/^' . $name . '([^:\r\n]*):([^\r\n]+)/mi', $ev, $mm)) {
         return $out;
     }
-    foreach ($mm[1] as $zeile) {
+    foreach ($mm[2] as $nr => $zeile) {
+        $tzid = awm_ics_tzid($mm[1][$nr]);          // C11
         foreach (explode(',', $zeile) as $stueck) {
-            $d = awm_ics_datum($stueck);
+            $d = awm_ics_datum($stueck, $tzid);
             if ($d !== '') { $out[] = $d; }
         }
     }
@@ -1151,8 +1479,8 @@ function awm_series($cal = 1) {
     }
     // Zeichensatz auch beim Einlesen pruefen: Kalender, die vor 1.3.0
     // abgerufen wurden, liegen noch so auf der Platte, wie sie kamen.
-    $ics = awm_utf8((string) file_get_contents($f));
-    $ics = preg_replace("/\r?\n[ \t]/", '', $ics); // Zeilenfaltung entfalten
+    // C1: ZUERST entfalten, dann awm_utf8() - bis 1.4.14 umgekehrt.
+    $ics = awm_utf8(awm_ics_entfalten((string) file_get_contents($f)));
 
     // METHOD:CANCEL sagt: diese Nachricht sagt Termine AB. Sie als
     // Terminliste zu lesen waere die Umkehrung ihrer Bedeutung.
@@ -1184,10 +1512,10 @@ function awm_series($cal = 1) {
         if (preg_match('/^STATUS:CANCELLED/mi', $ev)) {
             continue;
         }
-        if (!preg_match('/^DTSTART[^:\r\n]*:([^\r\n]+)/mi', $ev, $md)) {
+        if (!preg_match('/^DTSTART([^:\r\n]*):([^\r\n]+)/mi', $ev, $md)) {
             continue;
         }
-        $start = awm_ics_datum($md[1]);
+        $start = awm_ics_datum($md[2], awm_ics_tzid($md[1]));     // C11
         if ($start === '') {
             continue;
         }
@@ -1213,8 +1541,8 @@ function awm_series($cal = 1) {
         // derselben UID. Bis 1.3.8 kam er als zusaetzlicher Einzeltermin
         // dazu, waehrend der Originaltermin stehenblieb - zwei Ansagen, eine
         // davon falsch.
-        if (preg_match('/^RECURRENCE-ID[^:\r\n]*:([^\r\n]+)/mi', $ev, $mrec)) {
-            $ersetzt = awm_ics_datum($mrec[1]);
+        if (preg_match('/^RECURRENCE-ID([^:\r\n]*):([^\r\n]+)/mi', $ev, $mrec)) {
+            $ersetzt = awm_ics_datum($mrec[2], awm_ics_tzid($mrec[1]));     // C11
             if ($ersetzt !== '' && $s['uid'] !== '') {
                 if (!isset($ausnahmen[$s['uid']])) { $ausnahmen[$s['uid']] = array(); }
                 $ausnahmen[$s['uid']][] = $ersetzt;
@@ -1255,7 +1583,7 @@ function awm_pickup($s, $ymd) {
 function awm_eigene_termine($cal = 1) {
     $cfg = awm_config();
     $cals = isset($cfg['cals']) && is_array($cfg['cals']) ? array_values($cfg['cals']) : array();
-    $i = max(1, (int) $cal) - 1;
+    $i = awm_cal_platz($cals, max(1, (int) $cal));        // C2: Nummer -> Platz
     $liste = isset($cals[$i]['termine']) && is_array($cals[$i]['termine']) ? $cals[$i]['termine'] : array();
     $arten = awm_tonnenarten();
     $out = array();
@@ -1372,6 +1700,23 @@ function awm_luecken($serien, $cal = 1, $von = null, $bis = null)
     return $out;
 }
 
+/**
+ * Entscheidung 4 (29.09.2026), C8: sind die Kalenderdaten zu alt fuer OK=1?
+ *
+ * Grenze: das Dreifache des Abrufabstands (3 x fetch_days x 24 Stunden). Nur
+ * fuer Kalender MIT Adresse - ein hochgeladener Kalender hat keinen Takt,
+ * eine blinde Altersgrenze setzte ihn sonst nach 3 x fetch_days auf 0,
+ * obwohl nichts gestoert ist.
+ */
+function awm_daten_zu_alt($cal, $alter_h, $cfg = null)
+{
+    if ((int) $alter_h < 0) { return false; }
+    $c = awm_cal($cal);
+    if ($c === null || $c['url'] === '') { return false; }
+    if ($cfg === null) { $cfg = awm_config(); }
+    return (int) $alter_h > 3 * max(1, (int) $cfg['fetch_days']) * 24;
+}
+
 /** Loxone rechnet in Sekunden seit dem 01.01.2009. 0 = kein Datum. */
 function awm_loxzeit($ymd)
 {
@@ -1401,7 +1746,11 @@ function awm_state($force = false, $cal = 1) {
             return $c;
         }
     }
-    $serien = array_merge(awm_series($cal), awm_eigene_termine($cal));
+    /* C14: ein NICHT eingerichteter Kalenderplatz hat keine Daten - auch
+     * wenn noch eine alte kalender_N.ics daliegt. Bis 1.4.14 meldete
+     * awm.php?cal=3 dann OK=1 und die Termine einer frueheren Einrichtung. */
+    $eingerichtet = awm_cal($cal) !== null;
+    $serien = $eingerichtet ? array_merge(awm_series($cal), awm_eigene_termine($cal)) : array();
     $arten = array_keys(awm_tonnenarten());
     $leer_i = array();
     $leer_s = array();
@@ -1423,7 +1772,7 @@ function awm_state($force = false, $cal = 1) {
         'ereignisse' => count($serien),
         'next' => array('tage' => -1, 'datum' => '', 'tonnen' => array()),
         'alter' => -1,
-        'abruf_ok' => (int) $fstand['ok'],
+        'abruf_ok' => $eingerichtet ? (int) $fstand['ok'] : 0,
         'abruf_grund' => (string) $fstand['grund'],
         'ts' => time(),
     );
@@ -1492,6 +1841,16 @@ function awm_state($force = false, $cal = 1) {
     $grenze = date('Ymd', strtotime('+30 days'));
     if ($st['ok'] && $ende !== '99991231' && $ende < $grenze) {
         $st['warnung'] = 1; // in <30 Tagen keine Termine mehr -> Link erneuern
+    }
+    /* C8 (Entscheidung 4 vom 29.09.2026): Daten eines Kalenders mit Adresse,
+     * die aelter sind als 3 x fetch_days x 24 h, gelten nicht mehr als in
+     * Ordnung - OK=0, AGE bleibt daneben unveraendert. Bis 1.4.14 blieb OK=1
+     * bei einer 60 Tage alten Datei (gemessen: OK=1 FETCH=0 AGE=1440). Erst
+     * NACH der Jahreswechsel-Warnung: die haengt an "Daten vorhanden", und
+     * die Jahres-Erneuerung soll gerade bei einem alten Stand anlaufen. */
+    if ($st['ok'] && awm_daten_zu_alt($cal, $st['alter'], $cfg)) {
+        $st['ok'] = 0;
+        $st['ok_grund'] = 'alt';
     }
     /* Ersatzlos gestrichene Termine.
      *
@@ -1695,10 +2054,33 @@ function awm_ack_active() {
     return is_file(awm_ack_datei()) ? 1 : 0;
 }
 
+/** Quittierung setzen. Rueckgabe true nur, wenn der Merker WIRKLICH
+ *  geschrieben ist (C6) - bis 1.4.14 antwortete awm.php "ACK;OK=1" auch
+ *  bei schreibgeschuetztem Zwischenspeicher, und ACK blieb 0. */
 function awm_ack_setzen() {
-    @file_put_contents(awm_ack_datei(), '1');
+    if (@file_put_contents(awm_ack_datei(), '1') !== 1) {
+        awm_log('Quittierung NICHT gespeichert: der Merker ' . awm_ack_datei()
+              . ' liess sich nicht schreiben.');
+        return false;
+    }
     awm_log('Quittierung erhalten - die zweite Ansage entfaellt heute.');
-    return 1;
+    return true;
+}
+
+/**
+ * Den Tagesmerker einer Ansage setzen - erst der Merker, dann die Ansage (C6).
+ *
+ * Bis 1.4.14 wurde das Schreiben nicht ausgewertet: liess sich der Merker
+ * nicht anlegen (/tmp voll, falscher Eigentuemer), sprach das Haus im
+ * Zehn-Minuten-Fenster jede Minute erneut. Jetzt schweigt es (fail closed)
+ * und meldet das hoechstens einmal je Stunde.
+ */
+function awm_ansage_merker($flag)
+{
+    if (@file_put_contents($flag, '1') === 1) { return true; }
+    awm_log_if_changed('ansage_merker', 'Ansage ausgelassen: der Tagesmerker ' . $flag
+        . ' liess sich nicht schreiben (' . date('Y-m-d H') . ' Uhr).');
+    return false;
 }
 
 /**
@@ -1785,7 +2167,7 @@ function awm_feldliste()
     $f['PAPIER'] = array(0, 0, 1, '', 'Papiertonne: morgen faellig', 1, 'papier_morgen', 'papier');
     $f['DATUM']  = array(0, 0, 99991231, '', 'Datum von morgen (JJJJMMTT)', 0, 'datum_morgen', '');
     $f['WERT']   = array(0, 0, 1, '', 'Wertstoff/Gelb: morgen faellig', 1, 'wert_morgen', 'wert');
-    $f['OK']     = array(0, 0, 1, '', '1 = Kalenderdaten vorhanden', 1, 'ok', '');
+    $f['OK']     = array(0, 0, 1, '', '1 = Kalenderdaten vorhanden und aktuell', 1, 'ok', '');
     $f['WARN']   = array(0, 0, 1, '', '1 = Kalender endet in weniger als 30 Tagen (Link erneuern)', 1, 'warnung', '');
     foreach (array('rest', 'bio', 'papier', 'wert') as $a) {
         $f['H' . $k[$a]] = array(0, 0, 1, '', $arten[$a]['text'] . ': heute faellig', 1, $a . '_heute', $a);
@@ -1958,6 +2340,7 @@ function awm_mqtt_themen()
         if ($f[6] === '') { continue; }
         $out[$f[6]] = $f[4];
     }
+    if (isset($out['letzter'])) { $out['letzter'] .= ' - ueber MQTT "-" = keine Kalenderdaten'; }   // M1
     $out['hinweis'] = 'Hinweistext des Entsorgers ("-" = keiner)';
     $out['text_morgen'] = 'Fertiger Satz: was morgen faellig ist';
     $out['text_heute'] = 'Fertiger Satz: was heute faellig ist';
@@ -2312,8 +2695,20 @@ function awm_mqtt_altlast($praefix, $cal = 1)
     }
     awm_log_if_changed('mqtt_rueckfrage_' . max(1, (int) $cal), 'Der Broker liess sich nicht befragen, ob unter '
         . $praefix . '/ noch frueher zurueckbehaltene Werte stehen. Sie werden deshalb '
-        . 'unmittelbar vor jedem Senden geloescht, bis der Broker antwortet.');
-    return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $liste);
+        . 'hoechstens einmal je Stunde vor einem vollen Satz geloescht, bis der Broker antwortet.');
+    /* M6: ohne Rueckfrage hoechstens EINMAL je Stunde und Praefix raeumen -
+     * dann aber vor dem VOLLEN Satz (der Aufrufer erzwingt ihn), damit die
+     * Loeschung unmittelbar vor jedem gueltigen Wert steht. Bis 1.4.14 ging
+     * vor jedem Wert jedes Laufs eine leere retain-Nachricht hinaus - je
+     * Vollsatz 120 Datagramme, davon 56 leer (MQTT-Pruefer, Fall C); das
+     * Gateway reicht sie als leeren Wert an den Miniserver weiter. Der
+     * Merker wird erst nach einem gelungenen Senden geschrieben. */
+    $mu = awm_tmpdir() . '/mqtt_altlast_ungefragt_' . max(1, (int) $cal);
+    clearstatcache(true, $mu);
+    $faellig = !is_file($mu) || time() - filemtime($mu) >= 3600
+        || trim((string) @file_get_contents($mu)) !== $praefix;
+    return $cache[$praefix] = array('lage' => 'unbekannt', 'themen' => $faellig ? $liste : array(),
+                                    'merker' => $faellig ? $mu : '');
 }
 
 /**
@@ -2344,52 +2739,86 @@ function awm_mqtt_altlast($praefix, $cal = 1)
  */
 function awm_mqtt_leeren($runden = 3, $pause = 1.0)
 {
-    $p = awm_paths();
     $cfg = awm_config();
-    $basis = trim((string) $cfg['mqtt_topic']) !== '' ? trim((string) $cfg['mqtt_topic']) : 'awm';
+    $basis = awm_mqtt_basis($cfg);
+    $rc = awm_mqtt_leeren_praefix($basis, $runden, $pause);
+    /* M2: auch die frueher eingestellten Praefixe, deren Raeumen beim
+     * Wechsel nicht vom Broker bestaetigt war (awm_mqtt_folgen()). Bis
+     * 1.4.14 blieben die Themen unter einem alten Praefix fuer immer
+     * stehen - auch ueber die Deinstallation hinaus. */
+    foreach (awm_mqtt_frueher_praefixe($cfg) as $alt) {
+        if ($alt === $basis) { continue; }
+        echo "<INFO> MQTT: frueher eingestelltes Praefix " . $alt . "/:\n";
+        $rc = max($rc, awm_mqtt_leeren_praefix($alt, $runden, $pause));
+    }
+    return $rc;
+}
+
+/** Das eingestellte Grundpraefix einer Konfiguration (ohne Kalendernummer). */
+function awm_mqtt_basis($cfg)
+{
+    $t = isset($cfg['mqtt_topic']) && is_string($cfg['mqtt_topic']) ? trim($cfg['mqtt_topic']) : '';
+    return $t !== '' ? $t : 'awm';
+}
+
+/** Die gemerkten frueheren Praefixe (M2) - nur gueltige Themennamen. */
+function awm_mqtt_frueher_praefixe($cfg)
+{
+    $out = array();
+    $l = isset($cfg['_mqtt_frueher']) && is_array($cfg['_mqtt_frueher']) ? $cfg['_mqtt_frueher'] : array();
+    foreach ($l as $t) {
+        if (is_string($t) && $t !== '' && awm_wert_pruefen('mqtt_topic', $t) === '') { $out[$t] = true; }
+    }
+    return array_keys($out);
+}
+
+/** UDP-Eingangsport des MQTT-Gateways aus der general.json, 0 = keiner. */
+function awm_mqtt_udpport()
+{
+    $p = awm_paths();
     $gen = ($p['general'] !== '') ? @json_decode((string) @file_get_contents($p['general']), true) : null;
     $udpport = 0;
     if (isset($gen['Mqtt']['Udpinport'])) { $udpport = (int) $gen['Mqtt']['Udpinport']; }
     if (!$udpport && isset($gen['mqtt']['udpinport'])) { $udpport = (int) $gen['mqtt']['udpinport']; }
-    if (!$udpport) {
-        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
-           . "zurueckbehaltene Themen unter " . $basis . "/ wurden nicht geleert.\n";
-        return 2;
-    }
-    $n_kal = max(1, count(awm_cals()));
-    $alle = array();
-    $eingerichtet = array();
-    for ($k = 1; $k <= AWM_MAX_KALENDER; $k++) {
-        $pr = $k > 1 ? $basis . '/' . $k : $basis;
-        foreach (awm_mqtt_leer_themen() as $t) {
-            $alle[] = $pr . '/' . $t;
-            if ($k <= $n_kal) { $eingerichtet[] = $pr . '/' . $t; }
-        }
-    }
-    $n = count($alle);
+    return $udpport;
+}
+
+/**
+ * Zurueckbehaltene Themen leeren, mit Rueckfrage beim Broker - der Kern der
+ * Deinstallation, seit 1.4.15 auch fuer Praefixwechsel, MQTT aus und
+ * entfernte Kalender (M2-M4). Schreibt nichts aus, gibt das Ergebnis zurueck.
+ *
+ * $alle werden beim Broker erfragt; ist er nicht zu fragen, gehen die Themen
+ * aus $ohne_broker hinaus. Rueckgabe array('lage' => kein_port | nichts |
+ * kein_eingang | geleert | rest | ungeprueft, 'n', 'zu_leeren',
+ * 'datagramme', 'offen', 'udpport').
+ */
+function awm_mqtt_themen_leeren($alle, $ohne_broker, $runden = 3, $pause = 1.0)
+{
+    $aus = array('lage' => 'kein_port', 'n' => count($alle), 'zu_leeren' => 0,
+                 'datagramme' => 0, 'offen' => array(), 'udpport' => awm_mqtt_udpport());
+    if (!$aus['udpport']) { return $aus; }
     $f = awm_mqtt_behalten_liste($alle);
     $nachgelesen = ($f['lage'] === 'ok');
-    $offen = $nachgelesen ? array_keys($f['belegt']) : $eingerichtet;
+    $offen = $nachgelesen ? array_keys($f['belegt']) : array_values($ohne_broker);
     if ($nachgelesen && !$offen) {
-        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $basis
-           . "/ (Kalender 1 bis " . AWM_MAX_KALENDER . ") steht zurueckbehalten - nichts zu leeren.\n";
-        return 0;
+        $aus['lage'] = 'nichts';
+        return $aus;
     }
-    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $udpport, $errno, $errstr, 2);
+    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $aus['udpport'], $errno, $errstr, 2);
     if (!$strom) {
-        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
-           . "zurueckbehaltene Themen unter " . $basis . "/ wurden nicht geleert.\n";
-        return 1;
+        $aus['lage'] = 'kein_eingang';
+        return $aus;
     }
-    $zu_leeren = count($offen);
-    $datagramme = 0;
+    $aus['zu_leeren'] = count($offen);
     for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
         if ($r > 1) { usleep((int) ($pause * 1000000)); }
         foreach ($offen as $t) {
             // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
             // Form, die das Gateway als Loeschung liest.
             @fwrite($strom, 'retain ' . $t . ' ');
-            $datagramme++;
+            $aus['datagramme']++;
+            usleep(AWM_MQTT_PAUSE_US);          // M5: auch hier kein Stoss
         }
         usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
         $f = awm_mqtt_behalten_liste($offen);
@@ -2401,15 +2830,55 @@ function awm_mqtt_leeren($runden = 3, $pause = 1.0)
         }
     }
     fclose($strom);
-    echo "<INFO> MQTT: " . $zu_leeren . " von " . $n . " Themen unter " . $basis . "/ mit leerer "
-       . "Nutzlast an den UDP-Eingang " . (int) $udpport . " des Gateways gesendet ("
-       . $datagramme . " Datagramme).\n";
-    if ($nachgelesen && !$offen) {
+    $aus['offen'] = $offen;
+    $aus['lage'] = $nachgelesen ? ($offen ? 'rest' : 'geleert') : 'ungeprueft';
+    return $aus;
+}
+
+/** Die Themen der Kalender $nummern unter dem Grundpraefix $basis. */
+function awm_mqtt_themen_unter($basis, $nummern)
+{
+    $out = array();
+    foreach ($nummern as $k) {
+        $pr = (int) $k > 1 ? $basis . '/' . (int) $k : $basis;
+        foreach (awm_mqtt_leer_themen() as $t) { $out[] = $pr . '/' . $t; }
+    }
+    return $out;
+}
+
+/** Deinstallation: ein Grundpraefix leeren, Ausgabe im Format der Haken -
+ *  Wort fuer Wort wie bis 1.4.14. */
+function awm_mqtt_leeren_praefix($basis, $runden = 3, $pause = 1.0)
+{
+    $n_kal = max(1, count(awm_cals()));
+    $e = awm_mqtt_themen_leeren(awm_mqtt_themen_unter($basis, range(1, AWM_MAX_KALENDER)),
+                                awm_mqtt_themen_unter($basis, range(1, $n_kal)), $runden, $pause);
+    $n = $e['n'];
+    if ($e['lage'] === 'kein_port') {
+        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $basis . "/ wurden nicht geleert.\n";
+        return 2;
+    }
+    if ($e['lage'] === 'nichts') {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen unter " . $basis
+           . "/ (Kalender 1 bis " . AWM_MAX_KALENDER . ") steht zurueckbehalten - nichts zu leeren.\n";
+        return 0;
+    }
+    if ($e['lage'] === 'kein_eingang') {
+        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $basis . "/ wurden nicht geleert.\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: " . $e['zu_leeren'] . " von " . $n . " Themen unter " . $basis . "/ mit leerer "
+       . "Nutzlast an den UDP-Eingang " . (int) $e['udpport'] . " des Gateways gesendet ("
+       . $e['datagramme'] . " Datagramme).\n";
+    if ($e['lage'] === 'geleert') {
         echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen steht mehr "
            . "zurueckbehalten.\n";
         return 0;
     }
-    if ($nachgelesen) {
+    if ($e['lage'] === 'rest') {
+        $offen = $e['offen'];
         echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
            . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
            . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
@@ -2420,6 +2889,118 @@ function awm_mqtt_leeren($runden = 3, $pause = 1.0)
        . "mosquitto_pub -r -n -t <thema> von Hand loeschen. Geleert wurden nur die Themen "
        . "der eingerichteten Kalender (" . $n_kal . " von " . AWM_MAX_KALENDER . ").\n";
     return 0;
+}
+
+/**
+ * Die Folgen einer gespeicherten Aenderung fuer MQTT (M2, M3, M4).
+ *
+ * Bis 1.4.14 hatte keine davon Folgen im Broker:
+ *   M2 Praefixwechsel: die retained Themen unter dem alten Praefix blieben
+ *      fuer immer stehen, und unter dem neuen kamen bis zu 30 min lang nur
+ *      die drei Lebenszeichen (MQTT-Pruefer, Fall D).
+ *   M3 MQTT aus: audio, push, letzter blieben retained und veralteten; nach
+ *      dem Wiedereinschalten fehlten bis zu 30 min alle fluechtigen Werte
+ *      (Fall E).
+ *   M4 Kalender entfernt: seine retained Themen blieben (Fall G).
+ * Geraeumt wird mit Rueckfrage beim Broker (awm_mqtt_themen_leeren()), die
+ * beiden Merker (Wertemerker und Taktmerker) werden geloescht, damit der
+ * naechste Lauf den vollen Satz schickt.
+ *
+ * Rueckgabe array('meldungen' => [...], 'merken' => [Praefixe, deren Raeumen
+ * nicht bestaetigt ist - die Deinstallation leert sie noch einmal]).
+ */
+function awm_mqtt_folgen($alt, $neu, $runden = 3, $pause = 1.0)
+{
+    $aus = array('meldungen' => array(), 'merken' => array());
+    $pa = awm_mqtt_basis($alt);
+    $pn = awm_mqtt_basis($neu);
+    $ein_a = !empty($alt['mqtt_enabled']);
+    $ein_n = !empty($neu['mqtt_enabled']);
+    $ka = count(awm_cals_aus($alt));
+    $kn = count(awm_cals_aus($neu));
+    $auftrag = array();
+    if ($ein_a && $pa !== $pn) {
+        $auftrag[] = array('MQTT.M_ANLASS_PRAEFIX', $pa, range(1, AWM_MAX_KALENDER), true);
+    } elseif ($ein_a && !$ein_n) {
+        $auftrag[] = array('MQTT.M_ANLASS_AUS', $pa, range(1, AWM_MAX_KALENDER), false);
+    } elseif ($ein_a && $kn < $ka) {
+        $auftrag[] = array('MQTT.M_ANLASS_KALENDER', $pa, range($kn + 1, $ka), false);
+    }
+    if ($auftrag || $ein_a !== $ein_n || $pa !== $pn || $ka !== $kn) {
+        foreach (array_merge(glob(awm_tmpdir() . '/mqtt_letzte_*.json') ?: array(),
+                             glob(awm_tmpdir() . '/mqtt_beat_*') ?: array()) as $m) {
+            @unlink($m);
+        }
+    }
+    foreach ($auftrag as $a) {
+        list($anlass, $basis_voll, $nummern, $merken) = $a;
+        $themen = awm_mqtt_themen_unter($basis_voll, $nummern);
+        $e = awm_mqtt_themen_leeren($themen, $themen, $runden, $pause);
+        $vor = awm_t_oder($anlass, $anlass) . ' ';
+        /* In der Meldung die Praefixe der betroffenen Kalender (awm/2 ...),
+         * beim Praefixwechsel und bei "MQTT aus" das Grundpraefix. */
+        $basis = $basis_voll;
+        if ($anlass === 'MQTT.M_ANLASS_KALENDER') {
+            $zeige = array();
+            foreach ($nummern as $k) { $zeige[] = (int) $k > 1 ? $basis_voll . '/' . (int) $k : $basis_voll; }
+            $basis = implode('/, ', $zeige);
+        }
+        switch ($e['lage']) {
+            case 'nichts':
+                $t = sprintf(awm_t_oder('MQTT.M_NICHTS', 'Unter %s/ stand kein zurueckbehaltenes Thema mehr (vom Broker bestaetigt).'), $basis);
+                break;
+            case 'geleert':
+                $t = sprintf(awm_t_oder('MQTT.M_GELEERT', 'Zurueckbehaltene Themen unter %s/ geleert: %d Themen (vom Broker bestaetigt).'), $basis, $e['zu_leeren']);
+                break;
+            case 'rest':
+                $t = sprintf(awm_t_oder('MQTT.M_REST', 'Unter %s/ stehen noch %d zurueckbehaltene Themen (%s).'), $basis, count($e['offen']),
+                             implode(', ', array_slice($e['offen'], 0, 5)));
+                break;
+            case 'ungeprueft':
+                $t = sprintf(awm_t_oder('MQTT.M_UNGEPRUEFT', '%d zurueckbehaltene Themen unter %s/ mit leerer Nachricht geloescht; der Broker liess sich nicht befragen.'), $e['zu_leeren'], $basis);
+                break;
+            case 'kein_eingang':
+                $t = sprintf(awm_t_oder('MQTT.M_KEIN_EINGANG', 'Der UDP-Eingang des Gateways war nicht erreichbar - unter %s/ wurde nichts geleert.'), $basis);
+                break;
+            default:
+                $t = sprintf(awm_t_oder('MQTT.M_KEIN_PORT', 'In der general.json steht kein UDP-Eingang des Gateways - unter %s/ wurde nichts geleert.'), $basis);
+        }
+        awm_log('MQTT: ' . $vor . $t);
+        if ($merken && !in_array($e['lage'], array('nichts', 'geleert'), true)) {
+            $aus['merken'][] = $basis_voll;
+            $t .= ' ' . awm_t_oder('MQTT.M_GEMERKT', 'Das Praefix ist gemerkt; die Deinstallation leert es noch einmal.');
+        }
+        $aus['meldungen'][] = $vor . $t;
+    }
+    return $aus;
+}
+
+/**
+ * Die Abo-Datei des MQTT-Gateways: config/plugins/<ordner>/mqtt_subscriptions.cfg
+ * (M8, Bauform eb_abo_datei(), Einspeisebremse 0.9.28).
+ *
+ * Das Gateway V1 liest sie selbst und abonniert jede Zeile (Regeln/07, am
+ * Geraet belegt am 13.09.2026). Bis 1.4.14 gab es sie nicht: ohne Handeintrag
+ * kam unter V1 nichts am Miniserver an, und nach einem Praefixwechsel auch
+ * mit Handeintrag nicht mehr. Das Paket bringt sie mit dem Vorgabepraefix
+ * mit; geschrieben wird nur, wenn sie abweicht. Rueckgabe array(Pfad, traegt
+ * das Abo).
+ */
+function awm_abo_datei($praefix, $schreiben = false)
+{
+    $p = awm_paths();
+    $dir = dirname($p['config']);
+    $pfad = $dir . '/mqtt_subscriptions.cfg';
+    $soll = trim((string) $praefix, '/') . '/#';
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
+    if ($schreiben && $p['lbhome'] !== '' && $roh !== $soll . "\n" && is_dir($dir)) {
+        if (awm_datei_schreiben($pfad, $soll . "\n", 0644)) {
+            awm_log('Gateway-Abo nachgefuehrt: ' . $soll . ' (mqtt_subscriptions.cfg)');
+            $da = true;
+        }
+    }
+    return array($pfad, $da);
 }
 
 /**
@@ -2475,6 +3056,7 @@ function awm_mqtt_senden($msgs, $cal = 1, $raeumen = array())
         if (isset($raeumen[$k])) {
             $leer = 'retain ' . $prefix . '/' . $k . ' ';
             @socket_sendto($s, $leer, strlen($leer), 0, '127.0.0.1', $udpport);
+            usleep(AWM_MQTT_PAUSE_US);          // M5
         }
         /* 'retain <thema> <wert>' statt 'publish <thema> <wert>' - siehe
          * awm_mqtt_retain_liste(). Das erste Wort entscheidet; ein
@@ -2485,6 +3067,11 @@ function awm_mqtt_senden($msgs, $cal = 1, $raeumen = array())
         $befehl = awm_mqtt_retain($k, $wert) ? 'retain ' : 'publish ';
         $msg = $befehl . $prefix . '/' . $k . ' ' . $wert;
         @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $udpport);
+        /* M5: 5 ms Pause je Datagramm. Bis 1.4.14 gingen die Vollsaetze in
+         * einem Stoss hinaus - vier Kalender = 256 Datagramme in 6-13 ms, und
+         * an einem Leser mit dem Puffer des Geraets kamen nur 221-252 an
+         * (MQTT-Pruefer, lauf_b.txt). */
+        usleep(AWM_MQTT_PAUSE_US);
         $n++;
     }
     socket_close($s);
@@ -2506,12 +3093,19 @@ function awm_mqtt_senden($msgs, $cal = 1, $raeumen = array())
  */
 function awm_mqtt_lebenszeichen($cal = 1, $ok = 1, $zaehler = null)
 {
+    return awm_mqtt_senden(awm_mqtt_lebenszeichen_werte($ok, $zaehler), $cal);
+}
+
+/** Die drei Themen des Lebenszeichens - eigene Funktion, damit die
+ *  Selbstpruefung sie gegen die Themenliste halten kann (M7). */
+function awm_mqtt_lebenszeichen_werte($ok = 1, $zaehler = null)
+{
     if ($zaehler === null) { $zaehler = awm_zaehler(false); }
-    return awm_mqtt_senden(array(
+    return array(
         'status/ok' => (int) $ok ? 1 : 0,
         'status/ts' => time(),
         'status/zaehler' => (int) $zaehler,
-    ), $cal);
+    );
 }
 
 /** Wo der Merker der zuletzt gesendeten Werte liegt - je Kalender einer. */
@@ -2595,7 +3189,9 @@ function awm_mqtt_publish($st = null, $cal = 1, $erzwingen = false) {
      * unveraendertem Wert bliebe bis zum halbstuendlichen Vollsatz stehen
      * (in WSL gemessen, Pruefung-AWM-Abfuhr-1.4.13, Fall R10). */
     $alt = awm_mqtt_altlast(awm_mqtt_praefix($cal), $cal);
-    if ($alt['lage'] === 'belegt') { $erzwingen = true; }
+    if ($alt['lage'] === 'belegt' || ($alt['lage'] === 'unbekannt' && $alt['themen'])) {
+        $erzwingen = true;          // M6: das stuendliche Raeumen ohne Broker geht mit dem vollen Satz
+    }
 
     $merker = awm_mqtt_merker($cal);
     $vorher = array();
@@ -2609,6 +3205,9 @@ function awm_mqtt_publish($st = null, $cal = 1, $erzwingen = false) {
     }
     if (awm_mqtt_senden($neu, $cal, array_flip($alt['themen'])) < 1) {
         return 0;       // nichts hinausgegangen - Merker NICHT fortschreiben
+    }
+    if (!empty($alt['merker'])) {       // M6: das Raeumen ohne Broker ist fuer eine Stunde erledigt
+        @file_put_contents($alt['merker'], awm_mqtt_praefix($cal));
     }
     $js = json_encode($msgs);
     if ($js !== false) { awm_datei_schreiben($merker, $js); }
@@ -2634,6 +3233,12 @@ function awm_mqtt_nutzlast($st = null, $cal = 1)
         if ($f[6] === '' || !isset($werte[$name])) { continue; }
         $msgs[$f[6]] = $werte[$name];
     }
+    /* M1 (Entscheidung 5, 29.09.2026): ohne Kalenderdaten hat 'letzter'
+     * keine Aussage und geht als '-' hinaus (retained) - nie als 0, denn 0
+     * heisst laut Feldbeschreibung "unbegrenzt". Bis 1.4.14 stand danach
+     * awm/letzter=0 im Broker (MQTT-Pruefer, Fall F1). Die Loxone-Zeile
+     * behaelt LETZTER=0. */
+    if (empty($st['ereignisse'])) { $msgs['letzter'] = '-'; }
     $msgs['hinweis'] = $st['hinweis'] !== '' ? $st['hinweis'] : '-';
     $msgs['text_morgen'] = awm_text_morgen($st);
     $msgs['text_heute'] = awm_text_heute($st);
@@ -2874,8 +3479,7 @@ function awm_announce_check() {
         // 1. Vorabend
         $when = preg_match('/^\d{1,2}:\d{2}$/', (string) $cfg['notify']['time']) ? $cfg['notify']['time'] : '18:00';
         $flag = awm_tmpdir() . '/announced_' . $n . '_' . date('Ymd');
-        if ($imFenster($when) && !is_file($flag)) {
-            @file_put_contents($flag, '1');
+        if ($imFenster($when) && !is_file($flag) && awm_ansage_merker($flag)) {
             $text = awm_announce_text($st, $n);
             if ($text === '') {
                 awm_log('Ansage-Zeitpunkt ' . $when . ' (' . $c['name'] . '): morgen keine Abholung - keine Ansage');
@@ -2890,8 +3494,7 @@ function awm_announce_check() {
         }
         $when2 = preg_match('/^\d{1,2}:\d{2}$/', (string) $cfg['notify']['time2']) ? $cfg['notify']['time2'] : '06:30';
         $flag2 = awm_tmpdir() . '/announced2_' . $n . '_' . date('Ymd');
-        if ($imFenster($when2) && !is_file($flag2)) {
-            @file_put_contents($flag2, '1');
+        if ($imFenster($when2) && !is_file($flag2) && awm_ansage_merker($flag2)) {
             if (awm_ack_active()) {
                 awm_log('Morgen-Ansage entfaellt: heute wurde bereits quittiert.');
                 continue;
@@ -2987,9 +3590,9 @@ function awm_renew_test($url) {
     }
     // Mindestens ein Termin ab heute - sonst ist es ein alter Kalender.
     $heute = date('Ymd');
-    if (preg_match_all('/^DTSTART[^:\r\n]*:([^\r\n]+)/mi', $ics, $mm)) {
-        foreach ($mm[1] as $roh) {
-            $d = awm_ics_datum($roh);
+    if (preg_match_all('/^DTSTART([^:\r\n]*):([^\r\n]+)/mi', $ics, $mm)) {
+        foreach ($mm[2] as $nr => $roh) {
+            $d = awm_ics_datum($roh, awm_ics_tzid($mm[1][$nr]));     // C11
             if ($d !== '' && $d >= $heute) {
                 return $ics;
             }
@@ -3148,6 +3751,13 @@ function awm_renew($cal = 1) {
     if ($c === null) {
         return false;
     }
+    /* C4: ein hochgeladener Kalender hat keine Adresse, also nichts zu
+     * erneuern. Bis 1.4.14 lief er in die allgemeine Rueckfallebene und
+     * meldete danach "FEHLGESCHLAGEN" in den Meldebereich. */
+    if ($c['url'] === '') {
+        awm_log('Jahres-Erneuerung Kalender ' . $cal . ': hochgeladener Kalender ohne Adresse - nichts zu erneuern');
+        return false;
+    }
     $s = awm_renew_strategie($c['url']);
     if ($s === null) {
         awm_log('Jahres-Erneuerung Kalender ' . $cal . ': keine Strategie fuer diesen Link');
@@ -3179,29 +3789,44 @@ function awm_renew($cal = 1) {
         return false;
     }
 
-    $sperre = awm_sperre('config');
+    /* C9: die Sperre BLOCKIEREND nehmen (bis 10 s) und ohne sie nichts
+     * schreiben; gelesen wird unter der Sperre. Bis 1.4.14 war sie nicht
+     * blockierend, und bei false wurde trotzdem geschrieben. */
+    $sperre = awm_sperre('config', 10);
+    if ($sperre === false) {
+        awm_log('Jahres-Erneuerung Kalender ' . $cal . ': neuer Link gefunden, aber die '
+              . 'Konfiguration ist gesperrt (ein anderer Vorgang schreibt) - NICHT '
+              . 'gespeichert, der alte Link bleibt gueltig.');
+        return false;
+    }
     // Konfiguration aktualisieren
     $raw = json_decode((string) @file_get_contents($p['config']), true);
     if (!is_array($raw)) {
-        if ($sperre) { flock($sperre, LOCK_UN); fclose($sperre); }
+        awm_sperre_frei($sperre);
         return false;
     }
-    $i = 0;
     /* isset(): $raw ist die ROHE Datei, nicht das mit Vorgaben aufgefuellte
      * Array aus awm_config(). Auf einer Anlage, deren Konfiguration noch kein
      * 'cals' kennt (Altbestand, von Hand bearbeitet), war das auf PHP 8 eine
      * Warnung - bis 1.4.6 landete sie mit display_errors=1 in der Seite. */
     $raw_cals = isset($raw['cals']) && is_array($raw['cals']) ? $raw['cals'] : array();
-    foreach ($raw_cals as $idx => $cc) {
-        if (trim((string) (isset($cc['url']) ? $cc['url'] : '')) === '') {
-            continue;
-        }
-        $i++;
-        if ($i === (int) $cal) {
-            $raw['cals'][$idx]['url'] = $neu;
-            break;
-        }
+    /* C4: derselbe Platz wie in awm_cals() - EINE Zaehlung (awm_cal_platz).
+     * Bis 1.4.14 zaehlte diese Schleife nur Eintraege MIT Adresse: stand ein
+     * hochgeladener Kalender davor, traf sie keinen oder den falschen Eintrag
+     * und meldete trotzdem "Neuer Link gespeichert" (in WSL gemessen,
+     * Code-Pruefer 29.09.2026). Geschrieben wird nur, wenn an diesem Platz
+     * genau die Adresse steht, aus der die Kandidaten gerechnet wurden. */
+    $platz = awm_cal_platz($raw_cals, $cal);
+    $schluessel = array_keys($raw_cals);
+    $idx = $platz >= 0 ? $schluessel[$platz] : null;
+    if ($idx === null || !is_array($raw_cals[$idx])
+            || trim((string) (isset($raw_cals[$idx]['url']) ? $raw_cals[$idx]['url'] : '')) !== $c['url']) {
+        awm_log('Jahres-Erneuerung Kalender ' . $cal . ': der Eintrag in der Konfiguration passt '
+              . 'nicht (mehr) zu dieser Adresse - NICHT gespeichert.');
+        awm_sperre_frei($sperre);
+        return false;
     }
+    $raw['cals'][$idx]['url'] = $neu;
     // Erst die Konfiguration, dann die Sicherung - und nur, wenn das
     // Schreiben wirklich geklappt hat.
     /* 0600 wie jede andere Schreibstelle der Konfiguration (aw_speichern()
@@ -3212,13 +3837,23 @@ function awm_renew($cal = 1) {
      * Pruefung-AWM-Abfuhr-1.4.13, Fall N6). */
     if (!awm_json_schreiben($p['config'], $raw, 0600, true)) {
         awm_log('Jahres-Erneuerung: neuer Link gefunden, liess sich aber NICHT speichern - alter Link bleibt gueltig');
-        if ($sperre) { flock($sperre, LOCK_UN); fclose($sperre); }
+        awm_sperre_frei($sperre);
         return false;
     }
+    /* C7: die Zweitschrift mit 0600 - copy() uebernimmt die Rechte nicht,
+     * eine neu entstehende Zweitschrift bekaeme sonst die umask. */
     @copy($p['config'], $p['backup']);
-    awm_datei_schreiben(awm_icsfile($cal), awm_utf8($ics));
+    @chmod($p['backup'], 0600);
+    awm_datei_schreiben(awm_icsfile($cal), awm_utf8(awm_ics_entfalten($ics)));   // C1
     @unlink(awm_tmpdir() . '/state_' . (int) $cal . '.json');
-    if ($sperre) { flock($sperre, LOCK_UN); fclose($sperre); }
+    /* C3: der Abrufstand gilt jetzt fuer die neue Adresse - sonst hielte der
+     * naechste Minutenlauf sie fuer fremd und riefe gleich noch einmal ab. */
+    $cfg_neu = awm_config();
+    awm_json_schreiben(awm_fetchstand_datei($cal),
+        array('ok' => 1, 'zeit' => time(), 'grund' => '', 'fehler' => 0,
+              'naechster' => time() + max(1, (int) $cfg_neu['fetch_days']) * 86400,
+              'adresse' => awm_adresse_kennung($neu), 'versuch' => time()));
+    awm_sperre_frei($sperre);
     awm_log('Jahres-Erneuerung: neuer Link fuer Kalender ' . $cal . ' gespeichert');
     awm_notify(6, sprintf(awm_t_oder('MELDUNG.RENEW_OK',
                 'Der Abfuhrkalender "%s" wurde automatisch auf das Folgejahr umgestellt. '
@@ -3464,7 +4099,7 @@ function awm_selbstpruefung_robust()
     $ok = awm_json_schreiben($probe, array('a' => 1, 'b' => "\u{00fc}"));
     $gelesen = $ok ? json_decode((string) @file_get_contents($probe), true) : null;
     $p($ok && is_array($gelesen) && $gelesen['a'] === 1, 'Unteilbares Schreiben und Lesen klappt');
-    $p(!awm_json_schreiben($probe, array('a' => "\xFF\xFE ungueltig")),
+    $p(!awm_json_schreiben($probe, array('a' => "\xFF\xFE ungueltig"), 0664, false, false),
        'Ungueltiges UTF-8 wird abgelehnt, statt die Datei zu leeren');
     $nachher = json_decode((string) @file_get_contents($probe), true);
     $p(is_array($nachher) && isset($nachher['a']) && $nachher['a'] === 1,
@@ -3601,6 +4236,23 @@ function awm_selbstpruefung_robust()
     }
     $p(!$fehlt, 'Die Themenliste nennt jedes Zusatzthema, das die Ausnahmeliste kennt'
                 . ($fehlt ? ' - es fehlt: ' . implode(', ', $fehlt) : ''));
+
+    /* M7: die Themenliste gegen das, was WIRKLICH gesendet wird - die
+     * Nutzlast aus awm_mqtt_nutzlast() plus das Lebenszeichen, in beide
+     * Richtungen. Bis 1.4.14 hielt diese Pruefung die Liste nur gegen die
+     * Feldliste: ein Thema nur im Sender, oder eines, das nie hinausgeht,
+     * liess sie gruen (MQTT-Pruefer, Faelle H2 und H3). Erst die Mengen
+     * zaehlen - eine leere Menge ist kein "stimmt ueberein". */
+    $gesendet = array_merge(array_keys(awm_mqtt_nutzlast($st_probe, 1)),
+                            array_keys(awm_mqtt_lebenszeichen_werte(1, 0)));
+    $gelistet = array_keys(awm_mqtt_themen());
+    $nur_gesendet = array_values(array_diff($gesendet, $gelistet));
+    $nur_gelistet = array_values(array_diff($gelistet, $gesendet));
+    $p($gesendet && $gelistet && !$nur_gesendet && !$nur_gelistet,
+       sprintf('Themenliste und Sendecode stimmen ueberein (%d gesendet, %d gelistet)',
+               count($gesendet), count($gelistet))
+       . ($nur_gesendet ? ' - nur gesendet: ' . implode(', ', $nur_gesendet) : '')
+       . ($nur_gelistet ? ' - nur gelistet: ' . implode(', ', $nur_gelistet) : ''));
 
     $p(count($werte) === count($felder),
        'awm_werte() liefert genau die Felder aus awm_feldliste()');
@@ -4053,7 +4705,15 @@ function awm_abo_text()
     }
     $gemessen = ' <span class="sm-mono">'
               . sprintf(awm_t('MQTT.ABO_GEMESSEN'), $f) . '</span>';
-    return awm_t($f >= 2 ? 'MQTT.ABO_V2' : 'MQTT.T_ABO_WARN') . $gemessen;
+    if ($f >= 2) {
+        return awm_t('MQTT.ABO_V2') . $gemessen;
+    }
+    /* M8: unter V1 traegt das Plugin sein Abo selbst (mqtt_subscriptions.cfg).
+     * Nur wenn die Datei das eingestellte Praefix NICHT traegt, bleibt es
+     * beim Rat, das Abo von Hand einzutragen. */
+    $cfg = awm_config();
+    list(, $da) = awm_abo_datei(awm_mqtt_basis($cfg));
+    return awm_t($da ? 'MQTT.ABO_MITGELIEFERT' : 'MQTT.T_ABO_WARN') . $gemessen;
 }
 
 
@@ -4089,7 +4749,7 @@ function awm_config_speichern($cfg)
      * und awm_config() erkennt die nicht als kaputt (sie enthaelt ja
      * Anfuehrungszeichen) - das Plugin verhielt sich danach wie
      * unkonfiguriert. */
-    $sperre = awm_sperre('config');
+    $sperre = awm_sperre('config', 10);            // C9: blockierend, bis 10 s
     if ($sperre === false) {
         awm_log('Konfiguration nicht geschrieben: ein anderer Vorgang haelt die Sperre.');
         return false;
@@ -4099,8 +4759,7 @@ function awm_config_speichern($cfg)
         @copy($p['config'], $p['backup']);
         @chmod($p['backup'], 0600);
     }
-    flock($sperre, LOCK_UN);
-    fclose($sperre);
+    awm_sperre_frei($sperre);
     return $ok;
 }
 
@@ -4128,6 +4787,7 @@ function awm_sicherung_lesen($roh)
     $neu = awm_config_vorgaben();
     $bekannt = array_keys($neu);
     $anzahl = 0;
+    $bekannte = 0;          // U11: bekannte Schluessel, gleich ob ihr Wert taugt
     $uebergangen = 0;
     foreach ($daten as $k => $w) {
         $k = (string) $k;
@@ -4146,6 +4806,7 @@ function awm_sicherung_lesen($roh)
             $mangel[] = sprintf(awm_t('EINST.SICH_FREMD'), (string) $k);
             continue;
         }
+        $bekannte++;
         $grund = awm_wert_pruefen($k, $w);
         if ($grund !== '') {
             $mangel[] = sprintf(awm_t('EINST.SICH_WERT'), $k, $grund);
@@ -4154,7 +4815,11 @@ function awm_sicherung_lesen($roh)
         $neu[$k] = $w;
         $anzahl++;
     }
-    if ($anzahl === 0) {
+    /* U11: "keine bekannte Einstellung" nur, wenn wirklich kein Schluessel
+     * bekannt war. Bis 1.4.14 stand der Satz auch bei {"fetch_days": 500} -
+     * der Schluessel war bekannt, nur der Wert unzulaessig, und der Grund
+     * stand schon daneben. */
+    if ($bekannte === 0) {
         $mangel[] = awm_t('EINST.SICH_LEER');
     }
     /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
@@ -4185,6 +4850,240 @@ function awm_sicherung_lesen($roh)
             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
+}
+
+/* ==================================================================
+ * Einmalmeldung nach einem POST (U1, Regeln/04: jeder POST-Handler endet
+ * mit einer Umleitung). Bauform eb_einmal_schreiben()/eb_einmal_lesen()
+ * aus Einspeisebremse 0.9.28: eine Datei im Datenordner, 0600, beim
+ * folgenden GET gelesen UND geloescht, aelter als 120 s verworfen. Sie
+ * traegt nur Meldungstexte - kein Token, kein Kennwort.
+ * ================================================================== */
+function awm_einmal_datei()
+{
+    return awm_datadir() . '/einmalmeldung.json';
+}
+
+function awm_einmal_schreiben($gespeichert, $hinweise, $fehler)
+{
+    return awm_json_schreiben(awm_einmal_datei(), array(
+        'zeit' => time(), 'gespeichert' => $gespeichert ? 1 : 0,
+        'hinweise' => array_values(array_map('strval', (array) $hinweise)),
+        'fehler' => array_values(array_map('strval', (array) $fehler))), 0600);
+}
+
+function awm_einmal_lesen()
+{
+    $f = awm_einmal_datei();
+    if (!is_file($f)) { return null; }
+    $d = json_decode((string) @file_get_contents($f), true);
+    @unlink($f);
+    if (!is_array($d) || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) {
+        return null;
+    }
+    $txt = function ($l) {
+        $o = array();
+        foreach ((array) $l as $t) { if (is_string($t)) { $o[] = $t; } }
+        return $o;
+    };
+    return array('gespeichert' => !empty($d['gespeichert']),
+                 'hinweise' => $txt(isset($d['hinweise']) ? $d['hinweise'] : array()),
+                 'fehler' => $txt(isset($d['fehler']) ? $d['fehler'] : array()));
+}
+
+/* ==================================================================
+ * Pflichtzeilen des Reiters Test (U8, Regeln/04 "Pflichtzeilen jedes
+ * Plugins" und "Sechs Pruefzeilen"). Bis 1.4.14 zaehlte der Reiter nur, ob
+ * die Liste der Reiter 5 Eintraege hat - die Zahl stand im Quelltext -, und
+ * blieb gruen, als eine Mutante den Reiter Logdateien aus der Leiste nahm,
+ * den Bereich tab-test umbenannte, sm-active entfernte oder einem Formular
+ * das Merkmal nahm (Oberflaechen-Pruefer, Befund 8).
+ *
+ * Jede Funktion liefert array(lage, text) mit lage 'ok', 'fehl' oder
+ * 'hinweis' ("nicht feststellbar" - nie als bestanden gezaehlt).
+ * ================================================================== */
+
+/** Reiterleiste, Bereiche und Positivliste aus der eigenen Datei zaehlen. */
+function awm_pruef_reiter($quelle, $reiter)
+{
+    preg_match_all('/<a class="sm-tab(.*?)"\s+data-ziel="(tab-[a-z]+)"/', (string) $quelle, $ml);
+    preg_match_all('/<div class="sm-seite(.*?)"\s+id="(tab-[a-z]+)"/', (string) $quelle, $mb);
+    $leiste = $ml[2];
+    $bereiche = $mb[2];
+    $liste = array_values((array) $reiter);
+    $fehl = array();
+    if (!$leiste || !$bereiche || !$liste) {
+        $fehl[] = 'leere Menge';
+    }
+    $alle = array_unique(array_merge($leiste, $bereiche, $liste));
+    foreach ($alle as $r) {
+        if (!in_array($r, $leiste, true)) { $fehl[] = $r . ' fehlt in der Leiste'; }
+        if (!in_array($r, $bereiche, true)) { $fehl[] = $r . ' hat keinen Bereich'; }
+        if (!in_array($r, $liste, true)) { $fehl[] = $r . ' fehlt in der Positivliste'; }
+    }
+    foreach (array(array($ml, 'Leiste'), array($mb, 'Bereich')) as $x) {
+        foreach ($x[0][2] as $i => $r) {
+            $ausdruck = $x[0][1][$i];
+            if (strpos($ausdruck, "'" . $r . "'") === false || strpos($ausdruck, 'sm-active') === false) {
+                $fehl[] = $x[1] . ' ' . $r . ': sm-active setzt der Server nicht';
+            }
+        }
+    }
+    if ($fehl) {
+        return array('fehl', sprintf(awm_t_oder('TEST.P_REITER_FEHL',
+            'Reiterleiste (%d), Bereiche (%d) und Positivliste (%d) passen nicht zusammen: %s'),
+            count($leiste), count($bereiche), count($liste), implode('; ', array_unique($fehl))));
+    }
+    return array('ok', sprintf(awm_t_oder('TEST.P_REITER_OK',
+        'Reiterleiste, Bereiche und Positivliste passen zusammen: %d Reiter, sm-active setzt der Server'),
+        count($liste)));
+}
+
+/** Tragen alle POST-Formulare der eigenen Datei das Formularmerkmal? */
+function awm_pruef_formulare($quelle)
+{
+    $n = 0;
+    $ohne = 0;
+    foreach (preg_split('/<form\b/i', (string) $quelle) as $i => $teil) {
+        if ($i === 0) { continue; }
+        $ende = stripos($teil, '</form>');
+        $block = $ende === false ? $teil : substr($teil, 0, $ende);
+        if (!preg_match('/^[^>]*method="post"/i', $block)) { continue; }
+        $n++;
+        if (strpos($block, 'name="formtoken"') === false) { $ohne++; }
+    }
+    if ($n === 0) {
+        return array('fehl', awm_t_oder('TEST.P_FORM_LEER', 'Keine POST-Formulare gefunden - die Zeile misst nichts'));
+    }
+    if ($ohne > 0) {
+        return array('fehl', sprintf(awm_t_oder('TEST.P_FORM_FEHL',
+            '%d von %d POST-Formularen tragen das Formularmerkmal nicht'), $ohne, $n));
+    }
+    return array('ok', sprintf(awm_t_oder('TEST.P_FORM_OK',
+        'Alle %d POST-Formulare tragen das Formularmerkmal'), $n));
+}
+
+/** HTTP-Code und Rumpf eines Aufrufs, ohne Weiterleitung und ohne Proxy. */
+function awm_http_roh($url, $tmo = 3)
+{
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, array(CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_TIMEOUT => $tmo, CURLOPT_CONNECTTIMEOUT => $tmo, CURLOPT_PROXY => ''));
+        $r = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
+        return array($r === false ? 0 : $code, $r === false ? '' : (string) $r);
+    }
+    if (!ini_get('allow_url_fopen')) { return array(-1, ''); }
+    $ctx = stream_context_create(array('http' => array('timeout' => $tmo, 'ignore_errors' => true,
+                                                       'follow_location' => 0)));
+    list($r, $code) = awm_http_abruf($url, $ctx);
+    return array($r === false ? 0 : $code, $r === false ? '' : (string) $r);
+}
+
+/** Antwortet der eigene Endpunkt? Ein echter Aufruf ueber 127.0.0.1 mit drei
+ *  Ausgaengen (Regeln/04); ?selftest=1 loest nichts aus. */
+function awm_pruef_endpunkt($token)
+{
+    $p = awm_paths();
+    if ($p['lbhome'] === '') {
+        return array('hinweis', awm_t_oder('TEST.P_EP_OHNE', 'Kein installierter Aufbau - der eigene Endpunkt ist nicht feststellbar'));
+    }
+    $url = 'http://127.0.0.1:' . awm_webport() . '/plugins/' . rawurlencode($p['plugin'])
+         . '/awm.php?selftest=1&token=' . rawurlencode((string) $token);
+    list($code, $rumpf) = awm_http_roh($url, 3);
+    if ($code <= 0) {
+        return array('hinweis', awm_t_oder('TEST.P_EP_KEINE', 'Der eigene Endpunkt antwortet nicht (Grenze 3 s) - nicht feststellbar'));
+    }
+    if ($code === 200 && strpos($rumpf, 'SELFTEST;OK=1;TOKEN=OK') === 0) {
+        return array('ok', awm_t_oder('TEST.P_EP_OK', 'Der eigene Endpunkt antwortet ueber 127.0.0.1 (HTTP 200, SELFTEST;OK=1)'));
+    }
+    $anfang = trim(preg_replace('/\s+/', ' ', substr($rumpf, 0, 80)));
+    return array('fehl', sprintf(awm_t_oder('TEST.P_EP_FEHL', 'Der eigene Endpunkt antwortet falsch: HTTP %d, "%s"'),
+                                 $code, $anfang));
+}
+
+/** In welchem Zustand ist die Konfigurationsdatei? ok | leer | zweitschrift | kaputt.
+ *  Dieselbe Leer-Erkennung wie awm_config(). */
+function awm_config_lage()
+{
+    $p = awm_paths();
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    if ($roh === '' || $roh === '{}' || strpos($roh, '"') === false) {
+        return (is_file($p['backup']) && awm_zweitschrift_hat_inhalt($p['backup'])) ? 'zweitschrift' : 'leer';
+    }
+    return is_array(json_decode($roh, true)) ? 'ok' : 'kaputt';
+}
+
+/** Ist die Konfiguration heil? Aus der vorher gemessenen Lage. */
+function awm_pruef_konfiguration($lage)
+{
+    if ($lage === 'ok') {
+        return array('ok', awm_t_oder('TEST.P_KONF_OK', 'Die Konfiguration ist heil (lesbares JSON)'));
+    }
+    if ($lage === 'leer') {
+        return array('hinweis', awm_t_oder('TEST.P_KONF_LEER', 'Die Konfiguration ist leer - das Plugin ist noch nicht eingerichtet'));
+    }
+    if ($lage === 'zweitschrift') {
+        return array('hinweis', awm_t_oder('TEST.P_KONF_ZWEIT', 'Die Konfiguration war leer und wurde aus der Zweitschrift wiederhergestellt'));
+    }
+    return array('fehl', awm_t_oder('TEST.P_KONF_KAPUTT', 'Die Konfiguration ist kaputt (kein lesbares JSON) - es gilt die Zweitschrift, falls es eine gibt'));
+}
+
+/** Sind die Loxone-Vorlagen wohlgeformt? Jede erzeugbare Datei durch den
+ *  Parser, dazu CRLF (wie der Export aus Loxone Config). */
+function awm_pruef_vorlagen($kalender)
+{
+    if (!function_exists('simplexml_load_string')) {
+        return array('hinweis', awm_t_oder('TEST.P_VORL_OHNE', 'simplexml fehlt - die Vorlagen sind nicht pruefbar'));
+    }
+    $n = 0;
+    $schlecht = array();
+    $alt = libxml_use_internal_errors(true);
+    for ($k = 1; $k <= max(1, (int) $kalender); $k++) {
+        foreach (array(awm_vorlage($k), awm_vorlage_vo($k)) as $v) {
+            $n++;
+            $x = simplexml_load_string((string) $v[1]);
+            libxml_clear_errors();
+            if ($x === false || strpos((string) $v[1], "\r\n") === false) { $schlecht[] = $v[0]; }
+        }
+    }
+    libxml_use_internal_errors($alt);
+    if ($schlecht) {
+        return array('fehl', sprintf(awm_t_oder('TEST.P_VORL_FEHL', '%d von %d Loxone-Vorlagen sind nicht wohlgeformt: %s'),
+                                     count($schlecht), $n, implode(', ', $schlecht)));
+    }
+    return array('ok', sprintf(awm_t_oder('TEST.P_VORL_OK', 'Alle %d Loxone-Vorlagen sind wohlgeformt'), $n));
+}
+
+/** Gibt es den Cron-Eintrag, und zaehlt der Minutenlauf? Zwei Zeilen. */
+function awm_pruef_cron()
+{
+    $p = awm_paths();
+    if ($p['lbhome'] === '') {
+        return array(array('hinweis', awm_t_oder('TEST.P_CRON_OHNE', 'Kein installierter Aufbau - Cron-Eintrag nicht feststellbar')));
+    }
+    $eintraege = glob($p['lbhome'] . '/system/cron/cron.*/' . $p['plugin']) ?: array();
+    $aus = array();
+    if (!$eintraege) {
+        $aus[] = array('fehl', awm_t_oder('TEST.P_CRON_FEHL', 'Kein Cron-Eintrag des Plugins unter system/cron gefunden'));
+        $aus[] = array('hinweis', awm_t_oder('TEST.P_LAUF_OHNE', 'Ohne Cron-Eintrag wird der Minutenlauf nicht beurteilt'));
+        return $aus;
+    }
+    $aus[] = array('ok', sprintf(awm_t_oder('TEST.P_CRON_OK', 'Cron-Eintrag vorhanden (%s)'),
+                                 basename(dirname($eintraege[0]))));
+    $z = awm_tmpdir() . '/zaehler.txt';
+    clearstatcache(true, $z);
+    if (!is_file($z)) {
+        $aus[] = array('fehl', awm_t_oder('TEST.P_LAUF_NIE', 'Der Minutenlauf hat noch nie gezaehlt'));
+    } else {
+        $alter = max(0, time() - filemtime($z));
+        $aus[] = $alter <= 180
+            ? array('ok', sprintf(awm_t_oder('TEST.P_LAUF_OK', 'Der Minutenlauf arbeitet: letzter Lauf vor %d s'), $alter))
+            : array('fehl', sprintf(awm_t_oder('TEST.P_LAUF_ALT', 'Der Minutenlauf hat seit %d s nicht gezaehlt'), $alter));
+    }
+    return $aus;
 }
 
 /** Schluessel frueherer Fassungen, die es nicht mehr gibt. */

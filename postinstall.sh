@@ -77,26 +77,65 @@ awm_hat_inhalt() {
 }
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$CFGDIR/awm.json"
-if [ -f "$BK" ]; then
-    if [ ! -s "$CF" ] || ! grep -q '"' "$CF" 2>/dev/null; then
-        if awm_hat_inhalt "$BK"; then
-            cp -p "$BK" "$CF"
-            echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
-        else
-            echo "<WARNING> Die Sicherung $PFOLDER.backup.json traegt keinen Inhalt (kein lesbares"
-            echo "<WARNING> Objekt mit Aktionstoken oder Kalender) - sie wurde nicht uebernommen."
+BKDIR="$BASE/config/plugins/$PFOLDER.backup.ics"
+# ---------- I1: nur bei einer Aktualisierung zurueckspielen (Entscheidung 1) ----------
+# Ob dies eine Aktualisierung ist, sagt allein die Marke
+# data/plugins/<ordner>.upgrade_laeuft: preupgrade.sh legt sie als Erstes an
+# (und bricht ab, wenn das nicht geht), postupgrade.sh raeumt sie ab. Kein
+# Altersvergleich. Die Zweitschrift ist die laufende Rueckfallkopie: bei einem
+# Update darf sie zurueckgespielt werden und bleibt stehen.
+#
+# Bis 1.4.14 wurde auch bei einer NEUinstallation zurueckgespielt: eine
+# liegengebliebene Zweitschrift (jede Deinstallation bis 1.3.8 liess sie
+# absichtlich liegen) brachte Aktionstoken, Kalenderadresse und einen Kalender
+# von 2025 zurueck, gemeldet als "<OK> ... wiederhergestellt" (Installer-
+# Pruefer, Fall D). Jetzt gehen Zweitschrift und Kalenderbestand bei einer
+# Neuinstallation nach <name>.alt, einmal gemeldet; die Bibliothek liest .alt
+# nie, die Deinstallation raeumt es ab.
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+if [ -f "$MARKE" ]; then
+    if [ -f "$BK" ]; then
+        if [ ! -s "$CF" ] || ! grep -q '"' "$CF" 2>/dev/null; then
+            if awm_hat_inhalt "$BK"; then
+                cp -p "$BK" "$CF"
+                echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+            else
+                echo "<WARNING> Die Sicherung $PFOLDER.backup.json traegt keinen Inhalt (kein lesbares"
+                echo "<WARNING> Objekt mit Aktionstoken oder Kalender) - sie wurde nicht uebernommen."
+            fi
         fi
     fi
-fi
 
-# Kalender aus der dauerhaften Sicherung zurueckholen, falls keiner da ist.
-BKDIR="$BASE/config/plugins/$PFOLDER.backup.ics"
-if [ -d "$BKDIR" ] && [ -z "$(ls -A "$DATDIR"/kalender_*.ics 2>/dev/null)" ]; then
-    for f in "$BKDIR"/kalender_*.ics; do
-        [ -f "$f" ] && [ -s "$f" ] || continue
-        cp -p "$f" "$DATDIR/$(basename "$f")"
-        echo "<OK> Kalender $(basename "$f") aus Sicherung wiederhergestellt."
-    done
+    # Kalender aus der dauerhaften Sicherung zurueckholen, falls keiner da ist.
+    if [ -d "$BKDIR" ] && [ -z "$(ls -A "$DATDIR"/kalender_*.ics 2>/dev/null)" ]; then
+        for f in "$BKDIR"/kalender_*.ics; do
+            [ -f "$f" ] && [ -s "$f" ] || continue
+            cp -p "$f" "$DATDIR/$(basename "$f")"
+            echo "<OK> Kalender $(basename "$f") aus Sicherung wiederhergestellt."
+        done
+    fi
+else
+    AWM_BEISEITE=""
+    if [ -e "$BK" ] || [ -L "$BK" ]; then
+        rm -f "$BK.alt" 2>/dev/null
+        if mv -f "$BK" "$BK.alt" 2>/dev/null; then
+            [ -L "$BK.alt" ] || chmod 600 "$BK.alt" 2>/dev/null
+            AWM_BEISEITE="$AWM_BEISEITE $BK.alt"
+        else
+            echo "<WARNING> $BK liess sich nicht beiseitelegen - bitte von Hand entfernen."
+        fi
+    fi
+    if [ -e "$BKDIR" ] || [ -L "$BKDIR" ]; then
+        rm -rf "${BKDIR:?}.alt" 2>/dev/null
+        if mv -f "$BKDIR" "$BKDIR.alt" 2>/dev/null; then
+            AWM_BEISEITE="$AWM_BEISEITE $BKDIR.alt"
+        else
+            echo "<WARNING> $BKDIR liess sich nicht beiseitelegen - bitte von Hand entfernen."
+        fi
+    fi
+    if [ -n "$AWM_BEISEITE" ]; then
+        echo "<WARNING> Neuinstallation: gesicherte Einstellungen und Kalender einer frueheren Installation werden NICHT eingespielt; sie liegen beiseite unter:$AWM_BEISEITE (die Deinstallation raeumt sie ab)."
+    fi
 fi
 
 # Die Konfiguration traegt das Aktionstoken und die iCal-Adresse mit Strasse

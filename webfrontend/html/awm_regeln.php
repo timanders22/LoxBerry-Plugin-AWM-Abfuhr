@@ -198,7 +198,7 @@ function awm_regeln($cal = 1)
 {
     $cfg = awm_config();
     $cals = isset($cfg['cals']) && is_array($cfg['cals']) ? array_values($cfg['cals']) : array();
-    $i = max(1, (int) $cal) - 1;
+    $i = awm_cal_platz($cals, max(1, (int) $cal));        // C2: Nummer -> Platz
     $r = isset($cals[$i]['regeln']) && is_array($cals[$i]['regeln']) ? $cals[$i]['regeln'] : array();
     $arten = awm_tonnenarten();
     $out = array();
@@ -234,7 +234,7 @@ function awm_regeln_modus($cal = 1)
 {
     $cfg = awm_config();
     $cals = isset($cfg['cals']) && is_array($cfg['cals']) ? array_values($cfg['cals']) : array();
-    $i = max(1, (int) $cal) - 1;
+    $i = awm_cal_platz($cals, max(1, (int) $cal));        // C2: Nummer -> Platz
     $m = isset($cals[$i]['regeln_modus']) ? (string) $cals[$i]['regeln_modus'] : 'ersetzen';
     return $m === 'ergaenzen' ? 'ergaenzen' : 'ersetzen';
 }

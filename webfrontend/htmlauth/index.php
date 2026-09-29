@@ -111,7 +111,16 @@ function aw_speichern($daten, &$fehler)
 {
     $p = awm_paths();
     if (!is_dir(dirname($p['config']))) { @mkdir(dirname($p['config']), 0775, true); }
-    $sperre = awm_sperre('config');
+    /* C9: ohne Sperre wird nicht geschrieben. Bis 1.4.14 schrieb diese
+     * Funktion auch dann, wenn awm_sperre() false lieferte. Die Seite haelt
+     * die Sperre in der Regel schon (siehe unten); sie wird hier
+     * wiedereintrittsfaehig noch einmal genommen. Bekam die Seite sie nicht,
+     * wird nicht ein zweites Mal gewartet. */
+    $sperre = awm_sperre('config', empty($GLOBALS['aw_sperre']) ? 0 : 10);
+    if ($sperre === false) {
+        $fehler[] = awm_t('MELD.GESPERRT');
+        return false;
+    }
     /* 0600: in der Datei stehen das Aktionstoken und die iCal-Adresse
      * mit Strasse und Hausnummer - das Plugin sagt es in
      * uninstall/uninstall selbst. Hausstandard seit 03.09.2026
@@ -123,8 +132,29 @@ function aw_speichern($daten, &$fehler)
     } else {
         $fehler[] = sprintf(awm_t('MELD.NICHT_GESPEICHERT'), $p['config']);
     }
-    if ($sperre) { flock($sperre, LOCK_UN); fclose($sperre); }
+    awm_sperre_frei($sperre);
     return $ok;
+}
+
+/**
+ * Nach einem Speichern: die Folgen fuer MQTT ziehen (M2-M4) und die Abo-Datei
+ * des Gateways nachfuehren (M8). Ein Praefix, dessen Raeumen der Broker nicht
+ * bestaetigt hat, wird in der Konfiguration gemerkt ('_mqtt_frueher', nicht
+ * Teil der Sicherung); die Deinstallation leert es noch einmal.
+ */
+function aw_mqtt_folgen($alt, $neu, &$hinweise, &$fehler)
+{
+    $f = awm_mqtt_folgen($alt, $neu);
+    foreach ($f['meldungen'] as $m) { $hinweise[] = $m; }
+    $jetzt = awm_config(true);
+    $l = awm_mqtt_frueher_praefixe($jetzt);
+    $basis = awm_mqtt_basis($jetzt);
+    $l2 = array_values(array_diff(array_unique(array_merge($l, $f['merken'])), array($basis)));
+    if ($l2 !== $l) {
+        $jetzt['_mqtt_frueher'] = array_slice($l2, -8);
+        aw_speichern($jetzt, $fehler);
+    }
+    awm_abo_datei($basis, true);
 }
 
 /** Zu welcher Kalendernummer gehoert der Platz (0-basiert) in der Liste? */
@@ -164,13 +194,34 @@ if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $aw_rei
 }
 
 $aw_post = ($_SERVER['REQUEST_METHOD'] === 'POST');
+/* C9: Lesen und Schreiben der Konfiguration unter EINER Sperre. Bis 1.4.14
+ * las die Seite die Konfiguration VOR der Sperre, und die Sperre war nicht
+ * blockierend: ein Speichern waehrend der Jahres-Erneuerung konnte den
+ * neuen Link mit der alten Adresse aus dem Formular ueberschreiben. Die
+ * Sperre wird vor dem ersten Lesen genommen (blockierend, bis 10 s) und nach
+ * den Handlern wieder abgegeben; ohne sie schreibt aw_speichern() nicht. */
+$aw_sperre = awm_sperre('config', 10);
+/* U8: die Lage der Konfiguration VOR dem ersten Lesen merken - awm_config(true)
+ * heilt sie sonst, und der Reiter Test saehe nie "aus der Zweitschrift". */
+$aw_cfg_lage = awm_config_lage();
 $aw_cfg_roh = awm_config(true);      // hier DARF angelegt werden - angemeldeter Bereich
 
-// Beim ersten Aufruf ein Token erzeugen, damit die Adressen fuer Loxone sofort
-// benutzbar sind (schuetzt die ausloesenden Aufrufe im unangemeldeten awm.php).
-if (empty($aw_cfg_roh['aktionstoken'])) {
+/* Beim ersten Aufruf ein Token erzeugen, damit die Adressen fuer Loxone sofort
+ * benutzbar sind (schuetzt die ausloesenden Aufrufe im unangemeldeten awm.php).
+ *
+ * U3/U2: still nur bei einer Neuinstallation (Konfiguration leer). Fehlt das
+ * Token in einer bestehenden Konfiguration oder passt es nicht zum Muster, wird
+ * ein neues erzeugt UND gesagt, dass die Adressen in Loxone neu zu uebernehmen
+ * sind - bis 1.4.14 entstand es still, und jede eingetragene Adresse wurde
+ * stumm ungueltig (Oberflaechen-Pruefer, Befund 3). */
+if (!awm_token_gueltig(isset($aw_cfg_roh['aktionstoken']) ? $aw_cfg_roh['aktionstoken'] : null)) {
+    $aw_tok_war = isset($aw_cfg_roh['aktionstoken']) ? $aw_cfg_roh['aktionstoken'] : '';
     $aw_cfg_roh['aktionstoken'] = awm_token_erzeugen();
-    aw_speichern($aw_cfg_roh, $aw_fehler);
+    if (aw_speichern($aw_cfg_roh, $aw_fehler) && $aw_cfg_lage !== 'leer') {
+        $aw_hinweise[] = awm_t($aw_tok_war === '' ? 'MELD.TOKEN_ERZEUGT' : 'MELD.TOKEN_UNGUELTIG');
+        awm_log('Aktionstoken ' . ($aw_tok_war === '' ? 'fehlte' : 'passte nicht zum Muster')
+              . ' - ein neues wurde erzeugt; die Adressen in Loxone muessen neu uebernommen werden.');
+    }
 }
 
 if ($aw_post && !aw_formtoken_ok($aw_cfg_roh)) {
@@ -211,17 +262,22 @@ if ($aw_post && isset($_POST['vorlage'])) {
  * beim Absenden des MQTT-Formulars die Einstellungs-Haken auf 0 stellen. */
 if ($aw_post && isset($_POST['mqtt_save'])) {
     $aw_new = awm_config(true);
+    $aw_vorher = $aw_new;
     $aw_new['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
     $aw_thema = trim((string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''));
     // Was nicht ins Muster passt, wird ABGEWIESEN, nicht zurechtgebogen.
     if ($aw_thema === '') {
         $aw_thema = 'awm';
     }
-    if (!preg_match('#^[A-Za-z0-9_\-/]+$#', $aw_thema)) {
+    // U4: dieselbe Pruefung wie beim Zurueckspielen (mit \z statt $).
+    if (awm_wert_pruefen('mqtt_topic', $aw_thema) !== '') {
         $aw_fehler[] = awm_t('MELD.THEMA_UNGUELTIG');
     } else {
         $aw_new['mqtt_topic'] = $aw_thema;
-        if (aw_speichern($aw_new, $aw_fehler)) { $aw_saved = true; }
+        if (aw_speichern($aw_new, $aw_fehler)) {
+            $aw_saved = true;
+            aw_mqtt_folgen($aw_vorher, $aw_new, $aw_hinweise, $aw_fehler);
+        }
     }
     $aw_tab = 'tab-mqtt';
 }
@@ -240,6 +296,7 @@ if ($aw_post && isset($_POST['token_neu'])) {
 if ($aw_post && isset($_POST['clearlog'])) {
     if (!is_dir(dirname($aw_logfile))) { @mkdir(dirname($aw_logfile), 0775, true); }
     @file_put_contents($aw_logfile, '[' . date('Y-m-d H:i:s') . '] ' . awm_t('MELD.LOG_GELEERT') . "\n");
+    $aw_hinweise[] = awm_t('MELD.LOG_GELEERT');     // U1: die Einmalmeldung sagt es
     $aw_tab = 'tab-log';
 }
 
@@ -260,7 +317,7 @@ if ($aw_post && isset($_POST['upload'])) {
         $aw_fehler[] = awm_t('MELD.UPLOAD_GROSS');
     } else {
         $aw_inhalt = (string) @file_get_contents($_FILES['icsdatei']['tmp_name']);
-        $aw_inhalt = awm_utf8($aw_inhalt);
+        $aw_inhalt = awm_utf8(awm_ics_entfalten($aw_inhalt));   // C1: erst entfalten
         $aw_grund = awm_ics_pruefen($aw_inhalt);
         if ($aw_grund !== '') {
             $aw_fehler[] = $aw_grund;
@@ -270,7 +327,7 @@ if ($aw_post && isset($_POST['upload'])) {
             while (count($aw_liste) <= $aw_slot) { $aw_liste[] = array('name' => '', 'url' => ''); }
             $aw_liste[$aw_slot]['hochgeladen'] = 1;
             if (trim((string) (isset($aw_liste[$aw_slot]['name']) ? $aw_liste[$aw_slot]['name'] : '')) === '') {
-                $aw_liste[$aw_slot]['name'] = 'Kalender ' . ($aw_slot + 1);
+                $aw_liste[$aw_slot]['name'] = sprintf(awm_t_oder('EINST.KALENDER_N', 'Kalender %d'), $aw_slot + 1);   // U10
             }
             $aw_new['cals'] = $aw_liste;
             if (aw_speichern($aw_new, $aw_fehler)) {
@@ -296,15 +353,9 @@ if ($aw_post && isset($_POST['save_bins'])) {
     $aw_new = awm_config(true);
     $aw_liste = array_values((array) $aw_new['cals']);
     $aw_cn = max(1, (int) (isset($_POST['bins_cal']) ? $_POST['bins_cal'] : 1));
-    // Von der Kalendernummer zurueck auf den Platz in der Liste.
-    $aw_slot = -1;
-    $aw_z = 0;
-    foreach ($aw_liste as $i => $c) {
-        $c = (array) $c;
-        if (trim((string) (isset($c['url']) ? $c['url'] : '')) === '' && empty($c['hochgeladen'])) { continue; }
-        $aw_z++;
-        if ($aw_z === $aw_cn) { $aw_slot = $i; break; }
-    }
+    // Von der Kalendernummer zurueck auf den Platz in der Liste - EINE
+    // Funktion in der Bibliothek (C2), dieselbe wie beim Lesen der Regeln.
+    $aw_slot = awm_cal_platz($aw_liste, $aw_cn);
     $aw_arten = awm_tonnenarten();
     $aw_titel = isset($_POST['bin_titel']) ? (array) $_POST['bin_titel'] : array();
     $aw_tonne = isset($_POST['bin_tonne']) ? (array) $_POST['bin_tonne'] : array();
@@ -347,14 +398,7 @@ if ($aw_post && isset($_POST['save_termine'])) {
     $aw_new = awm_config(true);
     $aw_liste = array_values((array) $aw_new['cals']);
     $aw_cn = max(1, (int) (isset($_POST['term_cal']) ? $_POST['term_cal'] : 1));
-    $aw_slot = -1;
-    $aw_z = 0;
-    foreach ($aw_liste as $i => $c) {
-        $c = (array) $c;
-        if (trim((string) (isset($c['url']) ? $c['url'] : '')) === '' && empty($c['hochgeladen'])) { continue; }
-        $aw_z++;
-        if ($aw_z === $aw_cn) { $aw_slot = $i; break; }
-    }
+    $aw_slot = awm_cal_platz($aw_liste, $aw_cn);         // C2
     $aw_arten = awm_tonnenarten();
     $aw_td = isset($_POST['term_datum']) ? (array) $_POST['term_datum'] : array();
     $aw_tb = isset($_POST['term_tonne']) ? (array) $_POST['term_tonne'] : array();
@@ -400,6 +444,11 @@ if ($aw_post && isset($_POST['fetchnow'])) {
     foreach (awm_cals() as $aw_n => $aw_c) {
         list($aw_fok, $aw_fq) = awm_fetch(true, $aw_n);
         awm_state(true, $aw_n);
+        if ($aw_fq === 'gebremst') {         // C5: ausdruecklich sagen
+            $aw_msgs[] = $aw_c['name'] . ': ' . sprintf(awm_t('MELD.ABRUF_GEBREMST'),
+                AWM_SOFORT_ABSTAND, awm_sofortabruf_warte($aw_n));
+            continue;
+        }
         $aw_msgs[] = $aw_c['name'] . ': ' . ($aw_fok ? $aw_fq : awm_t('MELD.FEHLGESCHLAGEN'));
     }
     if ($aw_msgs) {
@@ -420,6 +469,7 @@ if ($aw_post && isset($_POST['fetchnow'])) {
  */
 if ($aw_post && isset($_POST['save'])) {
     $aw_new = awm_config(true);
+    $aw_vorher = $aw_new;
     $aw_alt_cals = array_values((array) $aw_new['cals']);
     $aw_names = isset($_POST['cal_name']) ? (array) $_POST['cal_name'] : array();
     $aw_urls = isset($_POST['cal_url']) ? (array) $_POST['cal_url'] : array();
@@ -450,8 +500,16 @@ if ($aw_post && isset($_POST['save'])) {
         $aw_eintrag['name'] = trim((string) (isset($aw_names[$aw_i]) ? $aw_names[$aw_i] : ''));
         $aw_eintrag['url'] = $aw_u;
         $aw_eintrag['ansage'] = !empty($aw_ans[$aw_i]) ? 1 : 0;
-        $aw_eintrag['zonen'] = trim(preg_replace('/[^0-9,~ ]/', '',
-                               (string) (isset($aw_zon[$aw_i]) ? $aw_zon[$aw_i] : '')));
+        /* U5: eine unzulaessige Zonenangabe wird beanstandet und der alte Wert
+         * behalten - bis 1.4.14 wurde "2,a4" still zu "2,4". Geprueft mit
+         * derselben Funktion wie beim Zurueckspielen (U4). */
+        $aw_zz = (string) (isset($aw_zon[$aw_i]) ? $aw_zon[$aw_i] : '');
+        if (awm_ist_zonen($aw_zz)) {
+            $aw_eintrag['zonen'] = trim($aw_zz);
+        } else {
+            $aw_fehler[] = sprintf(awm_t('MELD.ZONEN'), $aw_zz);
+            $aw_eintrag['zonen'] = isset($aw_alt['zonen']) && is_string($aw_alt['zonen']) ? $aw_alt['zonen'] : '';
+        }
         $aw_liste[] = $aw_eintrag;
     }
     $aw_new['cals'] = $aw_liste;
@@ -477,21 +535,24 @@ if ($aw_post && isset($_POST['save'])) {
     $aw_new['hinweis_woerter'] = $aw_hw !== '' ? $aw_hw : AWM_HINWEIS_STANDARD;
     $aw_zeit = (string) (isset($_POST['notify_time']) ? $_POST['notify_time'] : '');
     $aw_zeit2 = (string) (isset($_POST['notify_time2']) ? $_POST['notify_time2'] : '');
-    // \z statt $: $ liesse "18:00\n" durch, und gespeichert wird der Rohwert.
-    if ($aw_zeit !== '' && !preg_match('/^\d{1,2}:\d{2}\z/', $aw_zeit)) {
+    /* U4: dieselbe Pruefung wie beim Zurueckspielen (awm_ist_zeit: 00:00 bis
+     * 23:59, ohne Rand). Bis 1.4.14 nahm das Formular "25:99" an, und die
+     * EIGENE Sicherung liess sich danach nicht zurueckspielen. U5: ein
+     * ungueltiger Wert behaelt den alten und wird gemeldet. */
+    if (!awm_ist_zeit($aw_zeit)) {
         $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_zeit);
         $aw_zeit = (string) $aw_new['notify']['time'];
     }
-    if ($aw_zeit2 !== '' && !preg_match('/^\d{1,2}:\d{2}\z/', $aw_zeit2)) {
+    if (!awm_ist_zeit($aw_zeit2)) {
         $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_zeit2);
         $aw_zeit2 = (string) $aw_new['notify']['time2'];
     }
     $aw_new['notify'] = array(
         'audio' => isset($_POST['notify_audio']) ? 1 : 0,
         'push' => isset($_POST['notify_push']) ? 1 : 0,
-        'time' => $aw_zeit !== '' ? $aw_zeit : '18:00',
+        'time' => $aw_zeit,
         'audio2' => isset($_POST['notify_audio2']) ? 1 : 0,
-        'time2' => $aw_zeit2 !== '' ? $aw_zeit2 : '06:30',
+        'time2' => $aw_zeit2,
     );
     $aw_bd = trim((string) (isset($_POST['ruhe_bis']) ? $_POST['ruhe_bis'] : ''));
     $aw_bd_ymd = '';
@@ -503,11 +564,24 @@ if ($aw_post && isset($_POST['save'])) {
             $aw_bd_ymd = (string) $aw_new['ruhe']['bis_datum'];
         }
     }
+    /* U4/U5: die Ruhezeit wie die Uhrzeiten oben. Bis 1.4.14 wurde "abc" still
+     * zur Werksvorgabe 22:00 (nicht einmal zum alten Wert), "7:5" still zu
+     * 07:00 - ohne Meldung. */
+    $aw_rv = (string) (isset($_POST['ruhe_von']) ? $_POST['ruhe_von'] : '');
+    $aw_rb = (string) (isset($_POST['ruhe_bis_zeit']) ? $_POST['ruhe_bis_zeit'] : '');
+    if (!awm_ist_zeit($aw_rv)) {
+        $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_rv);
+        $aw_rv = (string) $aw_new['ruhe']['von'];
+    }
+    if (!awm_ist_zeit($aw_rb)) {
+        $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_rb);
+        $aw_rb = (string) $aw_new['ruhe']['bis'];
+    }
     $aw_new['ruhe'] = array(
         'urlaub' => isset($_POST['ruhe_urlaub']) ? 1 : 0,
         'nachts' => isset($_POST['ruhe_nachts']) ? 1 : 0,
-        'von' => preg_match('/^\d{1,2}:\d{2}\z/', (string) (isset($_POST['ruhe_von']) ? $_POST['ruhe_von'] : '')) ? $_POST['ruhe_von'] : '22:00',
-        'bis' => preg_match('/^\d{1,2}:\d{2}\z/', (string) (isset($_POST['ruhe_bis_zeit']) ? $_POST['ruhe_bis_zeit'] : '')) ? $_POST['ruhe_bis_zeit'] : '07:00',
+        'von' => $aw_rv,
+        'bis' => $aw_rb,
         'bis_datum' => $aw_bd_ymd,
     );
     $aw_mode = (string) (isset($_POST['tts_mode']) ? $_POST['tts_mode'] : 'musicserver');
@@ -523,13 +597,37 @@ if ($aw_post && isset($_POST['save'])) {
         $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_LAUT'), 1, 100, $aw_vol);
         $aw_vol = (int) $aw_new['tts']['volume'];
     }
+    /* U4/U5: Ansageart, Adresse, Zonen und Sprache mit denselben Pruefern wie
+     * beim Zurueckspielen; Unzulaessiges wird gemeldet, der alte Wert bleibt.
+     * Bis 1.4.14: "DE1" still zu "de", "192.0.2.4/x?y" ungeprueft als
+     * Adresse, "Kueche" als Zone - die eigene Sicherung wurde danach
+     * abgewiesen. */
+    if (!in_array($aw_mode, array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
+        $aw_fehler[] = sprintf(awm_t('MELD.MODUS'), $aw_mode);
+        $aw_mode = (string) $aw_new['tts']['mode'];
+    }
+    $aw_ip = trim((string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : ''));
+    if (!awm_ist_host($aw_ip)) {
+        $aw_fehler[] = sprintf(awm_t('MELD.HOST'), $aw_ip);
+        $aw_ip = (string) $aw_new['tts']['ip'];
+    }
+    $aw_zo = (string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '');
+    if (!awm_ist_zonen($aw_zo)) {
+        $aw_fehler[] = sprintf(awm_t('MELD.ZONEN'), $aw_zo);
+        $aw_zo = (string) $aw_new['tts']['zones'];
+    }
+    $aw_la2 = (string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : '');
+    if (!awm_ist_sprache($aw_la2)) {
+        $aw_fehler[] = sprintf(awm_t('MELD.SPRACHE'), $aw_la2);
+        $aw_la2 = (string) $aw_new['tts']['lang'];
+    }
     $aw_new['tts'] = array(
-        'mode' => in_array($aw_mode, array('musicserver', 'ms4h', 'audioserver', 'custom'), true) ? $aw_mode : 'musicserver',
-        'ip' => trim((string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : '')),
+        'mode' => $aw_mode,
+        'ip' => $aw_ip,
         'port' => $aw_port,
-        'zones' => trim((string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '1')),
+        'zones' => $aw_zo,
         'volume' => $aw_vol,
-        'lang' => preg_replace('/[^a-z]/', '', strtolower((string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : 'de'))) ?: 'de',
+        'lang' => $aw_la2,
         'template' => trim((string) (isset($_POST['tts_template']) ? $_POST['tts_template'] : '')),
     );
     $aw_new['ansage'] = array(
@@ -544,6 +642,7 @@ if ($aw_post && isset($_POST['save'])) {
     if (aw_speichern($aw_new, $aw_fehler)) {
         $aw_saved = true;
         foreach (array_keys(awm_cals()) as $aw_n) { awm_state(true, $aw_n); }
+        aw_mqtt_folgen($aw_vorher, $aw_new, $aw_hinweise, $aw_fehler);    // M4: entfernte Kalender
     }
     $aw_tab = 'tab-settings';
 }
@@ -588,8 +687,24 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert
              * wird nichts. */
             $aw_fehler[] = awm_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $awm_mangel);
-        } elseif (awm_config_speichern($awm_neu)) {
+        } else {
+            /* U3 (Bauform Renault 2.1.13 U4): eine Sicherung ohne Token
+             * ("kein Token gesichert") behaelt das geltende Token, und die
+             * Seite sagt es. Bis 1.4.14 wurde es gespeichert, und beim
+             * naechsten Seitenaufruf entstand STILL ein neues - jede in Loxone
+             * eingetragene Adresse war danach ungueltig. */
+            $awm_vorher = awm_config(true);
+            $awm_tok_behalten = false;
+            if ($awm_neu['aktionstoken'] === '' && awm_token_gueltig(isset($awm_vorher['aktionstoken']) ? $awm_vorher['aktionstoken'] : null)) {
+                $awm_neu['aktionstoken'] = $awm_vorher['aktionstoken'];
+                $awm_tok_behalten = true;
+            }
+            if (!awm_config_speichern($awm_neu)) {
+                $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
+            } else {
             $aw_hinweise[] = sprintf(awm_t('EINST.SICH_UEBERNOMMEN'), $awm_n);
+            if ($awm_tok_behalten) { $aw_hinweise[] = awm_t('EINST.SICH_TOKEN_BEHALTEN'); }
+            aw_mqtt_folgen($awm_vorher, $awm_neu, $aw_hinweise, $aw_fehler);     // M2-M4, M8
             /* Den Dienst nachziehen UND sagen, was mit ihm geschah
              * (Regeln/05). Ohne das stimmt die Seite, aber der Miniserver
              * rechnet bis zum naechsten Minutenlauf mit dem alten Stand. */
@@ -602,12 +717,41 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
                 $awm_nach++;
             }
             $aw_hinweise[] = sprintf(awm_t('EINST.SICH_DIENST'), $awm_nach);
-        } else {
-            $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
+            }
         }
     }
 }
 
+
+if ($aw_sperre) { awm_sperre_frei($aw_sperre); }     // C9: nach den Handlern
+
+/* ---------- U1: POST - Umleitung - GET ----------
+ *
+ * Regeln/04: "Jeder POST-Handler endet mit einer Umleitung." Bis 1.4.14
+ * antworteten alle neun Handler mit HTTP 200; Neuladen leerte das Protokoll
+ * ein zweites Mal, und nach "Neues Aktionstoken" meldete die Seite einen
+ * fremden Absender (Oberflaechen-Pruefer, Befund 1). Jetzt: Ergebnis als
+ * Einmalmeldung ablegen, 303 auf den Reiter, beim GET einmal zeigen. Das
+ * gilt auch fuer einen POST ohne gueltiges Formularmerkmal. Die Downloads
+ * (Vorlagen, Sicherung) haben oben schon geendet. Laesst sich die
+ * Einmalmeldung nicht ablegen, wird wie bisher ohne Umleitung gezeigt. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $aw_ziel = 'index.php?form=' . substr($aw_tab, 4);
+    $aw_bc = isset($_POST['bins_cal']) ? $_POST['bins_cal'] : (isset($_POST['term_cal']) ? $_POST['term_cal'] : null);
+    if ($aw_bc !== null && is_scalar($aw_bc)) { $aw_ziel .= '&bcal=' . max(1, (int) $aw_bc); }
+    if (awm_einmal_schreiben($aw_saved, $aw_hinweise, $aw_fehler)) {
+        header('Location: ' . $aw_ziel, true, 303);
+        exit;
+    }
+    awm_log('Die Einmalmeldung liess sich nicht ablegen - die Seite wird ohne Umleitung gezeigt.');
+} else {
+    $aw_einmal = awm_einmal_lesen();
+    if ($aw_einmal !== null) {
+        if ($aw_einmal['gespeichert']) { $aw_saved = true; }
+        $aw_hinweise = array_merge($aw_einmal['hinweise'], $aw_hinweise);
+        $aw_fehler = array_merge($aw_einmal['fehler'], $aw_fehler);
+    }
+}
 
 /* ---------- Laden ---------- */
 $aw_cfg = awm_config(true);
@@ -826,7 +970,7 @@ if ($aw_frame) {
 <h2><?= aw_t('EINST.H_QUELLEN') ?></h2>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th style="width:34px;">Nr.</th><th style="width:150px;"><?= aw_t('EINST.T_NAME') ?></th>
+<tr><th style="width:34px;"><?= aw_t('EINST.T_NR') ?></th><th style="width:150px;"><?= aw_t('EINST.T_NAME') ?></th>
     <th><?= aw_t('EINST.T_URL') ?></th>
     <th style="width:70px;"><?= aw_t('EINST.T_ANSAGE') ?></th>
     <th style="width:110px;"><?= aw_t('EINST.T_ZONEN') ?></th></tr>
@@ -1000,12 +1144,14 @@ if ($aw_frame) {
 <?php if (count($aw_cals) > 1) { ?>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= aw_t('LEGENDE.LESEN') ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= aw_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-knopfreihe">
-<?php foreach ($aw_cals as $aw_n => $aw_c) {
+<?php /* U9: die Kalenderwahl schaltet nur die Ansicht um - grau-gruen wie
+         jedes Ansehen, der gewaehlte mit Zeiger. Bis 1.4.14 war er orange
+         (sm-b-aktion) und behauptete eine Wirkung, die nicht eintritt. */
+foreach ($aw_cals as $aw_n => $aw_c) {
     if ($aw_n === $aw_bcal) { ?>
-<a class="sm-btn sm-b-aktion" href="index.php?form=settings&amp;bcal=<?= (int) $aw_n ?>"><?= aw_e($aw_c['name']) ?></a>
+<a class="sm-btn sm-b-lesen" aria-current="true" href="index.php?form=settings&amp;bcal=<?= (int) $aw_n ?>">&#9656; <?= aw_e($aw_c['name']) ?></a>
 <?php } else { ?>
 <a class="sm-btn sm-b-lesen" href="index.php?form=settings&amp;bcal=<?= (int) $aw_n ?>"><?= aw_e($aw_c['name']) ?></a>
 <?php } } ?>
@@ -1125,22 +1271,24 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
     <input data-role="none" type="file" name="icsdatei" accept=".ics,text/calendar"></div>
 </div>
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= aw_t('LEGENDE.TECHNIK') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= aw_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-knopfreihe">
-<button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= aw_t('KNOPF.HOCHLADEN') ?></button>
+<?php /* U9: Hochladen ueberschreibt Kalenderdatei und Konfiguration - orange. */ ?>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= aw_t('KNOPF.HOCHLADEN') ?></button>
 </div>
 </form>
 
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= aw_t('LEGENDE.TECHNIK') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= aw_t('LEGENDE.AKTION') ?></span>
 </div>
 <div class="sm-knopfreihe">
+<?php /* U9: "Jetzt abrufen" geht ins Netz und ueberschreibt die Kalenderdatei - orange. */ ?>
 <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="fetchnow" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= aw_t('KNOPF.JETZT_ABRUFEN') ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= aw_t('KNOPF.JETZT_ABRUFEN') ?></button>
 </form>
 </div>
 
@@ -1148,6 +1296,11 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 <h2><?= awm_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= awm_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= awm_t('EINST.SICH_WARNUNG') ?></div>
+<?php /* U9: eine Legende ueber der Sicherungsreihe - gruen (sichern) und orange (zurueckspielen). */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= aw_t('LEGENDE.LESEN') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= aw_t('LEGENDE.AKTION') ?></span>
+</div>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1281,20 +1434,22 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 <div class="sm-step"><b><?= aw_t('LOX.S6') ?></b>
 <table class="sm-tbl">
 <tr><th style="width:34px;">#</th><th><?= aw_t('LOX.T_BAUSTEIN') ?></th><th><?= aw_t('LOX.T_NAME') ?></th><th><?= aw_t('LOX.T_PARAM') ?></th><th><?= aw_t('LOX.T_EINGAENGE') ?></th></tr>
-<tr><td>1</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td>Erinnerungsfenster aktiv</td><td>Ein 0,5 / Aus 0,4</td><td><span class="sm-mono">ANN</span></td></tr>
-<tr><td>2</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td>Push freigegeben</td><td>Ein 0,5 / Aus 0,4</td><td><span class="sm-mono">PUSH</span></td></tr>
-<tr><td>3</td><td><?= aw_t('LOX.B_UND') ?></td><td>M&uuml;ll-Push jetzt</td><td>&ndash;</td><td>#1, #2</td></tr>
-<tr><td>4</td><td><?= aw_t('LOX.B_ODER') ?></td><td>Push-Sammler</td><td><?= aw_t('LOX.P_SAMMLER') ?></td><td>#3</td></tr>
-<tr><td>5</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td>Push &bdquo;Tonne rausstellen&ldquo;</td><td><?= aw_t('LOX.P_TEXT') ?></td><td>#4</td></tr>
-<tr><td>6</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td>Test-Push</td><td>Ein 0,5 / Aus 0,4</td><td><span class="sm-mono">PTEST</span></td></tr>
-<tr><td>7</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td>Test-Push senden</td><td><?= aw_t('LOX.P_EIGEN') ?></td><td>#6</td></tr>
-<tr><td>8</td><td><?= aw_t('LOX.B_TASTER') ?></td><td>Tonne steht drau&szlig;en</td><td><?= aw_t('LOX.P_VISU') ?></td><td>&ndash;</td></tr>
-<tr><td>9</td><td><?= aw_t('LOX.B_VAUS') ?></td><td>Quittierung ans Plugin</td><td><span class="sm-mono">?ack=1</span></td><td>#8</td></tr>
-<tr><td>10</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td>Heute Abfuhr</td><td>Ein 0,5 / Aus 0,4</td><td><span class="sm-mono">HREST</span> &hellip;</td></tr>
-<tr><td>11</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td>Kalender l&auml;uft aus</td><td>Ein 0,5 / Aus 0,4</td><td><span class="sm-mono">WARN</span></td></tr>
-<tr><td>12</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td>Abruf gest&ouml;rt</td><td>Ein 0,5 / Aus 0,4, <?= aw_t('LOX.P_INVERS') ?></td><td><span class="sm-mono">FETCH</span></td></tr>
-<tr><td>13</td><td><?= aw_t('LOX.B_STATUS') ?></td><td>N&auml;chste Abholung</td><td><span class="sm-mono">&lt;v.1&gt; Tage</span></td><td><span class="sm-mono">TNEXT</span></td></tr>
-<tr><td>14</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td>Kalender pr&uuml;fen</td><td><?= aw_t('LOX.P_EIGEN') ?></td><td>#11, #12 <?= aw_t('LOX.P_UEBER_ODER') ?></td></tr>
+<?php /* U10: Namen und Parameter ueber Sprachschluessel - bis 1.4.14 standen
+         sie fest deutsch in der Seite, auch in der englischen. */ ?>
+<tr><td>1</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N01') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">ANN</span></td></tr>
+<tr><td>2</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N02') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">PUSH</span></td></tr>
+<tr><td>3</td><td><?= aw_t('LOX.B_UND') ?></td><td><?= aw_t('LOX.N03') ?></td><td>&ndash;</td><td>#1, #2</td></tr>
+<tr><td>4</td><td><?= aw_t('LOX.B_ODER') ?></td><td><?= aw_t('LOX.N04') ?></td><td><?= aw_t('LOX.P_SAMMLER') ?></td><td>#3</td></tr>
+<tr><td>5</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td><?= aw_t('LOX.N05') ?></td><td><?= aw_t('LOX.P_TEXT') ?></td><td>#4</td></tr>
+<tr><td>6</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N06') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">PTEST</span></td></tr>
+<tr><td>7</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td><?= aw_t('LOX.N07') ?></td><td><?= aw_t('LOX.P_EIGEN') ?></td><td>#6</td></tr>
+<tr><td>8</td><td><?= aw_t('LOX.B_TASTER') ?></td><td><?= aw_t('LOX.N08') ?></td><td><?= aw_t('LOX.P_VISU') ?></td><td>&ndash;</td></tr>
+<tr><td>9</td><td><?= aw_t('LOX.B_VAUS') ?></td><td><?= aw_t('LOX.N09') ?></td><td><span class="sm-mono">?ack=1</span></td><td>#8</td></tr>
+<tr><td>10</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N10') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">HREST</span> &hellip;</td></tr>
+<tr><td>11</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N11') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">WARN</span></td></tr>
+<tr><td>12</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N12') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?>, <?= aw_t('LOX.P_INVERS') ?></td><td><span class="sm-mono">FETCH</span></td></tr>
+<tr><td>13</td><td><?= aw_t('LOX.B_STATUS') ?></td><td><?= aw_t('LOX.N13') ?></td><td><span class="sm-mono">&lt;v.1&gt; <?= aw_t('LOX.P_TAGE') ?></span></td><td><span class="sm-mono">TNEXT</span></td></tr>
+<tr><td>14</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td><?= aw_t('LOX.N14') ?></td><td><?= aw_t('LOX.P_EIGEN') ?></td><td>#11, #12 <?= aw_t('LOX.P_UEBER_ODER') ?></td></tr>
 </table>
 <div class="sm-hilfe"><b><?= aw_t('LOX.ZU4') ?></b> <?= aw_t('LOX.ZU4_TEXT') ?></div>
 <div class="sm-hilfe"><b><?= aw_t('LOX.ZU9') ?></b> <?= aw_t('LOX.ZU9_TEXT') ?></div>
@@ -1346,15 +1501,38 @@ $aw_pruef = array_merge($aw_pruef, awm_selbstpruefung_erneuerung());
 $aw_pruef = array_merge($aw_pruef, awm_selbstpruefung_robust());
 // Die Reiterliste gegen die Bereiche halten - drei Stellen, die
 // auseinanderlaufen koennen (Hausstandard).
-$aw_html_self = true;
-$aw_pruef[] = array(count($aw_reiter) === 5 ? 1 : 0,
-    'Fuenf Reiter nach Hausstandard (gefunden: ' . count($aw_reiter) . ')');
+/* U8: die Pflichtzeilen nach Regeln/04, aus der EIGENEN Datei gezaehlt bzw.
+ * wirklich gemessen. Bis 1.4.14 stand hier "count($aw_reiter) === 5" - die
+ * Zahl im Quelltext der Pruefung. Der Aufruf des eigenen Endpunkts laeuft
+ * nur, wenn der Reiter Test serverseitig der offene ist. "Nicht feststellbar"
+ * zaehlt weder als bestanden noch als gescheitert und steht daneben. */
+$aw_quelle = (string) @file_get_contents(__FILE__);
+$aw_pflicht = array(awm_pruef_reiter($aw_quelle, $aw_reiter), awm_pruef_formulare($aw_quelle));
+$aw_pflicht[] = $aw_tab === 'tab-test' ? awm_pruef_endpunkt($aw_cfg['aktionstoken'])
+    : array('hinweis', awm_t('TEST.P_ENDPUNKT_ZU'));
+$aw_pflicht[] = awm_pruef_konfiguration($aw_cfg_lage);
+$aw_pflicht[] = awm_pruef_vorlagen(count($aw_cals));
+$aw_pflicht = array_merge($aw_pflicht, awm_pruef_cron());
+$aw_ph = 0;
+foreach ($aw_pflicht as $aw_z) {
+    if ($aw_z[0] === 'hinweis') { $aw_ph++; continue; }
+    $aw_pruef[] = array($aw_z[0] === 'ok' ? 1 : 0, $aw_z[1]);
+}
 $aw_pf = 0;
 foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { $aw_pf++; } }
 ?>
-<div class="<?= $aw_pf ? 'sm-fehler' : 'sm-hinweis' ?>">
-<b><?= sprintf(aw_t($aw_pf ? 'TEST.SELBST_FEHL' : 'TEST.SELBST_OK'), count($aw_pruef) - $aw_pf, count($aw_pruef)) ?></b>
+<div class="<?= $aw_pf ? 'sm-fehler' : ($aw_ph ? 'sm-warnung' : 'sm-hinweis') ?>">
+<b><?= sprintf(aw_t($aw_pf ? 'TEST.SELBST_FEHL' : 'TEST.SELBST_OK'), count($aw_pruef) - $aw_pf, count($aw_pruef)) ?></b><?php
+if ($aw_ph) { echo ' ' . aw_e(sprintf(awm_t('TEST.HINWEISE'), $aw_ph)); } ?>
 </div>
+<h3><?= aw_t('TEST.H_PFLICHT') ?></h3>
+<table class="sm-tbl">
+<?php foreach ($aw_pflicht as $aw_z) {
+    $aw_zk = $aw_z[0] === 'ok' ? 'sm-an' : ($aw_z[0] === 'fehl' ? 'sm-aus' : 'sm-grau');
+    $aw_zs = $aw_z[0] === 'ok' ? '&#10003;' : ($aw_z[0] === 'fehl' ? '&#10007;' : '&#9675;'); ?>
+<tr><td style="width:34px;" class="<?= $aw_zk ?>"><?= $aw_zs ?></td><td><?= aw_e($aw_z[1]) ?></td></tr>
+<?php } ?>
+</table>
 <?php if ($aw_pf) { ?>
 <ul>
 <?php foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { ?><li><?= aw_e($aw_z[1]) ?></li><?php } } ?>
@@ -1409,7 +1587,9 @@ else { foreach ($aw_dg['luecken'] as $aw_l) {
 <h3><?= aw_t('TEST.H_TECHNIK') ?></h3>
 <div class="sm-knopfreihe">
 <a class="sm-btn sm-b-technik" href="<?= $aw_basis ?>?debug=1" target="_blank"><?= aw_t('KNOPF.DEBUG') ?></a>
+<?php if (count($aw_cals) > 1) { /* U12: nur, wenn es Kalender 2 gibt */ ?>
 <a class="sm-btn sm-b-technik" href="<?= $aw_basis ?>?debug=1&amp;cal=2" target="_blank"><?= aw_t('KNOPF.DEBUG2') ?></a>
+<?php } ?>
 <a class="sm-btn sm-b-technik" href="<?= $aw_basis ?>?selftest=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.SELFTEST') ?></a>
 </div>
 

@@ -8,6 +8,54 @@ vielen Tagen kommt die nächste Leerung. Dazu **Vorabend-Ansage**
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.4.15
+
+Die Durchsicht vom 29.09.2026 hatte vier Prüfer (Code, Oberfläche, Installer, MQTT). Jeder Punkt ist gemessen. Zu
+jedem gibt es eine Gegenprobe, die an 1.4.14 rot und an 1.4.15 grün ist. Gemessen wurde mit einer Kalender-Attrappe
+und einem Prüfbroker, ohne Netz.
+
+**Sicherheit.**
+- Eine Sicherung mit dem Token als Liste wurde angenommen. Danach öffnete `?token=Array` den Endpunkt für jeden im
+  Heimnetz. Jetzt wird jeder Wert nach Typ geprüft. Ein gespeichertes Token, das nicht vom Plugin stammt, ergibt 403.
+- Eine Sicherung ohne Token behält das geltende Token und sagt es; bisher wurde still ein neues gewürfelt.
+
+**Kalender.**
+- Eine Zeilenfaltung mitten in einem Umlaut verstümmelte die ganze Datei („GrÃ¼nschnitt“), und die Zuordnung zur Tonne
+  griff nicht mehr. Jetzt wird zuerst entfaltet.
+- Eine neue Kalenderadresse wird sofort abgerufen. Bisher kam bis zu 14 Tage der alte Kalender.
+- Bleibt Kalenderplatz 1 leer, wirken Regeln und eigene Termine trotzdem.
+- Die Jahres-Erneuerung meldet nur noch Erfolg, wenn sie wirklich etwas ersetzt hat.
+- `TZID` wird ausgewertet.
+- Ein Kalender mit Adresse meldet `OK=0`, wenn seine Daten älter sind als das Dreifache des Abrufabstands.
+  Hochgeladene Kalender sind davon ausgenommen.
+- Sofortabrufe haben eine Bremse: höchstens einer je Minute und Kalender, die Erneuerung höchstens einmal je Stunde.
+- Kann das Plugin seine Merker nicht schreiben, antworten Test und Quittung mit `OK=0`, und die Ansage spricht nicht
+  jede Minute.
+
+**MQTT.**
+- `letzter` ohne Daten geht als `-` hinaus, nicht als `0`, das „unbegrenzt“ hieße.
+- Nach einem Wechsel des Themenpräfixes, beim Ausschalten von MQTT und beim Entfernen eines Kalenders werden die
+  zurückbehaltenen Themen abgeräumt. Danach geht der volle Satz hinaus.
+- Zwischen den Datagrammen liegen 5 ms. Mit vier Kalendern gingen am Prüfbroker bisher bis zu 35 von 256 verloren.
+- `mqtt_subscriptions.cfg` kommt mit, und das MQTT-Gateway liest sie.
+
+**Oberfläche.**
+- Nach jedem Absenden wird umgeleitet. F5 leert das Protokoll nicht noch einmal.
+- Formular und Sicherung prüfen mit denselben Regeln. Eine Uhrzeit wie `25:99` wird beanstandet; bisher kam die
+  Ansage damit nie.
+- Eingaben werden beanstandet, statt still zurechtgebogen zu werden.
+- Der Reiter Test hat die Pflichtzeilen nach Hausstandard, jede in beide Richtungen geeicht.
+- Die Selbstprüfung schreibt nicht mehr bei jedem Seitenaufruf einen Schreibfehler ins Protokoll.
+
+**Installation.**
+- Eine Neuinstallation spielt kein Token und keinen Kalender einer früheren Installation mehr ein. Sie werden als
+  `.alt` beiseitegelegt und einmal genannt.
+- Ein Update macht seine eigene Reparatur einer kaputten Konfiguration nicht mehr rückgängig. Bisher standen danach
+  hunderte Zeilen „unlesbar“ im Protokoll.
+- Alte Kalenderdateien aus einem früheren Vorgang kommen nicht mehr zurück.
+- Während eines Updates lässt der Minutentakt aus.
+- Die wiederhergestellte Konfiguration steht auf 0600.
+
 ## Neu in 1.4.14
 
 Die Rückfrage beim Broker, ob früher zurückbehaltene Werte noch dastehen, liest
@@ -179,14 +227,22 @@ scheitert es, erscheint der Rat als Warnung. In WSL nachgestellt
   Datum ganz aussetzen
 - **Quittierung** aus Loxone zurück ans Plugin (`?ack=1`) — danach entfällt die
   Morgen-Ansage
-- **MQTT** über das LoxBerry MQTT Gateway, bei jeder Änderung und alle 30 min
-  als Lebenszeichen. **Alle** Werte der Loxone-Zeile, dazu Hinweistext und drei
-  fertige Sätze
+- **MQTT** über das LoxBerry MQTT Gateway: bei jeder Änderung, der volle Satz
+  alle 30 Minuten, das Lebenszeichen (`status/ok`, `status/ts`,
+  `status/zaehler`) bei jedem Minutenlauf. **Alle** Werte der Loxone-Zeile,
+  dazu Hinweistext und drei fertige Sätze. Das Abo bringt das Plugin selbst
+  mit: die Datei `mqtt_subscriptions.cfg` im Konfigurationsordner trägt
+  `<präfix>/#`, das MQTT-Gateway (Fassung 1) liest sie selbst; beim Speichern
+  und nach einem Präfixwechsel wird sie nachgeführt
 - **Zwei Loxone-Vorlagen** zum Einlesen: virtuelle Eingänge (nur die Tonnen, die
   im eigenen Kalender vorkommen) und ein virtueller Ausgang für die
   auslösenden Aufrufe samt Token
 - **Ausfallerkennung**: Alter der Kalenderdatei, Erfolg des letzten Abrufs,
-  letzter Termin im Kalender — als eigene Werte für Loxone
+  letzter Termin im Kalender — als eigene Werte für Loxone. `OK` steht auf 0,
+  sobald die Daten eines Kalenders mit Adresse älter sind als das Dreifache
+  des Abruf-Intervalls (3 × Tage × 24 Stunden); `AGE` bleibt daneben
+  unverändert. Hochgeladene Kalender haben keinen Abruftakt und sind davon
+  ausgenommen
 - **Lücken-Erkennung**: streicht der Entsorger einen Termin, ohne einen Ersatz
   zu nennen, wird das angezeigt statt verschwiegen
 - **Warnungen im LoxBerry-Meldebereich** bei ausgelaufenem Kalender, dreimal

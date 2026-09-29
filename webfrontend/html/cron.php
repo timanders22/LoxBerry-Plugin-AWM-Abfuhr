@@ -56,6 +56,22 @@ if (in_array('--mqtt-leeren', array_slice($argv, 1), true)) {
 }
 awm_keine_wurzel_abbruch('cron.php');
 
+/* M10 (I4): solange ein Update laeuft, laesst der Minutenlauf den Takt aus.
+ * Die Marke data/plugins/<ordner>.upgrade_laeuft legt preupgrade.sh als
+ * Erstes an, postupgrade.sh raeumt sie ab. Bis 1.4.14 lief ein Takt auch in
+ * der Luecke zwischen Archivkopie und postinstall.sh - mit abgeraeumter
+ * Kalenderdatei und einem Zustand "kein Termin, OK=0" (Installer-Pruefer,
+ * Befund 4). Hoechstens eine Stunde: bleibt die Marke nach einem
+ * abgebrochenen Update liegen, laeuft der Takt danach wieder
+ * (Entscheidung 1: die 3600 s gelten fuer die Startsperre). */
+$awm_p = awm_paths();
+$awm_marke = $awm_p['lbhome'] . '/data/plugins/' . $awm_p['plugin'] . '.upgrade_laeuft';
+clearstatcache(true, $awm_marke);
+if (is_file($awm_marke) && time() - filemtime($awm_marke) < 3600) {
+    echo "UPGRADE\n";
+    exit(0);
+}
+
 /* Nur ein Lauf gleichzeitig (Muster FerienFeiertage): der Abruf wartet je
  * Kalender bis zu 20 s - der naechste Minutenlauf soll nicht hineinlaufen. */
 $awm_lock = awm_sperre('cron');
@@ -67,6 +83,22 @@ if ($awm_lock === false) {
 /* Der Herzschlag wird EINMAL je Lauf hochgezaehlt, vor der Schleife -
  * nicht je Kalender. */
 $awm_zaehler = awm_zaehler(true);
+
+$awm_cfg = awm_config();
+/* M8: die Abo-Datei des Gateways traegt das eingestellte Praefix - auch nach
+ * einem Update, das die mitgelieferte Datei mit der Vorgabe einspielt.
+ * Geschrieben wird nur, wenn sie abweicht. */
+awm_abo_datei(awm_mqtt_basis($awm_cfg), true);
+if (empty($awm_cfg['mqtt_enabled'])) {
+    /* M3: bei ausgeschaltetem MQTT beide Merker verwerfen, damit das
+     * Wiedereinschalten sofort den vollen Satz schickt. Bis 1.4.14 wurde der
+     * Taktmerker auch ohne Senden erneuert, und nach dem Einschalten gingen
+     * nur die geaenderten Themen hinaus (MQTT-Pruefer, Fall E4). */
+    foreach (array_merge(glob(awm_tmpdir() . '/mqtt_beat_*') ?: array(),
+                         glob(awm_tmpdir() . '/mqtt_letzte_*.json') ?: array()) as $awm_m) {
+        @unlink($awm_m);
+    }
+}
 
 foreach (awm_cals() as $n => $c) {
     awm_fetch(false, $n);
@@ -93,13 +125,29 @@ foreach (awm_cals() as $n => $c) {
      * was neu ist; der volle Satz kommt alle 30 Minuten und nach jedem
      * Update (dann fehlt der Merker). Regeln/07, Abschnitt 2. */
     $beat = awm_tmpdir() . '/mqtt_beat_' . $n;
-    $voll = !is_file($beat) || time() - filemtime($beat) > 1800;
-    awm_mqtt_publish($st, $n, $voll);
-    if ($voll) { @touch($beat); }
+    /* M5: die halbstuendlichen Vollsaetze der Kalender zeitlich versetzt -
+     * Kalender N nur in einer Minute, deren Nummer modulo 4 zu ihm passt.
+     * Bis 1.4.14 gingen vier Kalender in derselben Minute voll hinaus (256
+     * Datagramme). Ohne Taktmerker (erster Lauf, nach einem Update oder
+     * einer Aenderung) geht der volle Satz sofort. */
+    $voll = !is_file($beat) || (time() - filemtime($beat) > 1800
+            && intdiv(time(), 60) % AWM_MAX_KALENDER === ($n - 1) % AWM_MAX_KALENDER);
+    $gesendet = awm_mqtt_publish($st, $n, $voll);
+    /* M3: den Taktmerker nur erneuern, wenn wirklich gesendet wurde. */
+    if ($voll && $gesendet > 0) { @touch($beat); }
     /* Das Lebenszeichen geht bei JEDEM Durchgang hinaus, am Filter vorbei -
      * Hausstandard seit 26.08.2026. Ein virtueller Eingang behaelt sonst
      * seine letzte 1, und ein toter Minutenlauf sieht aus wie ein gesunder. */
-    awm_mqtt_lebenszeichen($n, empty($st['ok']) ? 0 : 1, $awm_zaehler);
+    /* status/ok heisst weiter "Kalenderdaten vorhanden" wie bis 1.4.14 -
+     * nicht das OK mit Altersgrenze (C8), das in 'ok' steht. */
+    awm_mqtt_lebenszeichen($n, empty($st['ereignisse']) ? 0 : 1, $awm_zaehler);
+}
+/* M4: auch ohne eingerichteten Kalender geht das Lebenszeichen hinaus, unter
+ * dem Grundpraefix mit status/ok 0. Bis 1.4.14 verstummte es ganz (MQTT-
+ * Pruefer, Fall G3) - ein Plugin ohne Kalender sah aus wie ein toter
+ * Minutenlauf. */
+if (!awm_cals()) {
+    awm_mqtt_lebenszeichen(1, 0, $awm_zaehler);
 }
 
 awm_announce_check();
