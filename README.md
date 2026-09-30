@@ -8,6 +8,30 @@ vielen Tagen kommt die nächste Leerung. Dazu **Vorabend-Ansage**
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
 
+## Neu in 1.4.16
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen an Attrappen
+für Kalender und Ferien-Plugin unter PHP 7.4 und 8.5; nicht am Gerät.
+
+* **Feiertage und Urlaub werden wieder erkannt.** Das Ferien-Plugin wird jetzt
+  mit JJJJ-MM-TT gefragt. Mit FerienFeiertage bis 1.2.15 hat die Ruhezeit
+  Feiertag und Urlaub bisher nie erkannt.
+* **Adresswechsel:** Scheitert nach einem Wechsel der Kalenderadresse der erste
+  Abruf, gelten die Daten der alten Adresse sofort als ungültig (`OK=0`, Grund
+  `adresse`) – es sind die Termine einer anderen Adresse. Bei gleicher Adresse
+  und vorübergehendem Fehler bleibt es beim bisherigen Verhalten.
+* Die englische Oberfläche ist jetzt auch in Selbstprüfung, Feldbeschreibungen,
+  Themenliste und Vorlagen englisch; Feldnamen, Suchtexte und MQTT-Themen
+  bleiben unverändert. Die Kurztexte der vier alten Felder lauten jetzt z. B.
+  „Papier: morgen fällig“.
+* **Nach einer Beanstandung wird nichts gespeichert** – auch die übrigen Felder
+  nicht (bis 1.4.15 wurden sie übernommen). Die eingetippten Werte stehen wieder
+  im Formular (Einstellungen, MQTT, Tonnenzuordnung, eigene Termine), die
+  beanstandeten Felder sind rot umrandet.
+* „Einstellungen sichern“ warnt gelb, wenn ein Wert das Zurückspielen nicht
+  bestünde; die Datei kommt trotzdem, `_warnung` nennt nur die Namen.
+
 ## Neu in 1.4.15
 
 Die Durchsicht vom 29.09.2026 hatte vier Prüfer (Code, Oberfläche, Installer, MQTT). Jeder Punkt ist gemessen. Zu

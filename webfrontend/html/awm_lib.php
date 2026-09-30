@@ -1231,14 +1231,17 @@ function awm_fetch($force = false, $cal = 1) {
                 array('ok' => 0, 'zeit' => (int) $stand0['zeit'], 'grund' => 'Schreibfehler',
                       'fehler' => (int) $stand0['fehler'] + 1,
                       'naechster' => time() + AWM_WIEDERHOLUNG,
-                      'adresse' => $kennung, 'versuch' => time()));
+                      'adresse' => $kennung, 'versuch' => time())
+                + (isset($stand0['daten_adresse']) ? array('daten_adresse' => (string) $stand0['daten_adresse']) : array()));
             return array(is_file($f) ? 1 : 0, 'SCHREIBFEHLER');
         }
         @unlink(awm_tmpdir() . '/state_' . (int) $cal . '.json');
+        /* AWM-a1: 'daten_adresse' = die Adresse, von der die gespeicherte
+         * Kalenderdatei stammt. 'adresse' ist die zuletzt VERSUCHTE. */
         awm_json_schreiben(awm_fetchstand_datei($cal),
             array('ok' => 1, 'zeit' => time(), 'grund' => '', 'fehler' => 0,
                   'naechster' => time() + $maxage,
-                  'adresse' => $kennung, 'versuch' => time()));
+                  'adresse' => $kennung, 'daten_adresse' => $kennung, 'versuch' => time()));
         awm_log('Kalender ' . $cal . ' (' . $c['name'] . ') abgerufen: ' . strlen($neu) . ' Bytes, ' . substr_count($neu, 'BEGIN:VEVENT') . ' Ereignisse');
         return array(1, 'frisch');
     }
@@ -1257,7 +1260,8 @@ function awm_fetch($force = false, $cal = 1) {
     awm_json_schreiben(awm_fetchstand_datei($cal),
         array('ok' => 0, 'zeit' => (int) $stand['zeit'], 'grund' => $grund,
               'fehler' => $fehlerzahl, 'naechster' => time() + AWM_WIEDERHOLUNG,
-              'adresse' => $kennung, 'versuch' => time()));
+              'adresse' => $kennung, 'versuch' => time())
+        + (isset($stand['daten_adresse']) ? array('daten_adresse' => (string) $stand['daten_adresse']) : array()));
     if (is_file($f)) {
         awm_log('Kalender ' . $cal . ': Abruf fehlgeschlagen (' . $grund . ') - nutze letzten gespeicherten Stand, naechster Versuch in '
                 . (int) (AWM_WIEDERHOLUNG / 60) . ' Minuten');
@@ -1717,6 +1721,25 @@ function awm_daten_zu_alt($cal, $alter_h, $cfg = null)
     return (int) $alter_h > 3 * max(1, (int) $cfg['fetch_days']) * 24;
 }
 
+/**
+ * AWM-a1 (Entscheidung 16, 30.09.2026): stammen die gespeicherten Daten von
+ * einer ANDEREN Adresse als der eingestellten, und ist der Abruf der
+ * eingestellten gescheitert? Bis 1.4.16 galten die alten Daten dann bis zur
+ * Altersgrenze (C8) weiter - Termine einer anderen Strasse mit OK=1.
+ * Ein Stand ohne Merker 'daten_adresse' (bis 1.4.16) gilt als gleiche
+ * Adresse; ein hochgeladener Kalender (ohne Adresse) nie.
+ */
+function awm_daten_fremde_adresse($cal, $fstand = null)
+{
+    $c = awm_cal($cal);
+    if ($c === null || $c['url'] === '') { return false; }
+    if ($fstand === null) { $fstand = awm_fetchstand($cal); }
+    if (!isset($fstand['daten_adresse']) || !empty($fstand['ok'])) { return false; }
+    $jetzt = awm_adresse_kennung($c['url']);
+    return (string) $fstand['daten_adresse'] !== $jetzt
+        && isset($fstand['adresse']) && (string) $fstand['adresse'] === $jetzt;
+}
+
 /** Loxone rechnet in Sekunden seit dem 01.01.2009. 0 = kein Datum. */
 function awm_loxzeit($ymd)
 {
@@ -1852,6 +1875,16 @@ function awm_state($force = false, $cal = 1) {
         $st['ok'] = 0;
         $st['ok_grund'] = 'alt';
     }
+    /* AWM-a1 (Entscheidung 16): scheiterte der Abruf der NEUEN Adresse, sind
+     * die gespeicherten Termine die der alten - sie gelten sofort als
+     * ungueltig, gekennzeichnet wie zu alte Daten. */
+    if ($st['ok'] && awm_daten_fremde_adresse($cal, $fstand)) {
+        $st['ok'] = 0;
+        $st['ok_grund'] = 'adresse';
+        awm_log_if_changed('fremde_adresse_' . $cal, 'Kalender ' . $cal . ': der Abruf der neuen '
+            . 'Adresse ist gescheitert - die gespeicherten Termine stammen von der alten Adresse '
+            . 'und gelten nicht mehr (OK=0).');
+    }
     /* Ersatzlos gestrichene Termine.
      *
      * Gemessen am echten AWM-Kalender: die Papiertonne hat drei EXDATE-
@@ -1938,7 +1971,13 @@ function awm_daytype($tag = null)
         include_once $cand;
         if (function_exists('fer_data') && function_exists('fer_day')) {
             $d = fer_data();
-            $info = @fer_day($d, $tag);
+            /* Ferien-c1: fer_day() rechnet mit JJJJ-MM-TT. Bis 1.2.15 des
+             * Ferien-Plugins traf ein JJJJMMTT dort nie (Zeichenkettenvergleich
+             * gegen "2026-10-03"); ab 1.2.16 nimmt es beides. Hier geht es in
+             * der Form hinaus, die jede Fassung versteht. */
+            $tag_iso = preg_match('/^(\d{4})(\d{2})(\d{2})\z/', $tag, $fm)
+                ? $fm[1] . '-' . $fm[2] . '-' . $fm[3] : $tag;
+            $info = @fer_day($d, $tag_iso);
             if (is_array($info)) {
                 $res['feiertag'] = !empty($info['feiertag']) ? 1 : 0;
                 $res['ferien'] = !empty($info['ferien']) ? 1 : 0;
@@ -2160,59 +2199,67 @@ function awm_feldliste()
 {
     $k = awm_tonnen_kuerzel();
     $arten = awm_tonnenarten();
+    /* AWM-b1 (30.09.2026): die Beschreibungen kommen aus der Sprachdatei,
+     * Abschnitt [FELD]. Bis 1.4.16 standen sie hier fest deutsch - und damit
+     * auch in der englischen Oberflaeche (Reiter Einbindung, Themenliste) und
+     * in den Kommentaren der Loxone-Vorlage. Feldnamen, Themen, Grenzen und
+     * Reihenfolge bleiben, wie sie sind; nur der Text wird uebersetzt. Die
+     * vier Tonnen des historischen Kopfes nehmen jetzt dieselbe Form wie die
+     * uebrigen ("<Tonne>: morgen faellig"). */
+    $tage = awm_t('FELD.E_TAGE');
     $f = array();
     // --- 1. Der historische Kopf, Feld fuer Feld wie in 1.0.2 ---
-    $f['REST']   = array(0, 0, 1, '', 'Restmuell: morgen faellig', 1, 'rest_morgen', 'rest');
-    $f['BIO']    = array(0, 0, 1, '', 'Biotonne: morgen faellig', 1, 'bio_morgen', 'bio');
-    $f['PAPIER'] = array(0, 0, 1, '', 'Papiertonne: morgen faellig', 1, 'papier_morgen', 'papier');
-    $f['DATUM']  = array(0, 0, 99991231, '', 'Datum von morgen (JJJJMMTT)', 0, 'datum_morgen', '');
-    $f['WERT']   = array(0, 0, 1, '', 'Wertstoff/Gelb: morgen faellig', 1, 'wert_morgen', 'wert');
-    $f['OK']     = array(0, 0, 1, '', '1 = Kalenderdaten vorhanden und aktuell', 1, 'ok', '');
-    $f['WARN']   = array(0, 0, 1, '', '1 = Kalender endet in weniger als 30 Tagen (Link erneuern)', 1, 'warnung', '');
+    $f['REST']   = array(0, 0, 1, '', sprintf(awm_t('FELD.MORGEN'), $arten['rest']['text']), 1, 'rest_morgen', 'rest');
+    $f['BIO']    = array(0, 0, 1, '', sprintf(awm_t('FELD.MORGEN'), $arten['bio']['text']), 1, 'bio_morgen', 'bio');
+    $f['PAPIER'] = array(0, 0, 1, '', sprintf(awm_t('FELD.MORGEN'), $arten['papier']['text']), 1, 'papier_morgen', 'papier');
+    $f['DATUM']  = array(0, 0, 99991231, '', awm_t('FELD.DATUM'), 0, 'datum_morgen', '');
+    $f['WERT']   = array(0, 0, 1, '', sprintf(awm_t('FELD.MORGEN'), $arten['wert']['text']), 1, 'wert_morgen', 'wert');
+    $f['OK']     = array(0, 0, 1, '', awm_t('FELD.OK'), 1, 'ok', '');
+    $f['WARN']   = array(0, 0, 1, '', awm_t('FELD.WARN'), 1, 'warnung', '');
     foreach (array('rest', 'bio', 'papier', 'wert') as $a) {
-        $f['H' . $k[$a]] = array(0, 0, 1, '', $arten[$a]['text'] . ': heute faellig', 1, $a . '_heute', $a);
+        $f['H' . $k[$a]] = array(0, 0, 1, '', sprintf(awm_t('FELD.HEUTE'), $arten[$a]['text']), 1, $a . '_heute', $a);
     }
     foreach (array('rest', 'bio', 'papier', 'wert') as $a) {
-        $f['T' . $k[$a]] = array(1, -1, 400, 'Tage', $arten[$a]['text'] . ': Tage bis zur naechsten Leerung (-1 = unbekannt)', 1, 'tage_' . $a, $a);
+        $f['T' . $k[$a]] = array(1, -1, 400, $tage, sprintf(awm_t('FELD.TAGE'), $arten[$a]['text']), 1, 'tage_' . $a, $a);
     }
-    $f['ANN']   = array(0, 0, 1, '', '1 = Erinnerungsfenster jetzt (10 min ab der eingestellten Uhrzeit)', 1, 'ann', '');
-    $f['AUDIO'] = array(0, 0, 1, '', 'Ansage in der Plugin-Konfiguration freigegeben', 1, 'audio', '');
-    $f['PUSH']  = array(0, 0, 1, '', 'Pushnachricht in der Plugin-Konfiguration freigegeben', 1, 'push', '');
-    $f['PTEST'] = array(0, 0, 1, '', '1 = Test-Pushnachricht angefordert (5 Minuten)', 1, 'ptest', '');
+    $f['ANN']   = array(0, 0, 1, '', awm_t('FELD.ANN'), 1, 'ann', '');
+    $f['AUDIO'] = array(0, 0, 1, '', awm_t('FELD.AUDIO'), 1, 'audio', '');
+    $f['PUSH']  = array(0, 0, 1, '', awm_t('FELD.PUSH'), 1, 'push', '');
+    $f['PTEST'] = array(0, 0, 1, '', awm_t('FELD.PTEST'), 1, 'ptest', '');
 
     // --- 2. Ab hier NUR anhaengen (1.4.0) ---
     // Die vier weiteren Tonnenarten. Bis 1.3.8 waren sie in der
     // Zuordnungstabelle waehlbar, kamen aber nirgends an.
     foreach (array('glas', 'sperr', 'gruen', 'schad') as $a) {
-        $f[$k[$a]] = array(0, 0, 1, '', $arten[$a]['text'] . ': morgen faellig', 1, $a . '_morgen', $a);
+        $f[$k[$a]] = array(0, 0, 1, '', sprintf(awm_t('FELD.MORGEN'), $arten[$a]['text']), 1, $a . '_morgen', $a);
     }
     foreach (array('glas', 'sperr', 'gruen', 'schad') as $a) {
-        $f['H' . $k[$a]] = array(0, 0, 1, '', $arten[$a]['text'] . ': heute faellig', 1, $a . '_heute', $a);
+        $f['H' . $k[$a]] = array(0, 0, 1, '', sprintf(awm_t('FELD.HEUTE'), $arten[$a]['text']), 1, $a . '_heute', $a);
     }
     foreach (array('glas', 'sperr', 'gruen', 'schad') as $a) {
-        $f['T' . $k[$a]] = array(1, -1, 400, 'Tage', $arten[$a]['text'] . ': Tage bis zur naechsten Leerung (-1 = unbekannt)', 1, 'tage_' . $a, $a);
+        $f['T' . $k[$a]] = array(1, -1, 400, $tage, sprintf(awm_t('FELD.TAGE'), $arten[$a]['text']), 1, 'tage_' . $a, $a);
     }
     // Datum der naechsten Leerung, einmal als JJJJMMTT (wie das MQTT-Thema
     // es seit jeher liefert) und einmal als Loxone-Zeit zum Rechnen.
     foreach (array_keys($arten) as $a) {
-        $f['D' . $k[$a]] = array(1, 0, 99991231, '', $arten[$a]['text'] . ': Datum der naechsten Leerung (JJJJMMTT, 0 = keins)', 0, 'datum_' . $a, $a);
+        $f['D' . $k[$a]] = array(1, 0, 99991231, '', sprintf(awm_t('FELD.DATUM_TONNE'), $arten[$a]['text']), 0, 'datum_' . $a, $a);
     }
     foreach (array_keys($arten) as $a) {
-        $f['S' . $k[$a]] = array(1, 0, 2147483647, 's', $arten[$a]['text'] . ': naechste Leerung als Loxone-Zeit (Sekunden seit 01.01.2009)', 1, 'zeit_' . $a, $a);
+        $f['S' . $k[$a]] = array(1, 0, 2147483647, 's', sprintf(awm_t('FELD.ZEIT_TONNE'), $arten[$a]['text']), 1, 'zeit_' . $a, $a);
     }
     // Die naechste Abholung ueberhaupt
-    $f['TNEXT'] = array(1, -1, 400, 'Tage', 'Tage bis zur naechsten Abholung (irgendeine Tonne)', 1, 'tage_next', '');
-    $f['DNEXT'] = array(1, 0, 99991231, '', 'Datum der naechsten Abholung (JJJJMMTT)', 0, 'datum_next', '');
-    $f['SNEXT'] = array(1, 0, 2147483647, 's', 'Naechste Abholung als Loxone-Zeit', 1, 'zeit_next', '');
+    $f['TNEXT'] = array(1, -1, 400, $tage, awm_t('FELD.TNEXT'), 1, 'tage_next', '');
+    $f['DNEXT'] = array(1, 0, 99991231, '', awm_t('FELD.DNEXT'), 0, 'datum_next', '');
+    $f['SNEXT'] = array(1, 0, 2147483647, 's', awm_t('FELD.SNEXT'), 1, 'zeit_next', '');
     // Ausfallerkennung
-    $f['AGE']     = array(1, -1, 100000, 'h', 'Alter der Kalenderdatei in Stunden (-1 = keine Datei)', 1, 'alter', '');
-    $f['FETCH']   = array(0, 0, 1, '', '1 = der letzte Abrufversuch war erfolgreich', 1, 'abruf', '');
-    $f['LETZTER'] = array(1, 0, 2147483647, 's', 'Letzter Termin im Kalender als Loxone-Zeit (0 = unbegrenzt)', 1, 'letzter', '');
-    $f['HINW']    = array(0, 0, 1, '', '1 = der Entsorger meldet einen Hinweis (Text ueber ?text=1)', 1, 'hinweis_da', '');
-    $f['LUECKE']  = array(1, 0, 400, 'Tage', 'Tage bis zum naechsten ersatzlos gestrichenen Termin (0 = keiner)', 1, 'luecke', '');
+    $f['AGE']     = array(1, -1, 100000, 'h', awm_t('FELD.AGE'), 1, 'alter', '');
+    $f['FETCH']   = array(0, 0, 1, '', awm_t('FELD.FETCH'), 1, 'abruf', '');
+    $f['LETZTER'] = array(1, 0, 2147483647, 's', awm_t('FELD.LETZTER'), 1, 'letzter', '');
+    $f['HINW']    = array(0, 0, 1, '', awm_t('FELD.HINW'), 1, 'hinweis_da', '');
+    $f['LUECKE']  = array(1, 0, 400, $tage, awm_t('FELD.LUECKE'), 1, 'luecke', '');
     // Quittierung und Ruhe
-    $f['ACK']  = array(0, 0, 1, '', '1 = heute quittiert ("Tonne steht draussen")', 1, 'ack', '');
-    $f['RUHE'] = array(0, 0, 1, '', '1 = Ansage ausgesetzt (Urlaub, Sperrzeit)', 1, 'ruhe', '');
+    $f['ACK']  = array(0, 0, 1, '', awm_t('FELD.ACK'), 1, 'ack', '');
+    $f['RUHE'] = array(0, 0, 1, '', awm_t('FELD.RUHE'), 1, 'ruhe', '');
     /* Der Herzschlag - neu in 1.4.7, deshalb HINTEN (die Reihenfolge der
      * bestehenden Felder darf sich nicht aendern, daran haengen die
      * Bausteine in Loxone).
@@ -2230,7 +2277,7 @@ function awm_feldliste()
      * macht die Signatur des Cron-Laufs wertlos - dann ginge jede Minute
      * der ganze Satz an den Broker (Regeln/07: "ALTER und Laufzaehler nur
      * in die HTTP-Antwortzeile"). Deshalb steht hier '' als Thema. */
-    $f['ZAEHLER'] = array(1, -1, 999, '', 'Herzschlag des Minutenlaufs, 0..999 umlaufend (-1 = noch kein Lauf)', 1, '', '');
+    $f['ZAEHLER'] = array(1, -1, 999, '', awm_t('FELD.ZAEHLER'), 1, '', '');
     return $f;
 }
 
@@ -2340,16 +2387,17 @@ function awm_mqtt_themen()
         if ($f[6] === '') { continue; }
         $out[$f[6]] = $f[4];
     }
-    if (isset($out['letzter'])) { $out['letzter'] .= ' - ueber MQTT "-" = keine Kalenderdaten'; }   // M1
-    $out['hinweis'] = 'Hinweistext des Entsorgers ("-" = keiner)';
-    $out['text_morgen'] = 'Fertiger Satz: was morgen faellig ist';
-    $out['text_heute'] = 'Fertiger Satz: was heute faellig ist';
-    $out['text_naechste'] = 'Fertiger Satz: die naechste Abholung';
+    // AWM-b1: die Beschreibungen aus der Sprachdatei, Abschnitt [FELD].
+    if (isset($out['letzter'])) { $out['letzter'] .= awm_t('FELD.LETZTER_MQTT'); }   // M1
+    $out['hinweis'] = awm_t('FELD.T_HINWEIS');
+    $out['text_morgen'] = awm_t('FELD.T_MORGEN');
+    $out['text_heute'] = awm_t('FELD.T_HEUTE');
+    $out['text_naechste'] = awm_t('FELD.T_NAECHSTE');
     // Das Lebenszeichen - geht bei JEDEM Minutenlauf hinaus, auch wenn sich
     // sonst nichts geaendert hat (Hausstandard, Regeln/07).
-    $out['status/ok'] = 'Lebenszeichen: 1 = der letzte Minutenlauf hat gerechnet';
-    $out['status/ts'] = 'Lebenszeichen: Zeitstempel des letzten Laufs (Unix-Sekunden)';
-    $out['status/zaehler'] = 'Lebenszeichen: Herzschlag 0..999 umlaufend';
+    $out['status/ok'] = awm_t('FELD.S_OK');
+    $out['status/ts'] = awm_t('FELD.S_TS');
+    $out['status/zaehler'] = awm_t('FELD.S_ZAEHLER');
     return $out;
 }
 
@@ -3974,73 +4022,73 @@ function awm_selbstpruefung_erneuerung()
          . '&cHash=abc123';
     $k = awm_renew_kand_awm($awm);
     $p(count($k) === 1 && strpos($k[0], 'year%5D=2027') !== false,
-       'AWM: Jahr im Link wird hochgezaehlt (2026 -> 2027)');
+       awm_t('SELBST.E01'));
     $p(count($k) === 1 && strpos($k[0], 'hausnummer%5D=1') !== false
                        && strpos($k[0], 'cHash=abc123') !== false,
-       'AWM: alle uebrigen Parameter bleiben unangetastet');
+       awm_t('SELBST.E02'));
     $p(awm_renew_strategie($awm) !== null
        && awm_renew_strategie($awm)['kand'] === 'awm_renew_kand_awm',
-       'AWM-Link waehlt die AWM-Strategie');
+       awm_t('SELBST.E03'));
     $p(awm_renew_kand_awm('https://www.awm-muenchen.de/ohne-jahr.ics') === array(),
-       'AWM ohne Jahresangabe: kein Kandidat, kein Schaden');
+       awm_t('SELBST.E04'));
 
     /* --- 2. Abfallplus / abfall.io --- */
     $aio = 'https://api.abfall.io/?key=f35bd08b&mode=export&idhousenumber=2859'
          . '&wastetypes=20,17&timeperiod=20260101-20261231&type=ics';
     $k = awm_renew_kand_jahresfenster($aio);
     $p(count($k) === 1 && strpos($k[0], 'timeperiod=20270101-20271231') !== false,
-       'abfall.io: Zeitfenster wird aufs Folgejahr gesetzt');
+       awm_t('SELBST.E05'));
     $p(count($k) === 1 && strpos($k[0], 'key=f35bd08b') !== false,
-       'abfall.io: Schluessel bleibt unangetastet');
+       awm_t('SELBST.E06'));
     $s = awm_renew_strategie($aio);
     $p($s !== null && $s['kand'] === 'awm_renew_kand_jahresfenster',
-       'abfall.io-Link waehlt die abfall.io-Strategie');
+       awm_t('SELBST.E07'));
 
     /* --- 2b. Jumomind und ATURIS (ab 1.4.0) --- */
     $jm = 'https://mymuell.jumomind.com/mmapp/api/ical?city_id=42&area_id=7&year=2026';
     $k = awm_renew_kand_jumomind($jm);
     $p(in_array('https://mymuell.jumomind.com/mmapp/api/ical?city_id=42&area_id=7&year=2027', $k, true),
-       'Jumomind: der Jahresparameter wird hochgezaehlt');
+       awm_t('SELBST.E08'));
     $p(count($k) === 1 && strpos($k[0], 'city_id=42') !== false && strpos($k[0], 'area_id=7') !== false,
-       'Jumomind: die Kennungen bleiben unangetastet');
+       awm_t('SELBST.E09'));
     $k2 = awm_renew_kand_jumomind('https://mymuell.jumomind.com/webmodul/beispiel/ical/2026');
     $p($k2 === array('https://mymuell.jumomind.com/webmodul/beispiel/ical/2027'),
-       'Jumomind: auch die Form mit dem Jahr am Ende des Pfades');
+       awm_t('SELBST.E10'));
     $s = awm_renew_strategie($jm);
     $p($s !== null && $s['kand'] === 'awm_renew_kand_jumomind',
-       'Jumomind-Link waehlt jetzt eine eigene Strategie (bis 1.3.8: allgemeine Rueckfallebene)');
+       awm_t('SELBST.E11'));
 
     $at = 'https://www.abfallkalender-beispiel.de/export.php?ort=12&strasse=345&jahr=2026';
     $k = awm_renew_kand_aturis($at);
     $p(count($k) === 1 && strpos($k[0], 'jahr=2027') !== false
        && strpos($k[0], 'strasse=345') !== false,
-       'ATURIS: der Jahresparameter wird hochgezaehlt, die Adresse bleibt');
+       awm_t('SELBST.E12'));
     $s = awm_renew_strategie($at);
     $p($s !== null && $s['kand'] === 'awm_renew_kand_aturis',
-       'ATURIS-Link waehlt jetzt eine eigene Strategie');
+       awm_t('SELBST.E13'));
 
     /* --- 3. Allgemeine Rueckfallebene --- */
     $j = (int) date('Y');
     $p(awm_renew_kand_jahreszahl('https://beispiel.de/kalender_' . $j . '.ics')
        === array('https://beispiel.de/kalender_' . ($j + 1) . '.ics'),
-       'Allgemein: einzelne Jahreszahl wird hochgezaehlt');
+       awm_t('SELBST.E14'));
     $p(awm_renew_kand_jahreszahl('https://beispiel.de/' . $j . '/kalender_' . $j . '.ics') === array(),
-       'Allgemein: mehrdeutige Jahreszahl wird in Ruhe gelassen');
+       awm_t('SELBST.E15'));
     $p(awm_renew_kand_jahreszahl('https://beispiel.de/kalender.ics') === array(),
-       'Allgemein: Link ohne Jahreszahl liefert keinen Kandidaten');
+       awm_t('SELBST.E16'));
     $s = awm_renew_strategie('https://entsorger-xy.de/ical.php?id=abc');
     $p($s !== null && $s['kand'] === 'awm_renew_kand_jahreszahl',
-       'Unbekannter Entsorger landet in der Rueckfallebene');
+       awm_t('SELBST.E17'));
 
     /* --- 4. Veraltet-Erkennung --- */
     $p(awm_renew_veraltet(str_replace('2026', (string) ($j - 1), $awm)),
-       'Veraltet: AWM-Link aus dem Vorjahr wird erkannt');
+       awm_t('SELBST.E18'));
     $p(!awm_renew_veraltet(str_replace('2026', (string) $j, $awm)),
-       'Veraltet: AWM-Link des laufenden Jahres gilt als aktuell');
+       awm_t('SELBST.E19'));
     $p(awm_renew_veraltet(str_replace('2026', (string) ($j - 1), $aio)),
-       'Veraltet: abfall.io-Fenster aus dem Vorjahr wird erkannt');
+       awm_t('SELBST.E20'));
     $p(awm_renew_veraltet('https://x.de/ical?jahr=' . ($j - 1)),
-       'Veraltet: Jahresparameter aus dem Vorjahr wird erkannt');
+       awm_t('SELBST.E21'));
 
     return $e;
 }
@@ -4057,53 +4105,53 @@ function awm_selbstpruefung_robust()
     /* --- 1. Zeichensatz --- */
     $latin = "BEGIN:VCALENDAR\r\nSUMMARY:Restm\xFClltonne gr\xFCn\r\nEND:VCALENDAR";
     $u = awm_utf8($latin);
-    $p(preg_match('//u', $u) === 1, 'Latin-1-Kalender wird zu gueltigem UTF-8');
+    $p(preg_match('//u', $u) === 1, awm_t('SELBST.B01'));
     $p(json_encode(array('s' => $u)) !== false,
-       'Umgewandelter Kalender laesst sich als JSON schreiben');
-    $p(strpos($u, "Restm\u{00fc}lltonne") !== false, 'Der Umlaut ueberlebt die Umwandlung');
+       awm_t('SELBST.B02'));
+    $p(strpos($u, "Restm\u{00fc}lltonne") !== false, awm_t('SELBST.B03'));
     $schon = "BEGIN:VCALENDAR\r\nSUMMARY:Restm\u{00fc}lltonne\r\nEND:VCALENDAR";
-    $p(awm_utf8($schon) === $schon, 'Gueltiges UTF-8 wird nicht angefasst');
+    $p(awm_utf8($schon) === $schon, awm_t('SELBST.B04'));
     $mit = "BEGIN:VCALENDAR\r\nX-WR-CALNAME;CHARSET=ISO-8859-1:M\xFCll\r\nEND:VCALENDAR";
-    $p(preg_match('//u', awm_utf8($mit)) === 1, 'Angabe CHARSET=ISO-8859-1 im Kopf wird befolgt');
+    $p(preg_match('//u', awm_utf8($mit)) === 1, awm_t('SELBST.B05'));
     $p(preg_match('//u', awm_utf8(awm_utf8($mit))) === 1
        && strpos(awm_utf8(awm_utf8($mit)), 'M') !== false,
-       'Zweimaliges Umwandeln schadet nicht');
+       awm_t('SELBST.B06'));
     // Der Befund vom 20.08.2026: ein CHARSET an EINER Property darf nicht
     // die ganze Datei umrechnen.
     $gemischt = "BEGIN:VCALENDAR\r\nX-WR-CALNAME;CHARSET=ISO-8859-1:Abfuhr\r\n"
               . "SUMMARY:Restm\u{00fc}lltonne\r\nEND:VCALENDAR";
     $p(strpos(awm_utf8($gemischt), "Restm\u{00fc}lltonne") !== false,
-       'Ein CHARSET an einer einzelnen Zeile rechnet NICHT die ganze Datei um');
+       awm_t('SELBST.B07'));
 
     /* --- 2. Sprachausgabe: eigene Vorlage ohne IP --- */
-    $p(function_exists('awm_tts_url'), 'Sprachausgabe-Funktion vorhanden');
+    $p(function_exists('awm_tts_url'), awm_t('SELBST.B08'));
     $p(strpos((string) awm_tts_url_test('custom', '', 'http://sprich.local/say?text={text}', 'Hallo'),
               'sprich.local') !== false,
-       'Eigene Vorlage ohne IP wird gebaut, nicht verworfen');
+       awm_t('SELBST.B09'));
     $p(awm_tts_url_test('musicserver', '', '', 'Hallo') === '',
-       'Music Server ohne IP liefert weiterhin nichts');
+       awm_t('SELBST.B10'));
     $p(strpos((string) awm_tts_url_test('musicserver', '192.168.1.50', '', 'Hallo'),
               '192.168.1.50:') !== false,
-       'Music Server mit IP unveraendert');
+       awm_t('SELBST.B11'));
     $p(awm_tts_url_test('audioserver', '', '', 'Hallo') === null,
-       'Original Loxone Audioserver liefert weiterhin null');
+       awm_t('SELBST.B12'));
 
     /* --- 3. Stichwoerter fuer Verschiebungen --- */
     $w = awm_hinweis_woerter();
     $p(in_array('achtung', array_map('strtolower', $w), true),
-       'Muenchen unveraendert: "achtung" ist immer dabei');
-    $p(count($w) > 1, 'Weitere Stichwoerter fuer andere Entsorger sind hinterlegt');
+       awm_t('SELBST.B13'));
+    $p(count($w) > 1, awm_t('SELBST.B14'));
 
     /* --- 4. Unteilbares Schreiben --- */
     $probe = awm_tmpdir() . '/selbsttest.json';
     $ok = awm_json_schreiben($probe, array('a' => 1, 'b' => "\u{00fc}"));
     $gelesen = $ok ? json_decode((string) @file_get_contents($probe), true) : null;
-    $p($ok && is_array($gelesen) && $gelesen['a'] === 1, 'Unteilbares Schreiben und Lesen klappt');
+    $p($ok && is_array($gelesen) && $gelesen['a'] === 1, awm_t('SELBST.B15'));
     $p(!awm_json_schreiben($probe, array('a' => "\xFF\xFE ungueltig"), 0664, false, false),
-       'Ungueltiges UTF-8 wird abgelehnt, statt die Datei zu leeren');
+       awm_t('SELBST.B16'));
     $nachher = json_decode((string) @file_get_contents($probe), true);
     $p(is_array($nachher) && isset($nachher['a']) && $nachher['a'] === 1,
-       'Nach dem abgelehnten Schreiben steht der alte Inhalt noch da');
+       awm_t('SELBST.B17'));
     @unlink($probe);
 
     /* --- 5. Die Suchtexte treffen eindeutig (ab 1.4.0, REGELN_3 A11) --- */
@@ -4123,8 +4171,8 @@ function awm_selbstpruefung_robust()
         $soll = strpos($zeile, ';' . $name . '=' . $probe_werte[$name]);
         if ($pos === false || $pos !== $soll) { $falsch[] = $name; }
     }
-    $p(!$falsch, 'Jeder Suchtext trifft sein eigenes Feld zuerst'
-                 . ($falsch ? ' - falsch: ' . implode(', ', $falsch) : ''));
+    $p(!$falsch, awm_t('SELBST.B18')
+                 . ($falsch ? awm_t('SELBST.B18_FALSCH') . implode(', ', $falsch) : ''));
     /* Und die Gegenprobe - richtig gestellt.
      *
      * Der erste Anlauf pruefte, ob HEUTE ein Suchtext ohne Trennzeichen
@@ -4146,8 +4194,7 @@ function awm_selbstpruefung_robust()
         }
     }
     $p($paare > 0,
-       'Gegenprobe: ' . $paare . ' Namenspaare, bei denen ein Feldname das Endstueck '
-       . 'eines anderen ist - ohne Trennzeichen haengt die Zuordnung allein an der Reihenfolge');
+       sprintf(awm_t('SELBST.B20'), $paare));
     $mehrdeutig = 0;
     foreach ($namen as $a) {
         foreach ($namen as $b) {
@@ -4155,9 +4202,9 @@ function awm_selbstpruefung_robust()
         }
     }
     $p($mehrdeutig === 0,
-       'Mit Trennzeichen ist keines dieser Paare mehr mehrdeutig');
+       awm_t('SELBST.B21'));
     $p(strpos(awm_check('REST'), ';REST=') !== false,
-       'awm_check() erzeugt den Suchtext mit Trennzeichen');
+       awm_t('SELBST.B22'));
 
     /* --- 6. Loxone-Vorlage und Ausgabe beschreiben dasselbe (ab 1.4.0) --- */
     // Der schwerste Befund vom 20.08.2026: die Vorlage nannte REST analog
@@ -4182,19 +4229,19 @@ function awm_selbstpruefung_robust()
     $werte = awm_werte($st_probe, 1);
     $ausserhalb = array();
     foreach ($felder as $name => $f) {
-        if (!isset($werte[$name])) { $ausserhalb[] = $name . ' (fehlt)'; continue; }
+        if (!isset($werte[$name])) { $ausserhalb[] = $name . awm_t('SELBST.B23_FEHLT'); continue; }
         $v = $werte[$name];
         if (!is_numeric($v)) { continue; }
         if ($v < $f[1] || $v > $f[2]) { $ausserhalb[] = $name . '=' . $v; }
     }
-    $p(!$ausserhalb, 'Jeder Wert passt in den Bereich, den die Vorlage fuer ihn nennt'
-                     . ($ausserhalb ? ' - ausserhalb: ' . implode(', ', $ausserhalb) : ''));
+    $p(!$ausserhalb, awm_t('SELBST.B23')
+                     . ($ausserhalb ? awm_t('SELBST.B23_AUSSERHALB') . implode(', ', $ausserhalb) : ''));
     $p($felder['REST'][0] === 0 && $felder['TREST'][0] === 1,
-       'REST ist digital (morgen faellig), TREST analog (Tage) - bis 1.3.8 vertauscht');
+       awm_t('SELBST.B26'));
     $p($felder['TREST'][1] === -1,
-       'Der Tageszaehler darf -1 werden ("noch kein Termin bekannt")');
+       awm_t('SELBST.B27'));
     $p(strpos($felder['WARN'][4], '30') !== false,
-       'Der Kommentar zu WARN beschreibt die Jahreswechsel-Warnung, nicht die Abfuhr');
+       awm_t('SELBST.B28'));
 
     /* --- 7. Beide Wege liefern dasselbe (ab 1.4.0) ---
      *
@@ -4216,8 +4263,8 @@ function awm_selbstpruefung_robust()
     foreach ($felder as $name => $f) {
         if ($f[6] === '' && !in_array($name, $ohne_thema_erlaubt, true)) { $nurhttp[] = $name; }
     }
-    $p(!$nurhttp, 'Jeder Wert der Loxone-Zeile hat ein MQTT-Thema'
-                  . ($nurhttp ? ' - ohne: ' . implode(', ', $nurhttp) : ''));
+    $p(!$nurhttp, awm_t('SELBST.B29')
+                  . ($nurhttp ? awm_t('SELBST.B29_OHNE') . implode(', ', $nurhttp) : ''));
 
     $feldthemen = array();
     foreach ($felder as $f) { if ($f[6] !== '') { $feldthemen[] = $f[6]; } }
@@ -4227,15 +4274,15 @@ function awm_selbstpruefung_robust()
             $nurmqtt[] = $thema;
         }
     }
-    $p(!$nurmqtt, 'Jedes MQTT-Thema hat ein Feld oder steht in der Ausnahmeliste'
-                  . ($nurmqtt ? ' - ohne: ' . implode(', ', $nurmqtt) : ''));
+    $p(!$nurmqtt, awm_t('SELBST.B31')
+                  . ($nurmqtt ? awm_t('SELBST.B29_OHNE') . implode(', ', $nurmqtt) : ''));
 
     $fehlt = array();
     foreach ($nur_mqtt_erlaubt as $thema) {
         if (!in_array($thema, array_keys(awm_mqtt_themen()), true)) { $fehlt[] = $thema; }
     }
-    $p(!$fehlt, 'Die Themenliste nennt jedes Zusatzthema, das die Ausnahmeliste kennt'
-                . ($fehlt ? ' - es fehlt: ' . implode(', ', $fehlt) : ''));
+    $p(!$fehlt, awm_t('SELBST.B32')
+                . ($fehlt ? awm_t('SELBST.B32_FEHLT') . implode(', ', $fehlt) : ''));
 
     /* M7: die Themenliste gegen das, was WIRKLICH gesendet wird - die
      * Nutzlast aus awm_mqtt_nutzlast() plus das Lebenszeichen, in beide
@@ -4249,15 +4296,15 @@ function awm_selbstpruefung_robust()
     $nur_gesendet = array_values(array_diff($gesendet, $gelistet));
     $nur_gelistet = array_values(array_diff($gelistet, $gesendet));
     $p($gesendet && $gelistet && !$nur_gesendet && !$nur_gelistet,
-       sprintf('Themenliste und Sendecode stimmen ueberein (%d gesendet, %d gelistet)',
+       sprintf(awm_t('SELBST.B34'),
                count($gesendet), count($gelistet))
-       . ($nur_gesendet ? ' - nur gesendet: ' . implode(', ', $nur_gesendet) : '')
-       . ($nur_gelistet ? ' - nur gelistet: ' . implode(', ', $nur_gelistet) : ''));
+       . ($nur_gesendet ? awm_t('SELBST.B34_GESENDET') . implode(', ', $nur_gesendet) : '')
+       . ($nur_gelistet ? awm_t('SELBST.B34_GELISTET') . implode(', ', $nur_gelistet) : ''));
 
     $p(count($werte) === count($felder),
-       'awm_werte() liefert genau die Felder aus awm_feldliste()');
+       awm_t('SELBST.B37'));
     $p(awm_zaehler(false) >= -1 && awm_zaehler(false) <= 999,
-       'Der Herzschlag liegt zwischen -1 und 999');
+       awm_t('SELBST.B38'));
 
     /* --- 7b. Retain (ab 1.4.8; Positivliste ab 1.4.13) ---
      *
@@ -4277,18 +4324,18 @@ function awm_selbstpruefung_robust()
     foreach ($positiv as $a) {
         if (!in_array($a, $themen, true)) { $geister[] = $a; }
     }
-    $p(!$geister, 'Jeder Eintrag der Retain-Liste nennt ein Thema, das es gibt'
-                  . ($geister ? ' - ohne Thema: ' . implode(', ', $geister) : ''));
+    $p(!$geister, awm_t('SELBST.B39')
+                  . ($geister ? awm_t('SELBST.B39_OHNE') . implode(', ', $geister) : ''));
 
     $lz_falsch = array();
     foreach (array('status/ok', 'status/ts', 'status/zaehler') as $lz) {
         if (awm_mqtt_retain($lz, '1')) { $lz_falsch[] = $lz; }
     }
-    $p(!$lz_falsch, 'Das Lebenszeichen geht NICHT zurueckbehalten hinaus'
-                    . ($lz_falsch ? ' - falsch: ' . implode(', ', $lz_falsch) : ''));
+    $p(!$lz_falsch, awm_t('SELBST.B41')
+                    . ($lz_falsch ? awm_t('SELBST.B18_FALSCH') . implode(', ', $lz_falsch) : ''));
 
     $p(!awm_mqtt_retain('alter', '1'),
-       'Das Alter der Kalenderdatei geht nicht zurueckbehalten hinaus');
+       awm_t('SELBST.B42'));
 
     $zeit_falsch = array();
     foreach (array('ok', 'abruf', 'rest_morgen', 'rest_heute', 'datum_morgen', 'tage_rest',
@@ -4297,31 +4344,30 @@ function awm_selbstpruefung_robust()
                    'text_morgen', 'text_heute', 'text_naechste') as $t0) {
         if (awm_mqtt_retain($t0, '1')) { $zeit_falsch[] = $t0; }
     }
-    $p(!$zeit_falsch, 'Dienstaussagen (ok, abruf) und Werte mit Zeitbezug gehen NICHT '
-                      . 'zurueckbehalten hinaus'
-                      . ($zeit_falsch ? ' - falsch: ' . implode(', ', $zeit_falsch) : ''));
+    $p(!$zeit_falsch, awm_t('SELBST.B43')
+                      . ($zeit_falsch ? awm_t('SELBST.B18_FALSCH') . implode(', ', $zeit_falsch) : ''));
 
     $p(awm_mqtt_retain('audio', '1') && awm_mqtt_retain('push', '1')
        && awm_mqtt_retain('letzter', '1'),
-       'Freigaben und Kalenderende gehen zurueckbehalten hinaus (audio, push, letzter)');
+       awm_t('SELBST.B44'));
     $p(!awm_mqtt_retain('neu_unbekannt', '1'),
-       'Ein Thema, das nicht in der Retain-Liste steht, geht fluechtig hinaus');
+       awm_t('SELBST.B45'));
     $p(!awm_mqtt_retain('audio', ''),
-       'Ein leerer Wert geht nie zurueckbehalten hinaus - er loeschte das Thema');
+       awm_t('SELBST.B46'));
 
     $ret = 0;
     foreach ($themen as $t2) { if (awm_mqtt_retain($t2, '1')) { $ret++; } }
     $p($ret === count($positiv),
-       sprintf('Retain-Zaehlung stimmt: %d von %d Themen zurueckbehalten',
+       sprintf(awm_t('SELBST.B47'),
                $ret, count($themen)));
 
     $frueher = awm_mqtt_frueher_behalten();
     $p(!array_intersect($frueher, $positiv),
-       'Die abzuraeumenden Altwerte enthalten kein heute zurueckbehaltenes Thema');
+       awm_t('SELBST.B48'));
     $fr_geister = array_values(array_diff($frueher, $themen));
-    $p(!$fr_geister, sprintf('Jeder der %d abzuraeumenden Altwerte nennt ein Thema, das es gibt',
+    $p(!$fr_geister, sprintf(awm_t('SELBST.B49'),
                              count($frueher))
-                     . ($fr_geister ? ' - ohne Thema: ' . implode(', ', $fr_geister) : ''));
+                     . ($fr_geister ? awm_t('SELBST.B39_OHNE') . implode(', ', $fr_geister) : ''));
 
     /* --- 7c. Nur Aenderungen senden (ab 1.4.9) ---
      *
@@ -4329,33 +4375,33 @@ function awm_selbstpruefung_robust()
      * entscheidet, wie viele Datagramme in den UDP-Eingang gehen. */
     $a = array('ok' => 1, 'alter' => 5, 'text_heute' => 'Heute: nichts.');
     $p(count(awm_mqtt_diff($a, $a)) === 0,
-       'Unveraendert: kein einziges Thema geht hinaus');
+       awm_t('SELBST.B50'));
     $b = $a;
     $b['alter'] = 6;
     $d1 = awm_mqtt_diff($b, $a);
     $p(count($d1) === 1 && array_key_exists('alter', $d1),
-       'Ein geaenderter Wert: genau dieses eine Thema geht hinaus');
+       awm_t('SELBST.B51'));
     $d2 = awm_mqtt_diff($a, array());
     $p(count($d2) === count($a),
-       'Ohne Merker (erster Lauf, nach einem Update): alles geht hinaus');
+       awm_t('SELBST.B52'));
     $c2 = $a;
     $c2['neu_dazu'] = 1;
     $d3 = awm_mqtt_diff($c2, $a);
     $p(count($d3) === 1 && array_key_exists('neu_dazu', $d3),
-       'Ein neues Thema geht hinaus, auch wenn sonst alles gleich blieb');
+       awm_t('SELBST.B53'));
     /* Die Falle, wegen der als Zeichenkette verglichen wird: json_decode()
      * macht aus 0 unter Umstaenden "0". Ein Vergleich mit !== haette dann
      * bei jedem Lauf alles gesendet - und genau das soll die Aenderung
      * verhindern. */
     $p(count(awm_mqtt_diff(array('ok' => 0), array('ok' => '0'))) === 0,
-       'Zahl 0 und Zeichenkette "0" gelten als derselbe Wert');
+       awm_t('SELBST.B54'));
 
     /* --- 8. Loxone-Zeit --- */
-    $p(awm_loxzeit('20090101') === 0, 'Loxone-Zeit: der 01.01.2009 ist die Null');
+    $p(awm_loxzeit('20090101') === 0, awm_t('SELBST.B55'));
     $p(awm_loxzeit('') === 0 && awm_loxzeit('nonsens') === 0,
-       'Loxone-Zeit: ohne Datum kommt 0, nicht ein erfundener Wert');
+       awm_t('SELBST.B56'));
     $p(awm_loxzeit('20260821') > awm_loxzeit('20260820'),
-       'Loxone-Zeit: spaeter ist groesser');
+       awm_t('SELBST.B57'));
 
     return $e;
 }
@@ -4605,9 +4651,8 @@ function awm_vorlage($cal = 1) {
         'title' => 'Abfuhrkalender AWM' . ($c ? ' ' . $c['name'] : ''),
         'address' => 'http://' . $host . '/plugins/' . $ordner . '/awm.php' . ($cal > 1 ? '?cal=' . $cal : ''),
         'polling' => '300',
-        'comment' => 'Erzeugt vom LoxBerry-Plugin Abfuhrkalender AWM (' . date('d.m.Y') . '). '
-                   . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
-                   . 'zweimal eingelesen ergibt doppelte Bausteine.',
+        // AWM-b1: Kommentar aus der Sprachdatei, Abschnitt [VORLAGE].
+        'comment' => sprintf(awm_t('VORLAGE.VI_KOMMENTAR'), date('d.m.Y')),
     ), $cmds));
 }
 
@@ -4626,23 +4671,21 @@ function awm_vorlage_vo($cal = 1) {
     $basis = '/plugins/' . $ordner . '/awm.php';
     $cal = max(1, (int) $cal);
     $suffix = '&token=' . $tok . ($cal > 1 ? '&cal=' . $cal : '');
+    // AWM-b1: Namen und Kommentare aus der Sprachdatei, Abschnitt [VORLAGE].
     $cmds = array(
-        array('title' => 'Ansage jetzt', 'comment' => 'Spricht sofort in den konfigurierten Zonen',
+        array('title' => awm_t('VORLAGE.VO_SAY_T'), 'comment' => awm_t('VORLAGE.VO_SAY_K'),
               'on' => $basis . '?say=1' . $suffix),
-        array('title' => 'Test-Pushnachricht', 'comment' => 'Setzt PTEST für fünf Minuten',
+        array('title' => awm_t('VORLAGE.VO_PTEST_T'), 'comment' => awm_t('VORLAGE.VO_PTEST_K'),
               'on' => $basis . '?ptest=1' . $suffix),
-        array('title' => 'Quittierung Tonne draußen', 'comment' => 'Setzt ACK bis Mitternacht, die Morgen-Ansage entfällt',
+        array('title' => awm_t('VORLAGE.VO_ACK_T'), 'comment' => awm_t('VORLAGE.VO_ACK_K'),
               'on' => $basis . '?ack=1' . $suffix),
-        array('title' => 'Jahres-Erneuerung', 'comment' => 'Versucht sofort einen frischen Kalender-Link',
+        array('title' => awm_t('VORLAGE.VO_RENEW_T'), 'comment' => awm_t('VORLAGE.VO_RENEW_K'),
               'on' => $basis . '?renew=1' . $suffix),
     );
     return array('VO_awm' . ($cal > 1 ? '_' . $cal : '') . '.xml', awm_xml_virtual_out(array(
-        'title' => 'Abfuhrkalender AWM steuern',
+        'title' => awm_t('VORLAGE.VO_TITEL'),
         'address' => 'http://' . $host,
-        'comment' => 'Erzeugt vom LoxBerry-Plugin Abfuhrkalender AWM (' . date('d.m.Y') . '). '
-                   . 'ACHTUNG: die Adressen enthalten das Aktionstoken. Wird in der '
-                   . 'Plugin-Oberflaeche ein neues Token erzeugt, muss diese Vorlage neu '
-                   . 'eingelesen oder das Token in den Befehlen ausgetauscht werden.',
+        'comment' => sprintf(awm_t('VORLAGE.VO_KOMMENTAR'), date('d.m.Y')),
     ), $cmds));
 }
 
@@ -4776,9 +4819,14 @@ function awm_config_speichern($cfg)
  * stammen aus einer anderen Fassung oder einem anderen Plugin.
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ *
+ * X-3: $namen (optional, per Verweis) bekommt je beanstandetem Wert den
+ * Schluessel und den Grund - fuer die Warnung am Knopf "Einstellungen
+ * sichern". Die Gruende nennen nur Schluessel, nie Werte.
  */
-function awm_sicherung_lesen($roh)
+function awm_sicherung_lesen($roh, &$namen = null)
 {
+    if (!is_array($namen)) { $namen = array(); }
     $mangel = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
@@ -4810,6 +4858,7 @@ function awm_sicherung_lesen($roh)
         $grund = awm_wert_pruefen($k, $w);
         if ($grund !== '') {
             $mangel[] = sprintf(awm_t('EINST.SICH_WERT'), $k, $grund);
+            $namen[$k] = $grund;                    // X-3
             continue;
         }
         $neu[$k] = $w;
@@ -4864,12 +4913,15 @@ function awm_einmal_datei()
     return awm_datadir() . '/einmalmeldung.json';
 }
 
-function awm_einmal_schreiben($gespeichert, $hinweise, $fehler)
+function awm_einmal_schreiben($gespeichert, $hinweise, $fehler, $eingaben = null)
 {
-    return awm_json_schreiben(awm_einmal_datei(), array(
+    $d = array(
         'zeit' => time(), 'gespeichert' => $gespeichert ? 1 : 0,
         'hinweise' => array_values(array_map('strval', (array) $hinweise)),
-        'fehler' => array_values(array_map('strval', (array) $fehler))), 0600);
+        'fehler' => array_values(array_map('strval', (array) $fehler)));
+    // X-2: die abgewiesenen Eingaben EINES Formulars (awm_eingaben_sammeln()).
+    if (is_array($eingaben)) { $d['eingaben'] = $eingaben; }
+    return awm_json_schreiben(awm_einmal_datei(), $d, 0600);
 }
 
 function awm_einmal_lesen()
@@ -4888,7 +4940,115 @@ function awm_einmal_lesen()
     };
     return array('gespeichert' => !empty($d['gespeichert']),
                  'hinweise' => $txt(isset($d['hinweise']) ? $d['hinweise'] : array()),
-                 'fehler' => $txt(isset($d['fehler']) ? $d['fehler'] : array()));
+                 'fehler' => $txt(isset($d['fehler']) ? $d['fehler'] : array()),
+                 'eingaben' => awm_eingaben_pruefen(isset($d['eingaben']) ? $d['eingaben'] : null));
+}
+
+/* ==================================================================
+ * X-2 (Regeln/04, Hausregel seit 30.09.2026): Nach einer Beanstandung
+ * stehen die eingetippten Werte wieder im Formular.
+ *
+ * Seit der Umleitung nach jedem POST (U1) zeigte der GET danach die
+ * GESPEICHERTEN Werte: wer drei Felder richtig und eines falsch eintippte,
+ * tippte alle vier neu (AWM 1.4.15, gemessen). Jetzt reisen die Eingaben
+ * des EINEN beanstandeten Formulars mit der Einmalmeldung (0600, Datenordner,
+ * 120 s, beim GET gelesen und geloescht) und fuellen die Felder genau einmal;
+ * die beanstandeten Felder sind markiert.
+ *
+ * Positivliste je Formular: Name => array(Art, Zeilen). Art 'text' oder
+ * 'haken'; Zeilen 0 = ein Feld, sonst ein Listenfeld name[0..Zeilen-1].
+ * Keines dieser Formulare traegt ein Geheimnis - das Aktionstoken steht in
+ * keinem, das Formularmerkmal gehoert nicht dazu.
+ * ================================================================== */
+function awm_eingabe_felder($formular)
+{
+    $k = AWM_MAX_KALENDER;
+    $z = 200;                       // Zeilen der Tonnen- und Termintabellen
+    $t = array('text', 0);
+    $h = array('haken', 0);
+    $f = array(
+        'save' => array(
+            'cal_name' => array('text', $k), 'cal_url' => array('text', $k),
+            'cal_ansage' => array('haken', $k), 'cal_zonen' => array('text', $k),
+            'fetch_days' => $t, 'lookahead' => $t, 'hinweis_woerter' => $t,
+            'autorenew' => $h, 'melden' => $h,
+            'notify_audio' => $h, 'notify_push' => $h, 'notify_time' => $t,
+            'notify_audio2' => $h, 'notify_time2' => $t,
+            'ruhe_urlaub' => $h, 'ruhe_nachts' => $h, 'ruhe_von' => $t,
+            'ruhe_bis_zeit' => $t, 'ruhe_bis' => $t,
+            'tts_mode' => $t, 'tts_ip' => $t, 'tts_port' => $t, 'tts_zones' => $t,
+            'tts_volume' => $t, 'tts_lang' => $t, 'tts_template' => $t,
+            'ansage_vorlage' => $t, 'ansage_vorlage2' => $t),
+        'mqtt' => array('mqtt_enabled' => $h, 'mqtt_topic' => $t),
+        'bins' => array('bins_cal' => $t, 'bins_modus' => $t, 'bin_titel' => array('text', $z),
+                        'bin_tonne' => array('text', $z), 'bin_art' => array('text', $z)),
+        'termine' => array('term_cal' => $t, 'term_datum' => array('text', $z),
+                           'term_tonne' => array('text', $z), 'term_text' => array('text', $z)),
+    );
+    return isset($f[$formular]) ? $f[$formular] : array();
+}
+
+/** Alle zulaessigen Schluessel eines Formulars ('name' bzw. 'name.N'). */
+function awm_eingabe_schluessel($formular)
+{
+    $s = array();
+    foreach (awm_eingabe_felder($formular) as $name => $art) {
+        if ($art[1] === 0) { $s[$name] = true; continue; }
+        for ($i = 0; $i < $art[1]; $i++) { $s[$name . '.' . $i] = true; }
+    }
+    return $s;
+}
+
+/** Die Eingaben eines beanstandeten Formulars aus dem POST sammeln - nur,
+ *  was die Positivliste nennt. $falsch: die beanstandeten Schluessel. */
+function awm_eingaben_sammeln($formular, array $post, array $falsch)
+{
+    $werte = array();
+    foreach (awm_eingabe_felder($formular) as $name => $art) {
+        list($typ, $zeilen) = $art;
+        if ($zeilen === 0) {
+            $v = isset($post[$name]) ? $post[$name] : null;
+            if ($typ === 'haken') {
+                $werte[$name] = ($v !== null) ? '1' : '0';          // wie isset() im Handler
+            } elseif (is_scalar($v)) {
+                $werte[$name] = substr((string) $v, 0, 4096);
+            }
+            continue;
+        }
+        $l = (isset($post[$name]) && is_array($post[$name])) ? $post[$name] : array();
+        for ($i = 0; $i < $zeilen; $i++) {
+            $v = isset($l[$i]) ? $l[$i] : null;
+            if ($typ === 'haken') {
+                $werte[$name . '.' . $i] = !empty($v) ? '1' : '0';  // wie !empty() im Handler
+            } elseif (is_scalar($v)) {
+                $werte[$name . '.' . $i] = substr((string) $v, 0, 4096);
+            }
+        }
+    }
+    $s = awm_eingabe_schluessel($formular);
+    $f = array();
+    foreach ($falsch as $n) {
+        if (is_string($n) && isset($s[$n])) { $f[$n] = true; }
+    }
+    return array('formular' => (string) $formular, 'werte' => $werte, 'falsch' => array_keys($f));
+}
+
+/** Die Eingaben aus der Einmalmeldung pruefen: nur ein bekanntes Formular,
+ *  nur dessen Schluessel, nur Zeichenketten. Sonst null. */
+function awm_eingaben_pruefen($e)
+{
+    if (!is_array($e) || !isset($e['formular']) || !is_string($e['formular'])) { return null; }
+    $s = awm_eingabe_schluessel($e['formular']);
+    if (!$s) { return null; }
+    $werte = array();
+    foreach ((isset($e['werte']) && is_array($e['werte'])) ? $e['werte'] : array() as $k => $v) {
+        if (isset($s[(string) $k]) && is_string($v)) { $werte[(string) $k] = $v; }
+    }
+    $falsch = array();
+    foreach ((isset($e['falsch']) && is_array($e['falsch'])) ? $e['falsch'] : array() as $n) {
+        if (is_string($n) && isset($s[$n])) { $falsch[] = $n; }
+    }
+    return array('formular' => $e['formular'], 'werte' => $werte, 'falsch' => $falsch);
 }
 
 /* ==================================================================
@@ -5092,8 +5252,29 @@ function awm_altschluessel()
     return array('ical_url', 'fetch_hours');
 }
 
+/** Die Sicherungsdatei bauen - an EINER Stelle (Inhalt: awm_sicherung_daten()). */
+function awm_sicherung_bauen()
+{
+    // Die VOLLE Konfiguration, gefiltert auf die bekannten Schluessel.
+    $daten = awm_sicherung_daten(awm_config());
+    /* X-3: wuerde das Zurueckspielen diese Datei abweisen, sagt es der Kopf -
+     * nur mit den NAMEN der Einstellungen, nie mit ihren Werten. Geliefert
+     * wird trotzdem vollstaendig (Entscheidung 13, Bauform EVCC 0.9.36):
+     * wer umzieht, braucht die Datei, und die Werte lassen sich darin
+     * berichtigen. "_warnung" beginnt mit "_" und wird beim Zurueckspielen
+     * uebergangen wie "_hinweis" und "_stand". */
+    $alt = awm_sicherung_altwerte($daten);
+    if ($alt) {
+        $kopf = array('_hinweis' => $daten['_hinweis'], '_stand' => $daten['_stand'],
+                      '_warnung' => sprintf(awm_t('EINST.SICH_WARNKOPF'), implode(', ', array_keys($alt))));
+        $daten = $kopf + $daten;
+    }
+    return json_encode($daten,
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
 /**
- * Die Sicherungsdatei bauen - an EINER Stelle.
+ * Der Inhalt der Sicherungsdatei als Liste - an EINER Stelle.
  *
  * Ausgegeben werden nur die bekannten Schluessel (Altschluessel bleiben
  * draussen) plus ein lesbarer Kopf. Der Aktionstoken IST dabei: ohne ihn
@@ -5101,9 +5282,9 @@ function awm_altschluessel()
  * trotzdem nicht an die Anlage. Der Formulartoken gehoert NICHT hinein - er
  * ist ein Sitzungsmerkmal.
  */
-function awm_sicherung_bauen()
+function awm_sicherung_daten(array $voll)
 {
-    $cfg = array_intersect_key(awm_config(), awm_config_vorgaben());
+    $cfg = array_intersect_key($voll, awm_config_vorgaben());
     $kopf = array(
         '_hinweis' => 'Sicherung des LoxBerry-Plugins Abfuhrkalender AWM. '
                     . 'Enthaelt das Aktionstoken und die Kalenderadresse - '
@@ -5114,8 +5295,33 @@ function awm_sicherung_bauen()
      * und Werkzeuge/fassung_setzen.py pflegt nur die drei .cfg und die
      * README. Eine vierte Stelle waere eine, die beim naechsten Release
      * vergessen wird. */
-    return json_encode($kopf + $cfg,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return $kopf + $cfg;
+}
+
+/**
+ * X-3: Welche gespeicherten Werte wuerde das eigene Zurueckspielen abweisen?
+ *
+ * Gefragt wird DIESELBE Funktion wie beim Zurueckspielen, mit der Datei, die
+ * "Einstellungen sichern" liefern wuerde (awm_sicherung_daten(awm_config())) - keine zweite Liste. Rueckgabe:
+ * Schluessel => Grund (leer: die Sicherung liesse sich zurueckspielen).
+ * Bis 1.4.16 lieferte der Knopf eine solche Datei kommentarlos; bemerkt
+ * wurde es erst beim Zurueckspielen, also beim Umzug (AWM 1.4.15, U4).
+ */
+function awm_sicherung_altwerte($daten = null)
+{
+    if ($daten === null) { $daten = awm_sicherung_daten(awm_config()); }
+    $js = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $namen = array();
+    if ($js === false) {
+        return array('_' => awm_t('EINST.SICH_KEIN_JSON'));
+    }
+    list($neu, $mangel) = awm_sicherung_lesen($js, $namen);
+    if ($neu === null && !$namen) {
+        // Abgewiesen, aber ohne Einzelwert (sollte nicht vorkommen): den
+        // ersten Grund nennen statt still "geht" zu sagen.
+        $namen['_'] = (string) reset($mangel);
+    }
+    return $namen;
 }
 
 /* Der Escape-Helfer gehoert in die Bibliothek, nicht in

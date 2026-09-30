@@ -86,6 +86,60 @@ if (is_dir(dirname($aw_logfile))) {
 function aw_t($k) { return aw_e(awm_t($k)); }
 function aw_d($ymd) { return strlen((string) $ymd) === 8 ? substr($ymd, 6, 2) . '.' . substr($ymd, 4, 2) . '.' . substr($ymd, 0, 4) : '-'; }
 
+/* X-2 (Regeln/04): nach einer Beanstandung zeigt der GET einmal die
+ * EINGETIPPTEN Werte des beanstandeten Formulars ($aw_ein aus der
+ * Einmalmeldung) statt der gespeicherten, das beanstandete Feld markiert.
+ * Tonnen und Termine nur fuer den Kalender, fuer den sie getippt wurden. */
+function aw_ein_aktiv($form)
+{
+    $e = isset($GLOBALS['aw_ein']) ? $GLOBALS['aw_ein'] : null;
+    if (!is_array($e) || $e['formular'] !== $form) { return false; }
+    $cal = array('bins' => 'bins_cal', 'termine' => 'term_cal');
+    if (isset($cal[$form])) {
+        $w = isset($e['werte'][$cal[$form]]) ? $e['werte'][$cal[$form]] : '';
+        return max(1, (int) $w) === (int) (isset($GLOBALS['aw_bcal']) ? $GLOBALS['aw_bcal'] : 1);
+    }
+    return true;
+}
+/** Eingetippter Wert, sonst der gespeicherte. */
+function aw_ew($form, $name, $gespeichert)
+{
+    if (aw_ein_aktiv($form) && array_key_exists($name, $GLOBALS['aw_ein']['werte'])) {
+        return $GLOBALS['aw_ein']['werte'][$name];
+    }
+    return $gespeichert;
+}
+/** Haken: eingetippt, sonst gespeichert. */
+function aw_eh($form, $name, $gespeichert)
+{
+    if (aw_ein_aktiv($form) && array_key_exists($name, $GLOBALS['aw_ein']['werte'])) {
+        return $GLOBALS['aw_ein']['werte'][$name] === '1';
+    }
+    return (bool) $gespeichert;
+}
+/** Merkmal fuer ein beanstandetes Feld (leer, wenn nicht beanstandet). */
+function aw_em($form, $name)
+{
+    return (aw_ein_aktiv($form) && in_array($name, $GLOBALS['aw_ein']['falsch'], true))
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+/** Ein beanstandetes Zahlenfeld wird als Textfeld gezeigt - ein type=number
+ *  zeigt "abc" nicht an, und der Anwender saehe ein leeres Feld. */
+function aw_et($form, $name)
+{
+    return aw_em($form, $name) !== '' ? 'text' : 'number';
+}
+/** Zahl der eingetippten Zeilen eines Listenfeldes. */
+function aw_ein_zeilen($form, $name)
+{
+    $n = 0;
+    if (!aw_ein_aktiv($form)) { return 0; }
+    foreach (array_keys($GLOBALS['aw_ein']['werte']) as $k) {
+        if (strpos($k, $name . '.') === 0) { $n = max($n, (int) substr($k, strlen($name) + 1) + 1); }
+    }
+    return $n;
+}
+
 /**
  * Formulartoken gegen fremde Absender.
  *
@@ -182,6 +236,11 @@ function aw_calnummer($cfg, $slot)
 $aw_fehler = array();
 $aw_hinweise = array();
 $aw_saved = false;
+/* X-2: welche Felder welches Formulars beanstandet wurden ('name' bzw.
+ * 'name.N'); '_kalender' heisst "beanstandet, aber an keinem Feld". */
+$aw_bean = array();
+$aw_bean_form = '';
+$aw_ein = null;
 
 /* Die Reiterliste steht genau EINMAL - ausgeschrieben, damit die
  * Hausstandard-Pruefung sie als Literal findet. */
@@ -261,6 +320,7 @@ if ($aw_post && isset($_POST['vorlage'])) {
  * NICHT den save-Handler mitbenutzen: der setzt Haken per isset() und wuerde
  * beim Absenden des MQTT-Formulars die Einstellungs-Haken auf 0 stellen. */
 if ($aw_post && isset($_POST['mqtt_save'])) {
+    $aw_bean_form = 'mqtt';
     $aw_new = awm_config(true);
     $aw_vorher = $aw_new;
     $aw_new['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
@@ -272,6 +332,7 @@ if ($aw_post && isset($_POST['mqtt_save'])) {
     // U4: dieselbe Pruefung wie beim Zurueckspielen (mit \z statt $).
     if (awm_wert_pruefen('mqtt_topic', $aw_thema) !== '') {
         $aw_fehler[] = awm_t('MELD.THEMA_UNGUELTIG');
+        $aw_bean[] = 'mqtt_topic';
     } else {
         $aw_new['mqtt_topic'] = $aw_thema;
         if (aw_speichern($aw_new, $aw_fehler)) {
@@ -350,6 +411,7 @@ if ($aw_post && isset($_POST['upload'])) {
 
 /* ---------- Tonnenzuordnung speichern ---------- */
 if ($aw_post && isset($_POST['save_bins'])) {
+    $aw_bean_form = 'bins';
     $aw_new = awm_config(true);
     $aw_liste = array_values((array) $aw_new['cals']);
     $aw_cn = max(1, (int) (isset($_POST['bins_cal']) ? $_POST['bins_cal'] : 1));
@@ -369,17 +431,20 @@ if ($aw_post && isset($_POST['save_bins'])) {
         }
         if (!isset($aw_arten[$aw_zz])) {
             $aw_fehler[] = sprintf(awm_t('MELD.TONNE_UNBEKANNT'), $aw_zz);
+            $aw_bean[] = 'bin_tonne.' . $aw_k;
             continue;
         }
         $aw_aa = (string) (isset($aw_art[$aw_k]) ? $aw_art[$aw_k] : 'enthaelt');
         if (!in_array($aw_aa, array('enthaelt', 'beginnt', 'genau'), true)) {
             $aw_fehler[] = sprintf(awm_t('MELD.ART_UNBEKANNT'), $aw_tt);
+            $aw_bean[] = 'bin_art.' . $aw_k;
             continue;
         }
         $aw_regeln_neu[] = array('muster' => $aw_tt, 'tonne' => $aw_zz, 'art' => $aw_aa);
     }
     if ($aw_slot < 0) {
         $aw_fehler[] = awm_t('MELD.KALENDER_FEHLT');
+        $aw_bean[] = '_kalender';
     } elseif (!$aw_fehler) {
         $aw_liste[$aw_slot]['regeln'] = $aw_regeln_neu;
         $aw_mod = (string) (isset($_POST['bins_modus']) ? $_POST['bins_modus'] : 'ersetzen');
@@ -395,6 +460,7 @@ if ($aw_post && isset($_POST['save_bins'])) {
 
 /* ---------- Eigene Termine speichern ---------- */
 if ($aw_post && isset($_POST['save_termine'])) {
+    $aw_bean_form = 'termine';
     $aw_new = awm_config(true);
     $aw_liste = array_values((array) $aw_new['cals']);
     $aw_cn = max(1, (int) (isset($_POST['term_cal']) ? $_POST['term_cal'] : 1));
@@ -415,10 +481,12 @@ if ($aw_post && isset($_POST['save_termine'])) {
         elseif (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $aw_dd, $m)) { $aw_ymd = $m[1] . $m[2] . $m[3]; }
         if ($aw_ymd === '' || awm_tagnummer($aw_ymd) < 0) {
             $aw_fehler[] = sprintf(awm_t('MELD.DATUM_UNGUELTIG'), $aw_dd);
+            $aw_bean[] = 'term_datum.' . $aw_k;
             continue;
         }
         if (!isset($aw_arten[$aw_bb])) {
             $aw_fehler[] = sprintf(awm_t('MELD.TONNE_FEHLT'), $aw_dd);
+            $aw_bean[] = 'term_tonne.' . $aw_k;
             continue;
         }
         $aw_neu[] = array('datum' => $aw_ymd, 'tonne' => $aw_bb,
@@ -427,6 +495,7 @@ if ($aw_post && isset($_POST['save_termine'])) {
     }
     if ($aw_slot < 0) {
         $aw_fehler[] = awm_t('MELD.KALENDER_FEHLT');
+        $aw_bean[] = '_kalender';
     } elseif (!$aw_fehler) {
         $aw_liste[$aw_slot]['termine'] = $aw_neu;
         $aw_new['cals'] = $aw_liste;
@@ -468,6 +537,7 @@ if ($aw_post && isset($_POST['fetchnow'])) {
  * gingen am 13.08.2026 in drei anderen Linien die Token verloren.
  */
 if ($aw_post && isset($_POST['save'])) {
+    $aw_bean_form = 'save';
     $aw_new = awm_config(true);
     $aw_vorher = $aw_new;
     $aw_alt_cals = array_values((array) $aw_new['cals']);
@@ -482,6 +552,7 @@ if ($aw_post && isset($_POST['save'])) {
         $aw_hoch = !empty($aw_alt['hochgeladen']);
         if ($aw_u !== '' && !preg_match('#^https?://#i', $aw_u)) {
             $aw_fehler[] = sprintf(awm_t('MELD.URL_UNGUELTIG'), $aw_i + 1);
+            $aw_bean[] = 'cal_url.' . $aw_i;
             $aw_u = isset($aw_alt['url']) ? (string) $aw_alt['url'] : '';   // alte behalten
         }
         if ($aw_u === '' && !$aw_hoch) {
@@ -508,6 +579,7 @@ if ($aw_post && isset($_POST['save'])) {
             $aw_eintrag['zonen'] = trim($aw_zz);
         } else {
             $aw_fehler[] = sprintf(awm_t('MELD.ZONEN'), $aw_zz);
+            $aw_bean[] = 'cal_zonen.' . $aw_i;
             $aw_eintrag['zonen'] = isset($aw_alt['zonen']) && is_string($aw_alt['zonen']) ? $aw_alt['zonen'] : '';
         }
         $aw_liste[] = $aw_eintrag;
@@ -521,12 +593,14 @@ if ($aw_post && isset($_POST['save'])) {
         $aw_new['fetch_days'] = (int) $aw_fd;
     } else {
         $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_INTERVALL'), 1, 60, $aw_fd);
+        $aw_bean[] = 'fetch_days';
     }
     $aw_la = isset($_POST['lookahead']) ? $_POST['lookahead'] : 35;
     if (awm_ist_zahl($aw_la, 7, 90)) {
         $aw_new['lookahead'] = (int) $aw_la;
     } else {
         $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_VORSCHAU'), 7, 90, $aw_la);
+        $aw_bean[] = 'lookahead';
     }
     $aw_new['autorenew'] = isset($_POST['autorenew']) ? 1 : 0;
     $aw_new['melden'] = isset($_POST['melden']) ? 1 : 0;
@@ -541,10 +615,12 @@ if ($aw_post && isset($_POST['save'])) {
      * ungueltiger Wert behaelt den alten und wird gemeldet. */
     if (!awm_ist_zeit($aw_zeit)) {
         $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_zeit);
+        $aw_bean[] = 'notify_time';
         $aw_zeit = (string) $aw_new['notify']['time'];
     }
     if (!awm_ist_zeit($aw_zeit2)) {
         $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_zeit2);
+        $aw_bean[] = 'notify_time2';
         $aw_zeit2 = (string) $aw_new['notify']['time2'];
     }
     $aw_new['notify'] = array(
@@ -561,6 +637,7 @@ if ($aw_post && isset($_POST['save'])) {
         elseif (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $aw_bd, $m)) { $aw_bd_ymd = $m[1] . $m[2] . $m[3]; }
         if ($aw_bd_ymd === '' || awm_tagnummer($aw_bd_ymd) < 0) {
             $aw_fehler[] = sprintf(awm_t('MELD.DATUM_UNGUELTIG'), $aw_bd);
+            $aw_bean[] = 'ruhe_bis';
             $aw_bd_ymd = (string) $aw_new['ruhe']['bis_datum'];
         }
     }
@@ -571,10 +648,12 @@ if ($aw_post && isset($_POST['save'])) {
     $aw_rb = (string) (isset($_POST['ruhe_bis_zeit']) ? $_POST['ruhe_bis_zeit'] : '');
     if (!awm_ist_zeit($aw_rv)) {
         $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_rv);
+        $aw_bean[] = 'ruhe_von';
         $aw_rv = (string) $aw_new['ruhe']['von'];
     }
     if (!awm_ist_zeit($aw_rb)) {
         $aw_fehler[] = sprintf(awm_t('MELD.UHRZEIT'), $aw_rb);
+        $aw_bean[] = 'ruhe_bis_zeit';
         $aw_rb = (string) $aw_new['ruhe']['bis'];
     }
     $aw_new['ruhe'] = array(
@@ -589,12 +668,14 @@ if ($aw_post && isset($_POST['save'])) {
     if (awm_ist_zahl($aw_port, 1, 65535)) { $aw_port = (int) $aw_port; }
     else {
         $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_PORT'), 1, 65535, $aw_port);
+        $aw_bean[] = 'tts_port';
         $aw_port = (int) $aw_new['tts']['port'];
     }
     $aw_vol = isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 8;
     if (awm_ist_zahl($aw_vol, 1, 100)) { $aw_vol = (int) $aw_vol; }
     else {
         $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_LAUT'), 1, 100, $aw_vol);
+        $aw_bean[] = 'tts_volume';
         $aw_vol = (int) $aw_new['tts']['volume'];
     }
     /* U4/U5: Ansageart, Adresse, Zonen und Sprache mit denselben Pruefern wie
@@ -604,21 +685,25 @@ if ($aw_post && isset($_POST['save'])) {
      * abgewiesen. */
     if (!in_array($aw_mode, array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
         $aw_fehler[] = sprintf(awm_t('MELD.MODUS'), $aw_mode);
+        $aw_bean[] = 'tts_mode';
         $aw_mode = (string) $aw_new['tts']['mode'];
     }
     $aw_ip = trim((string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : ''));
     if (!awm_ist_host($aw_ip)) {
         $aw_fehler[] = sprintf(awm_t('MELD.HOST'), $aw_ip);
+        $aw_bean[] = 'tts_ip';
         $aw_ip = (string) $aw_new['tts']['ip'];
     }
     $aw_zo = (string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '');
     if (!awm_ist_zonen($aw_zo)) {
         $aw_fehler[] = sprintf(awm_t('MELD.ZONEN'), $aw_zo);
+        $aw_bean[] = 'tts_zones';
         $aw_zo = (string) $aw_new['tts']['zones'];
     }
     $aw_la2 = (string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : '');
     if (!awm_ist_sprache($aw_la2)) {
         $aw_fehler[] = sprintf(awm_t('MELD.SPRACHE'), $aw_la2);
+        $aw_bean[] = 'tts_lang';
         $aw_la2 = (string) $aw_new['tts']['lang'];
     }
     $aw_new['tts'] = array(
@@ -636,10 +721,14 @@ if ($aw_post && isset($_POST['save'])) {
         'vorlage2' => trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
                       (string) (isset($_POST['ansage_vorlage2']) ? $_POST['ansage_vorlage2'] : ''))),
     );
-    // Beanstandete Felder haben oben ihren alten Wert behalten - gespeichert
-    // wird trotzdem, damit nicht alles Uebrige verlorengeht. Die Meldungen
-    // stehen oben auf der Seite.
-    if (aw_speichern($aw_new, $aw_fehler)) {
+    /* Entscheidung 16 (30.09.2026, Regeln/04): bei einer Beanstandung wird
+     * NICHTS gespeichert, auch nicht die uebrigen richtigen Felder. Bis 1.4.16
+     * wurde "trotzdem gespeichert, damit nicht alles Uebrige verlorengeht" -
+     * dieser Grund ist mit X-2 entfallen: alle Eingaben stehen nach der
+     * Umleitung wieder im Formular, das beanstandete Feld markiert. */
+    if ($aw_bean) {
+        // nichts schreiben; die Meldungen stehen oben auf der Seite
+    } elseif (aw_speichern($aw_new, $aw_fehler)) {
         $aw_saved = true;
         foreach (array_keys(awm_cals()) as $aw_n) { awm_state(true, $aw_n); }
         aw_mqtt_folgen($aw_vorher, $aw_new, $aw_hinweise, $aw_fehler);    // M4: entfernte Kalender
@@ -739,15 +828,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $aw_ziel = 'index.php?form=' . substr($aw_tab, 4);
     $aw_bc = isset($_POST['bins_cal']) ? $_POST['bins_cal'] : (isset($_POST['term_cal']) ? $_POST['term_cal'] : null);
     if ($aw_bc !== null && is_scalar($aw_bc)) { $aw_ziel .= '&bcal=' . max(1, (int) $aw_bc); }
-    if (awm_einmal_schreiben($aw_saved, $aw_hinweise, $aw_fehler)) {
+    /* X-2: nach einer Beanstandung reisen die Eingaben DIESES Formulars mit
+     * (Positivliste, keine Geheimnisse); ohne Beanstandung nicht - sonst
+     * saehe ein still berichtigter Wert wie angenommen aus. */
+    $aw_eing = ($aw_bean && $aw_bean_form !== '')
+        ? awm_eingaben_sammeln($aw_bean_form, $_POST, $aw_bean) : null;
+    if (awm_einmal_schreiben($aw_saved, $aw_hinweise, $aw_fehler, $aw_eing)) {
         header('Location: ' . $aw_ziel, true, 303);
         exit;
     }
     awm_log('Die Einmalmeldung liess sich nicht ablegen - die Seite wird ohne Umleitung gezeigt.');
+    $aw_ein = $aw_eing;
 } else {
     $aw_einmal = awm_einmal_lesen();
     if ($aw_einmal !== null) {
         if ($aw_einmal['gespeichert']) { $aw_saved = true; }
+        $aw_ein = $aw_einmal['eingaben'];                    // X-2
         $aw_hinweise = array_merge($aw_einmal['hinweise'], $aw_hinweise);
         $aw_fehler = array_merge($aw_einmal['fehler'], $aw_fehler);
     }
@@ -887,6 +983,9 @@ if ($aw_frame) {
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 32px; cursor: pointer; }
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+/* Ergaenzung, nicht aus der Vorlage (X-2, Regeln/04): ein nach einer
+   Beanstandung zurueckgegebenes Feld, das beanstandet wurde. */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 
 </style>
 <div class="sm-wrap">
@@ -900,6 +999,9 @@ if ($aw_frame) {
 </ul></div>
 <?php } ?>
 
+<?php if (is_array($aw_ein) && aw_ein_aktiv($aw_ein['formular'])) { /* X-2 */ ?>
+<div class="sm-warnung" id="eingaben-zurueck"><?= aw_t('EINST.EINGABEN_ZURUECK') ?></div>
+<?php } ?>
 <?php if (!$aw_cals) { ?>
 <div class="sm-warnung"><b><?= aw_t('MELD.KEIN_KALENDER') ?></b> <?= aw_t('MELD.KEIN_KALENDER_ZUSATZ') ?></div>
 <?php } ?>
@@ -979,11 +1081,11 @@ if ($aw_frame) {
     $aw_c += array('name' => '', 'url' => '', 'ansage' => ($aw_i === 0 ? 1 : 0), 'zonen' => '', 'hochgeladen' => 0); ?>
 <tr>
 <td><?= $aw_i + 1 ?></td>
-<td><input data-role="none" type="text" name="cal_name[]" value="<?= aw_e($aw_c['name']) ?>" placeholder="<?= $aw_i === 0 ? aw_t('EINST.PH_NAME1') : aw_t('EINST.PH_NAME2') ?>"></td>
-<td><input data-role="none" type="text" name="cal_url[]" value="<?= aw_e($aw_c['url']) ?>" placeholder="https://www.awm-muenchen.de/...&amp;section=ics&amp;...">
+<td><input data-role="none" type="text" name="cal_name[]" value="<?= aw_e(aw_ew('save', 'cal_name.' . $aw_i, $aw_c['name'])) ?>"<?= aw_em('save', 'cal_name.' . $aw_i) ?> placeholder="<?= $aw_i === 0 ? aw_t('EINST.PH_NAME1') : aw_t('EINST.PH_NAME2') ?>"></td>
+<td><input data-role="none" type="text" name="cal_url[]" value="<?= aw_e(aw_ew('save', 'cal_url.' . $aw_i, $aw_c['url'])) ?>"<?= aw_em('save', 'cal_url.' . $aw_i) ?> placeholder="https://www.awm-muenchen.de/...&amp;section=ics&amp;...">
 <?php if (!empty($aw_c['hochgeladen'])) { ?><div class="sm-hilfe"><?= aw_t('EINST.IST_HOCHGELADEN') ?></div><?php } ?></td>
-<td style="text-align:center;"><input data-role="none" type="checkbox" name="cal_ansage[<?= $aw_i ?>]" value="1" <?= !empty($aw_c['ansage']) ? 'checked' : '' ?>></td>
-<td><input data-role="none" type="text" name="cal_zonen[<?= $aw_i ?>]" value="<?= aw_e($aw_c['zonen']) ?>" placeholder="<?= aw_t('EINST.PH_ZONEN') ?>"></td>
+<td style="text-align:center;"><input data-role="none" type="checkbox" name="cal_ansage[<?= $aw_i ?>]" value="1" <?= aw_eh('save', 'cal_ansage.' . $aw_i, !empty($aw_c['ansage'])) ? 'checked' : '' ?>></td>
+<td><input data-role="none" type="text" name="cal_zonen[<?= $aw_i ?>]" value="<?= aw_e(aw_ew('save', 'cal_zonen.' . $aw_i, $aw_c['zonen'])) ?>"<?= aw_em('save', 'cal_zonen.' . $aw_i) ?> placeholder="<?= aw_t('EINST.PH_ZONEN') ?>"></td>
 </tr>
 <?php } ?>
 </table>
@@ -1011,27 +1113,27 @@ if ($aw_frame) {
 <div class="sm-row">
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_INTERVALL') ?></label>
-        <input data-role="none" type="number" name="fetch_days" value="<?= (int) $aw_cfg['fetch_days'] ?>" min="1" max="60">
+        <input data-role="none" type="<?= aw_et('save', 'fetch_days') ?>" name="fetch_days" value="<?= aw_e(aw_ew('save', 'fetch_days', (int) $aw_cfg['fetch_days'])) ?>"<?= aw_em('save', 'fetch_days') ?> min="1" max="60">
         <div class="sm-hilfe"><?= aw_t('EINST.H_INTERVALL') ?></div>
     </div>
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_VORSCHAU') ?></label>
-        <input data-role="none" type="number" name="lookahead" value="<?= (int) $aw_cfg['lookahead'] ?>" min="7" max="90">
+        <input data-role="none" type="<?= aw_et('save', 'lookahead') ?>" name="lookahead" value="<?= aw_e(aw_ew('save', 'lookahead', (int) $aw_cfg['lookahead'])) ?>"<?= aw_em('save', 'lookahead') ?> min="7" max="90">
         <div class="sm-hilfe"><?= aw_t('EINST.H_VORSCHAU') ?></div>
     </div>
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_STICHWORTE') ?></label>
-        <input data-role="none" type="text" name="hinweis_woerter" value="<?= aw_e(trim((string) $aw_cfg['hinweis_woerter']) !== '' ? $aw_cfg['hinweis_woerter'] : AWM_HINWEIS_STANDARD) ?>" placeholder="<?= aw_e(AWM_HINWEIS_STANDARD) ?>">
+        <input data-role="none" type="text" name="hinweis_woerter" value="<?= aw_e(aw_ew('save', 'hinweis_woerter', trim((string) $aw_cfg['hinweis_woerter']) !== '' ? $aw_cfg['hinweis_woerter'] : AWM_HINWEIS_STANDARD)) ?>" placeholder="<?= aw_e(AWM_HINWEIS_STANDARD) ?>">
         <div class="sm-hilfe"><?= aw_t('EINST.H_STICHWORTE') ?></div>
     </div>
 </div>
 <div class="sm-feld">
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="autorenew" <?= !empty($aw_cfg['autorenew']) ? 'checked' : '' ?>> <?= aw_t('EINST.L_AUTORENEW') ?>
+        <input data-role="none" type="checkbox" name="autorenew" <?= aw_eh('save', 'autorenew', !empty($aw_cfg['autorenew'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_AUTORENEW') ?>
     </label>
     <div class="sm-hilfe"><?= aw_t('EINST.H_AUTORENEW') ?></div>
     <label style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;">
-        <input data-role="none" type="checkbox" name="melden" <?= !empty($aw_cfg['melden']) ? 'checked' : '' ?>> <?= aw_t('EINST.L_MELDEN') ?>
+        <input data-role="none" type="checkbox" name="melden" <?= aw_eh('save', 'melden', !empty($aw_cfg['melden'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_MELDEN') ?>
     </label>
     <div class="sm-hilfe"><?= aw_t('EINST.H_MELDEN') ?></div>
 </div>
@@ -1039,24 +1141,24 @@ if ($aw_frame) {
 <h2><?= aw_t('EINST.H_BENACHRICHTIGUNG') ?></h2>
 <div class="sm-feld">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="notify_audio" <?= !empty($aw_notify['audio']) ? 'checked' : '' ?>> <?= aw_t('EINST.L_AUDIO') ?>
+        <input data-role="none" type="checkbox" name="notify_audio" <?= aw_eh('save', 'notify_audio', !empty($aw_notify['audio'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_AUDIO') ?>
     </label>
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="notify_push" <?= !empty($aw_notify['push']) ? 'checked' : '' ?>> <?= aw_t('EINST.L_PUSH') ?>
+        <input data-role="none" type="checkbox" name="notify_push" <?= aw_eh('save', 'notify_push', !empty($aw_notify['push'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_PUSH') ?>
     </label>
     <div class="sm-hilfe"><?= awm_t('EINST.H_AUDIOPUSH') ?></div>
 </div>
 <div class="sm-row">
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_ZEIT') ?></label>
-        <input data-role="none" type="text" name="notify_time" value="<?= aw_e($aw_notify['time']) ?>" placeholder="18:00">
+        <input data-role="none" type="text" name="notify_time" value="<?= aw_e(aw_ew('save', 'notify_time', $aw_notify['time'])) ?>"<?= aw_em('save', 'notify_time') ?> placeholder="18:00">
         <div class="sm-hilfe"><?= awm_t('EINST.H_ZEIT') ?></div>
     </div>
     <div class="sm-feld">
         <label style="display:inline-flex;align-items:center;gap:6px;">
-            <input data-role="none" type="checkbox" name="notify_audio2" <?= !empty($aw_notify['audio2']) ? 'checked' : '' ?>> <?= aw_t('EINST.L_AUDIO2') ?>
+            <input data-role="none" type="checkbox" name="notify_audio2" <?= aw_eh('save', 'notify_audio2', !empty($aw_notify['audio2'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_AUDIO2') ?>
         </label>
-        <input data-role="none" type="text" name="notify_time2" value="<?= aw_e($aw_notify['time2']) ?>" placeholder="06:30" style="margin-top:6px;">
+        <input data-role="none" type="text" name="notify_time2" value="<?= aw_e(aw_ew('save', 'notify_time2', $aw_notify['time2'])) ?>"<?= aw_em('save', 'notify_time2') ?> placeholder="06:30" style="margin-top:6px;">
         <div class="sm-hilfe"><?= awm_t('EINST.H_AUDIO2') ?></div>
     </div>
 </div>
@@ -1064,10 +1166,10 @@ if ($aw_frame) {
 <h2><?= aw_t('EINST.H_RUHE') ?></h2>
 <div class="sm-feld">
     <label style="display:inline-flex;align-items:center;gap:6px;margin-right:24px;">
-        <input data-role="none" type="checkbox" name="ruhe_urlaub" <?= !empty($aw_ruhe['urlaub']) ? 'checked' : '' ?>> <?= aw_t('EINST.L_URLAUB') ?>
+        <input data-role="none" type="checkbox" name="ruhe_urlaub" <?= aw_eh('save', 'ruhe_urlaub', !empty($aw_ruhe['urlaub'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_URLAUB') ?>
     </label>
     <label style="display:inline-flex;align-items:center;gap:6px;">
-        <input data-role="none" type="checkbox" name="ruhe_nachts" <?= !empty($aw_ruhe['nachts']) ? 'checked' : '' ?>> <?= aw_t('EINST.L_NACHTS') ?>
+        <input data-role="none" type="checkbox" name="ruhe_nachts" <?= aw_eh('save', 'ruhe_nachts', !empty($aw_ruhe['nachts'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_NACHTS') ?>
     </label>
     <div class="sm-hilfe"><?= aw_t('EINST.H_URLAUB') ?>
     <?php $aw_dt = awm_daytype(); ?>
@@ -1076,11 +1178,11 @@ if ($aw_frame) {
 </div>
 <div class="sm-row">
     <div class="sm-feld"><label><?= aw_t('EINST.L_VON') ?></label>
-        <input data-role="none" type="text" name="ruhe_von" value="<?= aw_e($aw_ruhe['von']) ?>" placeholder="22:00"></div>
+        <input data-role="none" type="text" name="ruhe_von" value="<?= aw_e(aw_ew('save', 'ruhe_von', $aw_ruhe['von'])) ?>"<?= aw_em('save', 'ruhe_von') ?> placeholder="22:00"></div>
     <div class="sm-feld"><label><?= aw_t('EINST.L_BIS') ?></label>
-        <input data-role="none" type="text" name="ruhe_bis_zeit" value="<?= aw_e($aw_ruhe['bis']) ?>" placeholder="07:00"></div>
+        <input data-role="none" type="text" name="ruhe_bis_zeit" value="<?= aw_e(aw_ew('save', 'ruhe_bis_zeit', $aw_ruhe['bis'])) ?>"<?= aw_em('save', 'ruhe_bis_zeit') ?> placeholder="07:00"></div>
     <div class="sm-feld"><label><?= aw_t('EINST.L_AUSSETZEN') ?></label>
-        <input data-role="none" type="text" name="ruhe_bis" value="<?= aw_e($aw_ruhe['bis_datum'] !== '' ? aw_d($aw_ruhe['bis_datum']) : '') ?>" placeholder="31.12.2026">
+        <input data-role="none" type="text" name="ruhe_bis" value="<?= aw_e(aw_ew('save', 'ruhe_bis', $aw_ruhe['bis_datum'] !== '' ? aw_d($aw_ruhe['bis_datum']) : '')) ?>"<?= aw_em('save', 'ruhe_bis') ?> placeholder="31.12.2026">
         <div class="sm-hilfe"><?= aw_t('EINST.H_AUSSETZEN') ?></div></div>
 </div>
 
@@ -1088,32 +1190,33 @@ if ($aw_frame) {
 <div class="sm-row">
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_MODUS') ?></label>
-        <select data-role="none" name="tts_mode" id="tts_mode" onchange="awTtsMode()">
-            <option value="musicserver"<?= $aw_tts['mode'] === 'musicserver' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_MS') ?></option>
-            <option value="ms4h"<?= $aw_tts['mode'] === 'ms4h' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_MS4H') ?></option>
-            <option value="audioserver"<?= $aw_tts['mode'] === 'audioserver' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_AS') ?></option>
-            <option value="custom"<?= $aw_tts['mode'] === 'custom' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_EIGEN') ?></option>
+        <?php $aw_tm = aw_ew('save', 'tts_mode', $aw_tts['mode']); /* X-2 */ ?>
+        <select data-role="none" name="tts_mode" id="tts_mode" onchange="awTtsMode()"<?= aw_em('save', 'tts_mode') ?>>
+            <option value="musicserver"<?= $aw_tm === 'musicserver' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_MS') ?></option>
+            <option value="ms4h"<?= $aw_tm === 'ms4h' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_MS4H') ?></option>
+            <option value="audioserver"<?= $aw_tm === 'audioserver' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_AS') ?></option>
+            <option value="custom"<?= $aw_tm === 'custom' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_EIGEN') ?></option>
         </select>
     </div>
     <div class="sm-feld"><label><?= aw_t('EINST.L_IP') ?></label>
-        <input data-role="none" type="text" name="tts_ip" value="<?= aw_e($aw_tts['ip']) ?>" placeholder="192.168.1.50"></div>
+        <input data-role="none" type="text" name="tts_ip" value="<?= aw_e(aw_ew('save', 'tts_ip', $aw_tts['ip'])) ?>"<?= aw_em('save', 'tts_ip') ?> placeholder="192.168.1.50"></div>
     <div class="sm-feld"><label><?= aw_t('EINST.L_PORT') ?></label>
-        <input data-role="none" type="number" name="tts_port" value="<?= (int) $aw_tts['port'] ?>" min="1" max="65535"></div>
+        <input data-role="none" type="<?= aw_et('save', 'tts_port') ?>" name="tts_port" value="<?= aw_e(aw_ew('save', 'tts_port', (int) $aw_tts['port'])) ?>"<?= aw_em('save', 'tts_port') ?> min="1" max="65535"></div>
 </div>
 <div class="sm-row">
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_ZONEN') ?></label>
-        <input data-role="none" type="text" name="tts_zones" value="<?= aw_e($aw_tts['zones']) ?>" placeholder="2,4,6">
+        <input data-role="none" type="text" name="tts_zones" value="<?= aw_e(aw_ew('save', 'tts_zones', $aw_tts['zones'])) ?>"<?= aw_em('save', 'tts_zones') ?> placeholder="2,4,6">
         <div class="sm-hilfe"><?= awm_t('EINST.H_ZONEN') ?></div>
     </div>
     <div class="sm-feld"><label><?= aw_t('EINST.L_LAUT') ?></label>
-        <input data-role="none" type="number" name="tts_volume" value="<?= (int) $aw_tts['volume'] ?>" min="1" max="100"></div>
+        <input data-role="none" type="<?= aw_et('save', 'tts_volume') ?>" name="tts_volume" value="<?= aw_e(aw_ew('save', 'tts_volume', (int) $aw_tts['volume'])) ?>"<?= aw_em('save', 'tts_volume') ?> min="1" max="100"></div>
     <div class="sm-feld"><label><?= aw_t('EINST.L_SPRACHE') ?></label>
-        <input data-role="none" type="text" name="tts_lang" value="<?= aw_e($aw_tts['lang']) ?>" maxlength="2"></div>
+        <input data-role="none" type="text" name="tts_lang" value="<?= aw_e(aw_ew('save', 'tts_lang', $aw_tts['lang'])) ?>"<?= aw_em('save', 'tts_lang') ?> maxlength="2"></div>
 </div>
 <div class="sm-feld" id="tts_template_row">
     <label><?= aw_t('EINST.L_VORLAGE') ?></label>
-    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= aw_e($aw_tts['template']) ?></textarea>
+    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= aw_e(aw_ew('save', 'tts_template', $aw_tts['template'])) ?></textarea>
     <div class="sm-hilfe"><?= awm_t('EINST.H_VORLAGE') ?></div>
 </div>
 <div id="tts_audioserver_hint" class="sm-warnung" style="display:none;"><?= awm_t('EINST.H_AUDIOSERVER') ?></div>
@@ -1121,12 +1224,12 @@ if ($aw_frame) {
 <div class="sm-row">
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_ANSAGETEXT') ?></label>
-        <input data-role="none" type="text" name="ansage_vorlage" value="<?= aw_e($aw_ansage['vorlage']) ?>" placeholder="<?= aw_e(awm_t_oder('TEXT.ANSAGE_MEHRERE', '')) ?>">
+        <input data-role="none" type="text" name="ansage_vorlage" value="<?= aw_e(aw_ew('save', 'ansage_vorlage', $aw_ansage['vorlage'])) ?>" placeholder="<?= aw_e(awm_t_oder('TEXT.ANSAGE_MEHRERE', '')) ?>">
         <div class="sm-hilfe"><?= awm_t('EINST.H_ANSAGETEXT') ?></div>
     </div>
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_ANSAGETEXT2') ?></label>
-        <input data-role="none" type="text" name="ansage_vorlage2" value="<?= aw_e($aw_ansage['vorlage2']) ?>" placeholder="<?= aw_e(awm_t_oder('TEXT.ANSAGE_MORGENS', '')) ?>">
+        <input data-role="none" type="text" name="ansage_vorlage2" value="<?= aw_e(aw_ew('save', 'ansage_vorlage2', $aw_ansage['vorlage2'])) ?>" placeholder="<?= aw_e(awm_t_oder('TEXT.ANSAGE_MORGENS', '')) ?>">
         <div class="sm-hilfe"><?= aw_t('EINST.H_ANSAGETEXT2') ?></div>
     </div>
 </div>
@@ -1166,9 +1269,10 @@ foreach ($aw_cals as $aw_n => $aw_c) {
 <input data-role="none" type="hidden" name="bins_cal" value="<?= (int) $aw_bcal ?>">
 <div class="sm-feld">
   <label><?= aw_t('TONNEN.L_MODUS') ?></label>
+  <?php $aw_bm = aw_ew('bins', 'bins_modus', awm_regeln_modus($aw_bcal)); /* X-2 */ ?>
   <select data-role="none" name="bins_modus">
-    <option value="ersetzen"<?= awm_regeln_modus($aw_bcal) === 'ersetzen' ? ' selected' : '' ?>><?= aw_t('TONNEN.MODUS_ERSETZEN') ?></option>
-    <option value="ergaenzen"<?= awm_regeln_modus($aw_bcal) === 'ergaenzen' ? ' selected' : '' ?>><?= aw_t('TONNEN.MODUS_ERGAENZEN') ?></option>
+    <option value="ersetzen"<?= $aw_bm === 'ersetzen' ? ' selected' : '' ?>><?= aw_t('TONNEN.MODUS_ERSETZEN') ?></option>
+    <option value="ergaenzen"<?= $aw_bm === 'ergaenzen' ? ' selected' : '' ?>><?= aw_t('TONNEN.MODUS_ERGAENZEN') ?></option>
   </select>
   <div class="sm-hilfe"><?= aw_t('TONNEN.H_MODUS') ?></div>
 </div>
@@ -1179,7 +1283,11 @@ foreach ($aw_cals as $aw_n => $aw_c) {
     <th style="width:130px;"><?= aw_t('TONNEN.T_ART') ?></th></tr>
 <?php $aw_k = 0; foreach ($aw_titel_liste as $aw_e2) {
     $aw_g = awm_glatt($aw_e2['titel']);
-    $aw_hat = isset($aw_regel_zu[$aw_g]) ? $aw_regel_zu[$aw_g] : null; ?>
+    $aw_hat = isset($aw_regel_zu[$aw_g]) ? $aw_regel_zu[$aw_g] : null;
+    /* X-2: die eingetippte Zeile nur, wenn sie zu DIESEM Titel gehoert. */
+    $aw_bz = aw_ew('bins', 'bin_titel.' . $aw_k, null) === $aw_e2['titel'];
+    $aw_btn = $aw_bz ? aw_ew('bins', 'bin_tonne.' . $aw_k, '') : null;
+    $aw_bar = $aw_bz ? aw_ew('bins', 'bin_art.' . $aw_k, '') : null; ?>
 <tr>
   <td><span class="sm-mono"><?= aw_e($aw_e2['titel']) ?></span>
       <input data-role="none" type="hidden" name="bin_titel[<?= $aw_k ?>]" value="<?= aw_e($aw_e2['titel']) ?>"></td>
@@ -1197,14 +1305,14 @@ foreach ($aw_cals as $aw_n => $aw_c) {
           foreach ($aw_e2['verloren'] as $aw_vk) { $aw_v2[] = aw_e($aw_arten_anz[$aw_vk]['text']); }
           echo '<div class="sm-aus" style="font-size:0.85em;">' . aw_t('TONNEN.VERLOREN') . ' ' . implode(' + ', $aw_v2) . '</div>';
       } ?></td>
-  <td><select data-role="none" name="bin_tonne[<?= $aw_k ?>]">
+  <td><select data-role="none" name="bin_tonne[<?= $aw_k ?>]"<?= aw_em('bins', 'bin_tonne.' . $aw_k) ?>>
       <option value=""><?= aw_t('TONNEN.KEINE_ZUORDNUNG') ?></option>
       <?php foreach ($aw_arten_anz as $aw_tk => $aw_tv) { ?>
-      <option value="<?= aw_e($aw_tk) ?>"<?= ($aw_hat && $aw_hat['tonne'] === $aw_tk) ? ' selected' : '' ?>><?= aw_e($aw_tv['text']) ?></option>
+      <option value="<?= aw_e($aw_tk) ?>"<?= ($aw_bz ? $aw_btn === $aw_tk : ($aw_hat && $aw_hat['tonne'] === $aw_tk)) ? ' selected' : '' ?>><?= aw_e($aw_tv['text']) ?></option>
       <?php } ?></select></td>
-  <td><select data-role="none" name="bin_art[<?= $aw_k ?>]">
+  <td><select data-role="none" name="bin_art[<?= $aw_k ?>]"<?= aw_em('bins', 'bin_art.' . $aw_k) ?>>
       <?php foreach (array('genau', 'enthaelt', 'beginnt') as $aw_ak) { ?>
-      <option value="<?= $aw_ak ?>"<?= ($aw_hat && $aw_hat['art'] === $aw_ak) || (!$aw_hat && $aw_ak === 'genau') ? ' selected' : '' ?>><?= aw_t('TONNEN.ART_' . strtoupper($aw_ak)) ?></option>
+      <option value="<?= $aw_ak ?>"<?= ($aw_bz ? $aw_bar === $aw_ak : (($aw_hat && $aw_hat['art'] === $aw_ak) || (!$aw_hat && $aw_ak === 'genau'))) ? ' selected' : '' ?>><?= aw_t('TONNEN.ART_' . strtoupper($aw_ak)) ?></option>
       <?php } ?></select></td>
 </tr>
 <?php $aw_k++; } ?>
@@ -1231,16 +1339,19 @@ foreach ($aw_cals as $aw_n => $aw_c) {
 <tr><th style="width:140px;"><?= aw_t('EIGEN.T_DATUM') ?></th><th style="width:170px;"><?= aw_t('EIGEN.T_TONNE') ?></th><th><?= aw_t('EIGEN.T_TEXT') ?></th></tr>
 <?php
 $aw_eig = awm_eigene_termine($aw_bcal);
-for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
-    $aw_e3 = isset($aw_eig[$aw_i]) ? $aw_eig[$aw_i] : null; ?>
+/* X-2: nach einer Beanstandung so viele Zeilen wie eingetippt. */
+$aw_tz = max(count($aw_eig) + 3, aw_ein_zeilen('termine', 'term_datum'));
+for ($aw_i = 0; $aw_i < $aw_tz; $aw_i++) {
+    $aw_e3 = isset($aw_eig[$aw_i]) ? $aw_eig[$aw_i] : null;
+    $aw_tt3 = aw_ew('termine', 'term_tonne.' . $aw_i, null); ?>
 <tr>
-<td><input data-role="none" type="text" name="term_datum[<?= $aw_i ?>]" value="<?= $aw_e3 ? aw_e(aw_d($aw_e3['start'])) : '' ?>" placeholder="24.12.2026"></td>
-<td><select data-role="none" name="term_tonne[<?= $aw_i ?>]">
+<td><input data-role="none" type="text" name="term_datum[<?= $aw_i ?>]" value="<?= aw_e(aw_ew('termine', 'term_datum.' . $aw_i, $aw_e3 ? aw_d($aw_e3['start']) : '')) ?>"<?= aw_em('termine', 'term_datum.' . $aw_i) ?> placeholder="24.12.2026"></td>
+<td><select data-role="none" name="term_tonne[<?= $aw_i ?>]"<?= aw_em('termine', 'term_tonne.' . $aw_i) ?>>
     <option value=""><?= aw_t('EIGEN.KEINE') ?></option>
     <?php foreach ($aw_arten_anz as $aw_tk => $aw_tv) { ?>
-    <option value="<?= aw_e($aw_tk) ?>"<?= ($aw_e3 && $aw_e3['eigen'] === $aw_tk) ? ' selected' : '' ?>><?= aw_e($aw_tv['text']) ?></option>
+    <option value="<?= aw_e($aw_tk) ?>"<?= ($aw_tt3 !== null ? $aw_tt3 === $aw_tk : ($aw_e3 && $aw_e3['eigen'] === $aw_tk)) ? ' selected' : '' ?>><?= aw_e($aw_tv['text']) ?></option>
     <?php } ?></select></td>
-<td><input data-role="none" type="text" name="term_text[<?= $aw_i ?>]" value="<?= $aw_e3 ? aw_e($aw_e3['summary']) : '' ?>" placeholder="<?= aw_t('EIGEN.PH_TEXT') ?>"></td>
+<td><input data-role="none" type="text" name="term_text[<?= $aw_i ?>]" value="<?= aw_e(aw_ew('termine', 'term_text.' . $aw_i, $aw_e3 ? $aw_e3['summary'] : '')) ?>" placeholder="<?= aw_t('EIGEN.PH_TEXT') ?>"></td>
 </tr>
 <?php } ?>
 </table>
@@ -1296,6 +1407,16 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 <h2><?= awm_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= awm_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= awm_t('EINST.SICH_WARNUNG') ?></div>
+<?php /* X-3: wuerde das eigene Zurueckspielen die Sicherung abweisen, steht
+         es gelb am Knopf - mit dem Namen der Einstellung und dem Grund, nie
+         mit dem Wert. DIESELBE Pruefung wie beim Zurueckspielen. Gesichert
+         wird trotzdem vollstaendig (die Datei traegt dann "_warnung"). */
+$aw_altw = awm_sicherung_altwerte();
+if ($aw_altw) {
+    $aw_altl = array();
+    foreach ($aw_altw as $aw_ak => $aw_ag) { $aw_altl[] = ($aw_ak === '_' ? '' : $aw_ak . ' (') . $aw_ag . ($aw_ak === '_' ? '' : ')'); } ?>
+<div class="sm-warnung" id="sicherung-altwerte"><?= aw_e(sprintf(awm_t('EINST.SICH_ALTWERT'), implode('; ', $aw_altl))) ?></div>
+<?php } ?>
 <?php /* U9: eine Legende ueber der Sicherungsreihe - gruen (sichern) und orange (zurueckspielen). */ ?>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= aw_t('LEGENDE.LESEN') ?></span>
@@ -1335,12 +1456,12 @@ for ($aw_i = 0; $aw_i < count($aw_eig) + 3; $aw_i++) {
 <?php } ?>
 <div class="sm-feld">
 <label style="display:inline-flex;align-items:center;gap:6px;">
-    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= !empty($aw_cfg['mqtt_enabled']) ? 'checked' : '' ?>> <?= aw_t('MQTT.L_AN') ?>
+    <input data-role="none" type="checkbox" name="mqtt_enabled" <?= aw_eh('mqtt', 'mqtt_enabled', !empty($aw_cfg['mqtt_enabled'])) ? 'checked' : '' ?>> <?= aw_t('MQTT.L_AN') ?>
 </label>
 </div>
 <div class="sm-feld">
     <label><?= aw_t('MQTT.L_PRAEFIX') ?></label>
-    <input data-role="none" type="text" name="mqtt_topic" value="<?= aw_e($aw_cfg['mqtt_topic']) ?>" placeholder="awm">
+    <input data-role="none" type="text" name="mqtt_topic" value="<?= aw_e(aw_ew('mqtt', 'mqtt_topic', $aw_cfg['mqtt_topic'])) ?>"<?= aw_em('mqtt', 'mqtt_topic') ?> placeholder="awm">
     <div class="sm-hilfe"><?= aw_t('MQTT.H_PRAEFIX') ?></div>
 </div>
 

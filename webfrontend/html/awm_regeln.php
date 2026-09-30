@@ -1037,6 +1037,11 @@ function awm_trifft($s, $ymd)
  *
  * Der wichtigste Teil ist der erste Block: er weist nach, dass die
  * Muenchner Erkennung sich NICHT geaendert hat.
+ *
+ * Die Texte stehen seit AWM-b1 (30.09.2026) im Abschnitt [SELBST] der
+ * Sprachdateien - bis 1.4.16 standen sie hier fest deutsch und damit auch in
+ * der englischen Oberflaeche. Die Testdaten (Titel, Regeln) bleiben deutsch:
+ * sie sind das, was ein deutscher Entsorger liefert.
  * ================================================================== */
 
 function awm_selbstpruefung_regeln()
@@ -1064,21 +1069,21 @@ function awm_selbstpruefung_regeln()
         $treffer = array();
         foreach ($b as $k => $v) { if ($v) { $treffer[] = $k; } }
         $p(in_array($soll, $treffer, true),
-           sprintf('Muenchen unveraendert: "%s" -> %s', trim($titel),
-                   $treffer ? implode('+', $treffer) : 'nichts'));
+           sprintf(awm_t('SELBST.R01'), trim($titel),
+                   $treffer ? implode('+', $treffer) : awm_t('SELBST.R01_NICHTS')));
     }
     $b = awm_bins_regeln('Weihnachtsbaum', array());
-    $p(array_sum($b) === 0, 'Unbekannter Titel ohne Zuordnung trifft nichts');
+    $p(array_sum($b) === 0, awm_t('SELBST.R02'));
 
     /* --- 1b. Die Muenchner Serienregel, wortgleich aus dem Export --- */
     $awm = array('start' => '20260112', 'exdates' => array('20261228', '20260406'), 'rdates' => array())
          + awm_rrule_lesen('FREQ=WEEKLY;INTERVAL=2;UNTIL=20261231;BYDAY=MO;WKST=MO');
     $p(awm_trifft($awm, '20260112') && awm_trifft($awm, '20260126') && awm_trifft($awm, '20260209'),
-       'AWM-Serie: Restmuell alle zwei Wochen montags');
-    $p(!awm_trifft($awm, '20260119'), 'AWM-Serie: die Woche dazwischen nicht');
+       awm_t('SELBST.R03'));
+    $p(!awm_trifft($awm, '20260119'), awm_t('SELBST.R04'));
     $p(!awm_trifft($awm, '20260406') && !awm_trifft($awm, '20261228'),
-       'AWM-Serie: beide EXDATE-Termine fallen aus');
-    $p(!awm_trifft($awm, '20270111'), 'AWM-Serie: nach UNTIL ist Schluss');
+       awm_t('SELBST.R05'));
+    $p(!awm_trifft($awm, '20270111'), awm_t('SELBST.R06'));
 
     /* --- 2. Das Namensproblem --- */
     $regeln = array(
@@ -1095,42 +1100,42 @@ function awm_selbstpruefung_regeln()
     );
     foreach ($faelle as $titel => $soll) {
         $b = awm_bins_regeln($titel, $regeln);
-        $p(!empty($b[$soll]), sprintf('Zuordnung greift: "%s" -> %s', $titel, $soll));
+        $p(!empty($b[$soll]), sprintf(awm_t('SELBST.R07'), $titel, $soll));
     }
     // Diese drei haetten in 1.0.2 nichts getroffen - das ist der Gewinn.
     $p(array_sum(awm_bins_eingebaut('RM 14täg.')) === 0,
-       'Gegenprobe: "RM 14taeg." traf in 1.0.2 wirklich nichts');
+       awm_t('SELBST.R08'));
     $p(array_sum(awm_bins_eingebaut('Graue Tonne - Tour B')) === 0,
-       'Gegenprobe: "Graue Tonne - Tour B" traf in 1.0.2 wirklich nichts');
+       awm_t('SELBST.R09'));
 
     // Die Regel gewinnt gegen die eingebaute Erkennung.
     $b = awm_bins_regeln('Biotonne', array(array('muster' => 'biotonne', 'tonne' => 'gruen', 'art' => 'genau')));
     $p(!empty($b['gruen']) && empty($b['bio']),
-       'Eine Regel ueberschreibt die eingebaute Erkennung');
+       awm_t('SELBST.R10'));
 
     // ... und im Modus "ergaenzen" nicht (ab 1.4.0).
     $reg1 = array(array('muster' => 'papier', 'tonne' => 'papier', 'art' => 'enthaelt'));
     $b1 = awm_bins_regeln('Papier und Biotonne', $reg1, 'ersetzen');
     $b2 = awm_bins_regeln('Papier und Biotonne', $reg1, 'ergaenzen');
     $p(!empty($b1['papier']) && empty($b1['bio']),
-       'Modus "ersetzen": die eingebaute Bio-Erkennung faellt weg (wie bisher)');
+       awm_t('SELBST.R11'));
     $p(!empty($b2['papier']) && !empty($b2['bio']),
-       'Modus "ergaenzen": Bio bleibt erhalten');
+       awm_t('SELBST.R12'));
 
     // Ein Titel, zwei Tonnen
     $b = awm_bins_regeln('Papier und Gelber Sack', array(
         array('muster' => 'papier', 'tonne' => 'papier', 'art' => 'enthaelt'),
         array('muster' => 'gelber sack', 'tonne' => 'wert', 'art' => 'enthaelt')));
-    $p(!empty($b['papier']) && !empty($b['wert']), 'Ein Titel kann zwei Tonnen setzen');
+    $p(!empty($b['papier']) && !empty($b['wert']), awm_t('SELBST.R13'));
 
-    $p(awm_glatt('  GRÜNE   Tonne  ') === 'gruene tonne', 'Glaettung: Umlaut, Grosschreibung, Leerraum');
-    $p(awm_glatt('Straße') === 'strasse', 'Glaettung: scharfes s');
+    $p(awm_glatt('  GRÜNE   Tonne  ') === 'gruene tonne', awm_t('SELBST.R14'));
+    $p(awm_glatt('Straße') === 'strasse', awm_t('SELBST.R15'));
     // Der Fall, der ohne mbstring einen Leerstring lieferte (gemessen
     // 20.08.2026 auf PHP 7.4.33): ein Nicht-ASCII-Zeichen ausserhalb der
     // Umlaut-Tabelle.
-    $p(awm_glatt('Café-Tonne') !== '', 'Glaettung: fremdes Zeichen zerstoert den Text nicht');
+    $p(awm_glatt('Café-Tonne') !== '', awm_t('SELBST.R16'));
     $p(strpos(awm_glatt('Café-Tonne'), 'tonne') !== false,
-       'Glaettung: der Rest des Titels bleibt durchsuchbar');
+       awm_t('SELBST.R17'));
 
     /* --- 3. Wiederholungsregeln --- */
     $w = function ($rrule, $start, $ymd) {
@@ -1140,33 +1145,33 @@ function awm_selbstpruefung_regeln()
     };
 
     // WEEKLY wie bisher (Muenchen)
-    $p($w('FREQ=WEEKLY', '20260105', '20260112'), 'WEEKLY: eine Woche spaeter');
-    $p(!$w('FREQ=WEEKLY', '20260105', '20260113'), 'WEEKLY: anderer Wochentag nicht');
-    $p($w('FREQ=WEEKLY;INTERVAL=2', '20260105', '20260119'), 'WEEKLY INTERVAL=2: zwei Wochen');
-    $p(!$w('FREQ=WEEKLY;INTERVAL=2', '20260105', '20260112'), 'WEEKLY INTERVAL=2: eine Woche nicht');
-    $p(!$w('FREQ=WEEKLY;UNTIL=20260201', '20260105', '20260209'), 'UNTIL wird beachtet');
+    $p($w('FREQ=WEEKLY', '20260105', '20260112'), awm_t('SELBST.R18'));
+    $p(!$w('FREQ=WEEKLY', '20260105', '20260113'), awm_t('SELBST.R19'));
+    $p($w('FREQ=WEEKLY;INTERVAL=2', '20260105', '20260119'), awm_t('SELBST.R20'));
+    $p(!$w('FREQ=WEEKLY;INTERVAL=2', '20260105', '20260112'), awm_t('SELBST.R21'));
+    $p(!$w('FREQ=WEEKLY;UNTIL=20260201', '20260105', '20260209'), awm_t('SELBST.R22'));
 
     // WEEKLY mit BYDAY - das konnte 1.0.2 nicht
-    $p($w('FREQ=WEEKLY;BYDAY=MO,TH', '20260105', '20260108'), 'WEEKLY BYDAY: Montag und Donnerstag');
-    $p(!$w('FREQ=WEEKLY;BYDAY=MO,TH', '20260105', '20260107'), 'WEEKLY BYDAY: Mittwoch nicht');
+    $p($w('FREQ=WEEKLY;BYDAY=MO,TH', '20260105', '20260108'), awm_t('SELBST.R23'));
+    $p(!$w('FREQ=WEEKLY;BYDAY=MO,TH', '20260105', '20260107'), awm_t('SELBST.R24'));
 
     // MONTHLY - in 1.0.2 fiel hier ALLES ausser dem Basistermin weg
     $p($w('FREQ=MONTHLY;BYDAY=2TH', '20260108', '20260212'),
-       'MONTHLY BYDAY=2TH: zweiter Donnerstag im Februar');
+       awm_t('SELBST.R25'));
     $p(!$w('FREQ=MONTHLY;BYDAY=2TH', '20260108', '20260205'),
-       'MONTHLY BYDAY=2TH: erster Donnerstag nicht');
+       awm_t('SELBST.R26'));
     $p($w('FREQ=MONTHLY;BYDAY=-1FR', '20260130', '20260227'),
-       'MONTHLY BYDAY=-1FR: letzter Freitag im Februar');
-    $p($w('FREQ=MONTHLY;BYMONTHDAY=15', '20260115', '20260315'), 'MONTHLY BYMONTHDAY=15');
-    $p(!$w('FREQ=MONTHLY;BYMONTHDAY=15', '20260115', '20260316'), 'MONTHLY BYMONTHDAY: anderer Tag nicht');
-    $p($w('FREQ=MONTHLY;INTERVAL=3;BYMONTHDAY=1', '20260101', '20260401'), 'MONTHLY INTERVAL=3');
-    $p(!$w('FREQ=MONTHLY;INTERVAL=3;BYMONTHDAY=1', '20260101', '20260301'), 'MONTHLY INTERVAL=3: dazwischen nicht');
+       awm_t('SELBST.R27'));
+    $p($w('FREQ=MONTHLY;BYMONTHDAY=15', '20260115', '20260315'), awm_t('SELBST.R28'));
+    $p(!$w('FREQ=MONTHLY;BYMONTHDAY=15', '20260115', '20260316'), awm_t('SELBST.R29'));
+    $p($w('FREQ=MONTHLY;INTERVAL=3;BYMONTHDAY=1', '20260101', '20260401'), awm_t('SELBST.R30'));
+    $p(!$w('FREQ=MONTHLY;INTERVAL=3;BYMONTHDAY=1', '20260101', '20260301'), awm_t('SELBST.R31'));
     $p($w('FREQ=MONTHLY;BYMONTHDAY=-1', '20260131', '20260228'),
-       'MONTHLY BYMONTHDAY=-1: der letzte Tag des Monats');
+       awm_t('SELBST.R32'));
 
     // YEARLY
-    $p($w('FREQ=YEARLY', '20260320', '20270320'), 'YEARLY: gleicher Tag im Folgejahr');
-    $p(!$w('FREQ=YEARLY', '20260320', '20270321'), 'YEARLY: anderer Tag nicht');
+    $p($w('FREQ=YEARLY', '20260320', '20270320'), awm_t('SELBST.R33'));
+    $p(!$w('FREQ=YEARLY', '20260320', '20270321'), awm_t('SELBST.R34'));
 
     /* --- 3b. Die drei Formen, die bis 1.3.8 still danebengingen --- */
 
@@ -1177,26 +1182,26 @@ function awm_selbstpruefung_regeln()
     for ($d = 1; $d <= 28; $d++) {
         if ($w($bs, '20260130', sprintf('202602%02d', $d))) { $n++; }
     }
-    $p($n === 1, sprintf('BYSETPOS=-1: genau ein Termin im Februar 2026 (gezaehlt: %d)', $n));
-    $p($w($bs, '20260130', '20260227'), 'BYSETPOS=-1: das ist der 27.02.2026 (Freitag)');
+    $p($n === 1, sprintf(awm_t('SELBST.R35'), $n));
+    $p($w($bs, '20260130', '20260227'), awm_t('SELBST.R36'));
     $p($w('FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=1', '20260101', '20260302'),
-       'BYSETPOS=1: erster Werktag im Maerz 2026 ist der 02.03.');
+       awm_t('SELBST.R37'));
 
     // BYMONTH: wurde gar nicht gelesen.
     $p($w('FREQ=MONTHLY;BYMONTH=3,9;BYMONTHDAY=15', '20260315', '20260915'),
-       'BYMONTH=3,9: der September zaehlt');
+       awm_t('SELBST.R38'));
     $p(!$w('FREQ=MONTHLY;BYMONTH=3,9;BYMONTHDAY=15', '20260315', '20260415'),
-       'BYMONTH=3,9: der April nicht mehr');
+       awm_t('SELBST.R39'));
 
     // YEARLY mit BYDAY: verschwand ab dem zweiten Jahr.
     $p($w('FREQ=YEARLY;BYMONTH=3;BYDAY=2SA', '20260314', '20270313'),
-       'YEARLY BYDAY=2SA: zweiter Samstag im Maerz 2027');
+       awm_t('SELBST.R40'));
     $p(!$w('FREQ=YEARLY;BYMONTH=3;BYDAY=2SA', '20260314', '20270306'),
-       'YEARLY BYDAY=2SA: der erste Samstag nicht');
+       awm_t('SELBST.R41'));
 
     // WKST bei INTERVAL>=2
     $p($w('FREQ=WEEKLY;INTERVAL=2;BYDAY=SU;WKST=SU', '20260104', '20260118'),
-       'WKST=SU: jede zweite Woche ab Sonntag');
+       awm_t('SELBST.R42'));
 
     /* --- 3c. Die Formen, die bis 1.4.6 still danebengingen (05.09.2026) ---
      *
@@ -1214,82 +1219,82 @@ function awm_selbstpruefung_regeln()
 
     // DAILY warf BYDAY und BYMONTHDAY weg: 14 Treffer statt 6.
     $n = $zaehl('FREQ=DAILY;BYDAY=MO,WE,FR', '20260105', '20260105', '20260118');
-    $p($n === 6, sprintf('DAILY BYDAY: sechs Tage in zwei Wochen (gezaehlt: %d)', $n));
+    $p($n === 6, sprintf(awm_t('SELBST.R43'), $n));
     $n = $zaehl('FREQ=DAILY;BYMONTHDAY=1,15', '20260101', '20260101', '20260120');
-    $p($n === 2, sprintf('DAILY BYMONTHDAY: zwei Tage im Zeitraum (gezaehlt: %d)', $n));
+    $p($n === 2, sprintf(awm_t('SELBST.R44'), $n));
 
     // WEEKLY warf BYSETPOS und BYMONTHDAY weg: 10 Treffer statt 2.
     $n = $zaehl('FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1', '20260105', '20260105', '20260118');
-    $p($n === 2, sprintf('WEEKLY BYSETPOS=-1: der letzte Werktag je Woche (gezaehlt: %d)', $n));
+    $p($n === 2, sprintf(awm_t('SELBST.R45'), $n));
     $p($w('FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1', '20260105', '20260109'),
-       'WEEKLY BYSETPOS=-1: das ist der Freitag');
+       awm_t('SELBST.R46'));
     $n = $zaehl('FREQ=WEEKLY;BYDAY=MO;BYMONTHDAY=5', '20260105', '20260105', '20260209');
-    $p($n === 1, sprintf('WEEKLY BYDAY+BYMONTHDAY: Schnittmenge, ein Treffer (gezaehlt: %d)', $n));
+    $p($n === 1, sprintf(awm_t('SELBST.R47'), $n));
 
     // Die Ordnungszahl fiel weg, sobald ein BYSETPOS danebenstand.
     $p($w('FREQ=MONTHLY;BYDAY=2TH;BYSETPOS=1', '20260108', '20260212'),
-       'BYDAY=2TH neben BYSETPOS: der ZWEITE Donnerstag, nicht der erste');
+       awm_t('SELBST.R48'));
     $p(!$w('FREQ=MONTHLY;BYDAY=2TH;BYSETPOS=1', '20260108', '20260205'),
-       'BYDAY=2TH neben BYSETPOS: der erste Donnerstag nicht');
+       awm_t('SELBST.R49'));
 
     // YEARLY bildete den Satz je MONAT statt je JAHR: vier Treffer statt einem.
     $n = $zaehl('FREQ=YEARLY;BYMONTH=1,4,7,10;BYDAY=MO;BYSETPOS=1', '20260105', '20260101', '20261231');
-    $p($n === 1, sprintf('YEARLY BYSETPOS: der Satz ist das JAHR, ein Treffer (gezaehlt: %d)', $n));
+    $p($n === 1, sprintf(awm_t('SELBST.R50'), $n));
     $n = $zaehl('FREQ=YEARLY;BYDAY=MO', '20260105', '20260101', '20261231');
-    $p($n === 52, sprintf('YEARLY BYDAY ohne BYMONTH: jeder Montag des Jahres (gezaehlt: %d)', $n));
+    $p($n === 52, sprintf(awm_t('SELBST.R51'), $n));
 
     // Die harte Grenze in awm_serie_ende() strich Termine.
     $sc = array('start' => '20260115', 'exdates' => array(), 'rdates' => array())
         + awm_rrule_lesen('FREQ=YEARLY;COUNT=20');
     $p(awm_serie_ende($sc) === '20450115',
-       'COUNT=20 bei YEARLY: das Serienende ist das 20. Vorkommen, nicht das 11.');
+       awm_t('SELBST.R52'));
     $p(awm_trifft($sc, '20400115'),
-       'COUNT=20: ein Termin im 15. Jahr wird nicht mehr gestrichen');
+       awm_t('SELBST.R53'));
 
     // Ein unlesbarer Regelteil wird GEMELDET statt still zu wirken.
     $p(count(awm_rrule_fehler('FREQ=MONTHLY;BYMONTH=abc;BYMONTHDAY=15')) > 0,
-       'BYMONTH=abc wird als unlesbar gemeldet');
+       awm_t('SELBST.R54'));
     $p(count(awm_rrule_fehler('FREQ=WEEKLY;BYDAY=2MO')) > 0,
-       'Ordnungszahl bei FREQ=WEEKLY wird gemeldet (RFC 5545 verbietet sie)');
+       awm_t('SELBST.R55'));
     $p(count(awm_rrule_fehler('FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;WKST=MO')) === 0,
-       'Die Muenchner Regel meldet keinen Fehler');
+       awm_t('SELBST.R56'));
 
     // Ein fremder Regelteil darf keinen anderen setzen.
     $rr = awm_rrule_lesen('FREQ=WEEKLY;BYDAY=MO;X-FOO=INTERVAL=9');
-    $p((int) $rr['interval'] === 1, 'Ein X-Teil setzt INTERVAL nicht mit');
-    $p(awm_wochentag_nr('X-MO') === 0, 'X-MO ist kein Wochentag');
-    $p(awm_wochentag_nr('-1FR') === 5, '-1FR ist ein Freitag');
+    $p((int) $rr['interval'] === 1, awm_t('SELBST.R57'));
+    $p(awm_wochentag_nr('X-MO') === 0, awm_t('SELBST.R58'));
+    $p(awm_wochentag_nr('-1FR') === 5, awm_t('SELBST.R59'));
 
     // COUNT
     $s = array('start' => '20260105', 'exdates' => array()) + awm_rrule_lesen('FREQ=WEEKLY;COUNT=3');
-    $p(awm_trifft($s, '20260119') && !awm_trifft($s, '20260126'), 'COUNT=3 endet nach dem dritten Termin');
-    $p(awm_serie_ende($s) === '20260119', 'COUNT=3: der letzte Termin ist der 19.01.2026');
+    $p(awm_trifft($s, '20260119') && !awm_trifft($s, '20260126'), awm_t('SELBST.R60'));
+    $p(awm_serie_ende($s) === '20260119', awm_t('SELBST.R61'));
     // Ein EXDATE verlaengert die Serie NICHT (RFC 5545: COUNT zaehlt die
     // von der Regel erzeugten Termine).
     $s2 = array('start' => '20260105', 'exdates' => array('20260112')) + awm_rrule_lesen('FREQ=WEEKLY;COUNT=3');
-    $p(awm_serie_ende($s2) === '20260119', 'COUNT: ein EXDATE verlaengert die Serie nicht');
+    $p(awm_serie_ende($s2) === '20260119', awm_t('SELBST.R62'));
     // Und die Stelle, an der die Jahreswechsel-Warnung bis 1.3.8 blind war
     $p(awm_serie_ende($s) !== '99991231',
-       'COUNT ohne UNTIL: das Serienende ist bekannt (Grundlage der Jahreswechsel-Warnung)');
+       awm_t('SELBST.R63'));
 
     // EXDATE
     $s = array('start' => '20260105', 'exdates' => array('20260112')) + awm_rrule_lesen('FREQ=WEEKLY');
-    $p(!awm_trifft($s, '20260112') && awm_trifft($s, '20260119'), 'EXDATE laesst genau einen Termin aus');
+    $p(!awm_trifft($s, '20260112') && awm_trifft($s, '20260119'), awm_t('SELBST.R64'));
 
     // RDATE
     $s = array('start' => '20260105', 'exdates' => array(), 'rdates' => array('20260107'))
        + awm_rrule_lesen('FREQ=WEEKLY;COUNT=1');
-    $p(awm_trifft($s, '20260107'), 'RDATE fuegt einen Zusatztermin hinzu');
+    $p(awm_trifft($s, '20260107'), awm_t('SELBST.R65'));
     $s['exdates'] = array('20260107');
-    $p(!awm_trifft($s, '20260107'), 'EXDATE schlaegt RDATE');
+    $p(!awm_trifft($s, '20260107'), awm_t('SELBST.R66'));
 
     // Unbekannte Frequenz wird nicht geraten
     $p($w('FREQ=HOURLY', '20260105', '20260105') && !$w('FREQ=HOURLY', '20260105', '20260106'),
-       'Unbekannte Frequenz: nur der Basistermin, nichts geraten');
+       awm_t('SELBST.R67'));
     $p(awm_rrule_unbekannt('FREQ=MONTHLY;BYSETPOS=-1;BYWEEKNO=3') === array('BYWEEKNO'),
-       'Unbekannte RRULE-Bestandteile werden benannt, nicht verschwiegen');
+       awm_t('SELBST.R68'));
     $p(awm_rrule_unbekannt('FREQ=WEEKLY;INTERVAL=2;UNTIL=20261231;BYDAY=MO;WKST=MO') === array(),
-       'Die Muenchner RRULE wird vollstaendig verstanden');
+       awm_t('SELBST.R69'));
 
     /* --- 4. Die Datumsrechnung ohne DateTime (ab 1.3.0) --- */
     $abweichung = 0;
@@ -1304,27 +1309,27 @@ function awm_selbstpruefung_regeln()
             if (awm_wochentag_aus_tagnummer(awm_tagnummer($tag)) !== (int) date('N', $ts + $i * 86400)) { $wtagfehler++; }
         }
     }
-    $p($abweichung === 0, 'Tagesabstand ohne DateTime: 105 Vergleiche, auch ueber beide Zeitumstellungen');
-    $p($wtagfehler === 0, 'Wochentag ohne DateTime: 105 Vergleiche gegen date(N)');
+    $p($abweichung === 0, awm_t('SELBST.R70'));
+    $p($wtagfehler === 0, awm_t('SELBST.R71'));
     $p(awm_tagnummer('20260230') === -1 && awm_tagnummer('nonsens') === -1,
-       'Unmoegliches Datum wird als ungueltig gemeldet, nicht geraten');
+       awm_t('SELBST.R72'));
     $p(awm_tage_im_monat('20240201') === 29 && awm_tage_im_monat('20230201') === 28,
-       'Schaltjahr wird erkannt');
+       awm_t('SELBST.R73'));
     $p(awm_datum_aus_tagnummer(awm_tagnummer('20260821')) === '20260821',
-       'Tagnummer und Datum sind umkehrbar');
+       awm_t('SELBST.R74'));
     $p($w('FREQ=WEEKLY', '20260323', '20260330') && $w('FREQ=WEEKLY', '20260323', '20260406'),
-       'WEEKLY ueber die Sommerzeit-Umstellung hinweg');
-    $p($w('FREQ=WEEKLY', '20261019', '20261026'), 'WEEKLY ueber die Winterzeit-Umstellung hinweg');
+       awm_t('SELBST.R75'));
+    $p($w('FREQ=WEEKLY', '20261019', '20261026'), awm_t('SELBST.R76'));
     $p($w('FREQ=WEEKLY;INTERVAL=2', '20260323', '20260406')
        && !$w('FREQ=WEEKLY;INTERVAL=2', '20260323', '20260330'),
-       'WEEKLY INTERVAL=2 ueber die Umstellung: nur jede zweite Woche');
+       awm_t('SELBST.R77'));
 
-    $p(awm_wochentag_nr('2TH') === 4 && awm_wochentag_nr('SU') === 7, 'Wochentagskuerzel richtig gelesen');
+    $p(awm_wochentag_nr('2TH') === 4 && awm_wochentag_nr('SU') === 7, awm_t('SELBST.R78'));
     $r = awm_rrule_lesen('FREQ=MONTHLY;INTERVAL=2;BYDAY=1MO,3WE;UNTIL=20261231;COUNT=5;BYSETPOS=-1;BYMONTH=4;WKST=SU');
     $p($r['freq'] === 'MONTHLY' && $r['interval'] === 2 && count($r['byday']) === 2
        && $r['until'] === '20261231' && $r['count'] === 5
        && $r['bysetpos'] === array(-1) && $r['bymonth'] === array(4) && $r['wkst'] === 7,
-       'RRULE vollstaendig zerlegt (inkl. BYSETPOS, BYMONTH, WKST)');
+       awm_t('SELBST.R79'));
 
     /* --- 5. Alle acht Tonnenarten sind auslieferbar (ab 1.4.0) --- */
     $arten = awm_tonnenarten();
@@ -1333,9 +1338,9 @@ function awm_selbstpruefung_regeln()
     foreach (array_keys($arten) as $k) {
         if (!isset($kuerzel[$k])) { $fehlt[] = $k; }
     }
-    $p(!$fehlt, 'Jede Tonnenart hat ein Feldkuerzel fuer Loxone und MQTT'
-                . ($fehlt ? ' - fehlt: ' . implode(', ', $fehlt) : ''));
-    $p(count($arten) === 8, 'Acht Tonnenarten vorhanden');
+    $p(!$fehlt, awm_t('SELBST.R80')
+                . ($fehlt ? awm_t('SELBST.R80_FEHLT') . implode(', ', $fehlt) : ''));
+    $p(count($arten) === 8, awm_t('SELBST.R81'));
 
     return $e;
 }
