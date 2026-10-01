@@ -739,7 +739,7 @@ if ($aw_post && isset($_POST['save'])) {
      * Bis 1.4.14: "DE1" still zu "de", "192.0.2.4/x?y" ungeprueft als
      * Adresse, "Kueche" als Zone - die eigene Sicherung wurde danach
      * abgewiesen. */
-    if (!in_array($aw_mode, array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang'), true)) {
+    if (!in_array($aw_mode, array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox'), true)) {
         $aw_fehler[] = sprintf(awm_t('MELD.MODUS'), $aw_mode);
         $aw_bean[] = 'tts_mode';
         $aw_mode = (string) $aw_new['tts']['mode'];
@@ -806,6 +806,43 @@ if ($aw_post && isset($_POST['save'])) {
         $aw_fehler[] = awm_t('MELD.ALEXA_OHNE_TOKEN');
         $aw_bean[] = 'alexa_token';
     }
+    /* Ansage-3: Google-Lautsprecher (Chromecast 4 Lox NG) - dieselbe Bauform wie
+     * Alexa-NG darueber, mit eigenem Sprechtoken: benannt abweisen, nichts
+     * zurechtbiegen; das Token reist nie ins Formular zurueck, leer lassen behaelt
+     * es, der Haken loescht es; ohne Token ist die Ausgabe eine Beanstandung. */
+    $aw_gg = $aw_al_roh('google_geraet');
+    if ($aw_gg === false || !awm_alexa_geraet_ok($aw_gg)) {
+        $aw_fehler[] = awm_t('MELD.GOOGLE_GERAET');
+        $aw_bean[] = 'google_geraet';
+        $aw_gg = (string) $aw_new['tts']['google_geraet'];
+    }
+    $aw_gl = $aw_al_roh('google_laut');
+    if ($aw_gl === '') {
+        $aw_gl = -1;
+    } elseif ($aw_gl !== false && awm_ist_zahl($aw_gl, 0, 100)) {
+        $aw_gl = (int) $aw_gl;
+    } else {
+        $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_GOOGLE_LAUT'), 0, 100,
+                               $aw_gl === false ? '' : $aw_gl);
+        $aw_bean[] = 'google_laut';
+        $aw_gl = (int) $aw_new['tts']['google_laut'];
+    }
+    $aw_gt = (string) $aw_new['tts']['google_token'];
+    if (isset($_POST['google_token_loeschen'])) {
+        $aw_gt = '';
+    } else {
+        $aw_gtw = $aw_al_roh('google_token');
+        if ($aw_gtw === false || ($aw_gtw !== '' && !awm_alexa_token_ok($aw_gtw))) {
+            $aw_fehler[] = awm_t('MELD.GOOGLE_TOKEN');
+            $aw_bean[] = 'google_token';
+        } elseif ($aw_gtw !== '') {
+            $aw_gt = $aw_gtw;
+        }
+    }
+    if ($aw_mode === 'cc4lox' && !awm_alexa_token_ok($aw_gt) && !in_array('google_token', $aw_bean, true)) {
+        $aw_fehler[] = awm_t('MELD.GOOGLE_OHNE_TOKEN');
+        $aw_bean[] = 'google_token';
+    }
     $aw_new['tts'] = array(
         'mode' => $aw_mode,
         'ip' => $aw_ip,
@@ -817,6 +854,9 @@ if ($aw_post && isset($_POST['save'])) {
         'alexa_geraet' => $aw_ag,
         'alexa_token' => $aw_at,
         'alexa_laut' => $aw_al,
+        'google_geraet' => $aw_gg,
+        'google_token' => $aw_gt,
+        'google_laut' => $aw_gl,
     );
     /* AWM-n19b (Nr. 19): Anfuehrungs- und Steuerzeichen in den Ansagetexten
      * wurden bis 1.4.17 still entfernt. Jetzt eine Beanstandung (dieselbe
@@ -905,6 +945,10 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
             if (!isset($awm_neu['tts']) || !is_array($awm_neu['tts'])) { $awm_neu['tts'] = array(); }
             $awm_neu['tts']['alexa_token'] = isset($awm_vorher['tts']['alexa_token'])
                 ? (string) $awm_vorher['tts']['alexa_token'] : '';
+            /* Ansage-3: ebenso das Google-Sprechtoken (eine Datei MIT einem hat
+             * awm_wert_pruefen() schon abgewiesen). */
+            $awm_neu['tts']['google_token'] = isset($awm_vorher['tts']['google_token'])
+                ? (string) $awm_vorher['tts']['google_token'] : '';
             if (!awm_config_speichern($awm_neu)) {
                 $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
             } else {
@@ -930,6 +974,22 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
 
 
 if ($aw_sperre) { awm_sperre_frei($aw_sperre); }     // C9: nach den Handlern
+
+/* ---------- Testansage Google-Lautsprecher (Ansage-3) ----------
+ * Ein fester Satz ueber Chromecast 4 Lox NG mit den GESPEICHERTEN Einstellungen.
+ * Bewusst NACH der Freigabe der Sperre: der Aufruf liest die Konfiguration nur und
+ * kann bis 10 s dauern - unter der Sperre wartete der Minutenlauf so lange. Die
+ * Antwortzeile (HTTP-Code und Antwort, nie Token oder Text) kommt als Einmalmeldung;
+ * die Umleitung (U1) unten sorgt dafuer, dass Neuladen nichts noch einmal ausloest. */
+if ($aw_post && isset($_POST['google_test'])) {
+    list($aw_gok, $aw_gmeld) = awm_google_testansage();
+    if ($aw_gok) {
+        $aw_hinweise[] = sprintf(awm_t('MELD.GOOGLE_TEST_OK'), $aw_gmeld);
+    } else {
+        $aw_fehler[] = sprintf(awm_t('MELD.GOOGLE_TEST_FEHL'), $aw_gmeld);
+    }
+    $aw_tab = 'tab-test';
+}
 
 /* ---------- U1: POST - Umleitung - GET ----------
  *
@@ -1315,6 +1375,7 @@ if ($aw_frame) {
             <option value="audioserver"<?= $aw_tm === 'audioserver' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_AS') ?></option>
             <option value="custom"<?= $aw_tm === 'custom' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_EIGEN') ?></option>
             <option value="alexang"<?= $aw_tm === 'alexang' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_ALEXA') ?></option>
+            <option value="cc4lox"<?= $aw_tm === 'cc4lox' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_GOOGLE') ?></option>
         </select>
     </div>
     <div class="sm-feld"><label><?= aw_t('EINST.L_IP') ?></label>
@@ -1361,6 +1422,31 @@ if ($aw_frame) {
     <div class="sm-hilfe"><?= awm_t('EINST.H_ALEXA_TOKEN') ?></div>
     <label style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;">
         <input data-role="none" type="checkbox" name="alexa_token_loeschen" value="1"<?= aw_eh('save', 'alexa_token_loeschen', false) ? ' checked' : '' ?>> <?= aw_t('EINST.L_ALEXA_TOKEN_LOESCHEN') ?>
+    </label>
+</div>
+</div>
+<div id="tts_google_rows">
+<?php /* Ansage-3: Google-Lautsprecher (Chromecast 4 Lox NG), Bauform wie Alexa-NG darueber. */ ?>
+<div class="sm-hilfe"><?= awm_t('EINST.H_GOOGLE') ?></div>
+<div class="sm-row">
+    <div class="sm-feld">
+        <label for="google_geraet"><?= aw_t('EINST.L_GOOGLE_GERAET') ?></label>
+        <input data-role="none" type="text" id="google_geraet" name="google_geraet" value="<?= aw_e(aw_ew('save', 'google_geraet', $aw_tts['google_geraet'])) ?>"<?= aw_em('save', 'google_geraet') ?> placeholder="Wohnzimmer">
+        <div class="sm-hilfe"><?= awm_t('EINST.H_GOOGLE_GERAET') ?></div>
+    </div>
+    <div class="sm-feld">
+        <label for="google_laut"><?= aw_t('EINST.L_GOOGLE_LAUT') ?></label>
+        <input data-role="none" type="<?= aw_et('save', 'google_laut') ?>" id="google_laut" name="google_laut" value="<?= aw_e(aw_ew('save', 'google_laut', (int) $aw_tts['google_laut'] >= 0 ? (int) $aw_tts['google_laut'] : '')) ?>"<?= aw_em('save', 'google_laut') ?> min="0" max="100">
+        <div class="sm-hilfe"><?= aw_t('EINST.H_GOOGLE_LAUT') ?></div>
+    </div>
+</div>
+<div class="sm-feld">
+    <label for="google_token"><?= aw_t('EINST.L_GOOGLE_TOKEN') ?></label>
+<?php /* Wie beim Alexa-NG-Token: nie zurueck ins Formular, nur ob eins gespeichert ist und wie lang. */ ?>
+    <input data-role="none" type="password" id="google_token" name="google_token" value="" autocomplete="new-password" placeholder="<?= (string) $aw_tts['google_token'] !== '' ? aw_e(sprintf(awm_t('EINST.P_GOOGLE_TOKEN_GESETZT'), strlen((string) $aw_tts['google_token']))) : aw_t('EINST.P_GOOGLE_TOKEN_LEER') ?>"<?= aw_em('save', 'google_token') ?>>
+    <div class="sm-hilfe"><?= awm_t('EINST.H_GOOGLE_TOKEN') ?></div>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;">
+        <input data-role="none" type="checkbox" name="google_token_loeschen" value="1"<?= aw_eh('save', 'google_token_loeschen', false) ? ' checked' : '' ?>> <?= aw_t('EINST.L_GOOGLE_TOKEN_LOESCHEN') ?>
     </label>
 </div>
 </div>
@@ -1778,6 +1864,8 @@ $aw_pflicht[] = $aw_tab === 'tab-test' ? awm_pruef_endpunkt($aw_cfg['aktionstoke
 $aw_pflicht[] = awm_pruef_konfiguration($aw_cfg_lage);
 $aw_alz = awm_pruef_alexang($aw_cfg, $aw_tab === 'tab-test');     // Ansage-2
 if ($aw_alz !== null) { $aw_pflicht[] = $aw_alz; }
+$aw_glz = awm_pruef_google($aw_cfg, $aw_tab === 'tab-test');     // Ansage-3
+if ($aw_glz !== null) { $aw_pflicht[] = $aw_glz; }
 $aw_pflicht[] = awm_pruef_vorlagen(count($aw_cals));
 $aw_pflicht = array_merge($aw_pflicht, awm_pruef_cron());
 $aw_ph = 0;
@@ -1869,6 +1957,18 @@ else { foreach ($aw_dg['luecken'] as $aw_l) {
 <a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?refresh=1&amp;debug=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.REFRESH') ?></a>
 <a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?renew=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.RENEW') ?></a>
 </div>
+<?php if ($aw_tts['mode'] === 'cc4lox' || (string) $aw_tts['google_token'] !== '') { /* Ansage-3 */ ?>
+<h3><?= aw_t('TEST.H_GOOGLE') ?></h3>
+<p class="sm-hilfe"><?= awm_t('TEST.H_GOOGLE_TEXT') ?></p>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="google_test" value="1">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= aw_t('KNOPF.GOOGLE_TEST') ?></button>
+</form>
+</div>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
@@ -1910,6 +2010,8 @@ function awTtsMode() {
     document.getElementById('tts_template_row').style.display = (v === 'ms4h' || v === 'custom') ? 'block' : 'none';
     var al = document.getElementById('tts_alexa_rows');
     if (al) { al.style.display = (v === 'alexang') ? 'block' : 'none'; }
+    var gl = document.getElementById('tts_google_rows');
+    if (gl) { gl.style.display = (v === 'cc4lox') ? 'block' : 'none'; }
     var port = document.getElementsByName('tts_port')[0];
     if (v === 'musicserver' && port && (!port.value || port.value === '80')) { port.value = 7091; }
 }

@@ -10,8 +10,10 @@ Termin-Titeln; was es nicht selbst erkennt, ordnet man in der Oberfläche zu
 (siehe [Einrichtung (andere Entsorger)](#einrichtung-andere-entsorger)).
 In Loxone kommt an: Welche Tonne ist **morgen** fällig, welche **heute**, und in wie
 vielen Tagen kommt die nächste Leerung. Dazu **Vorabend-Ansage**
-(TTS über Music Server/Audioserver oder Echo-Geräte über das Plugin
-[Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG)),
+(TTS über Music Server/Audioserver, Echo-Geräte über das Plugin
+[Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG) oder
+Google-/Nest-Lautsprecher über das Plugin
+[Chromecast 4 Lox NG](https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox)),
 **MQTT**-Veröffentlichung und **JSON**.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
@@ -20,6 +22,30 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 (`/plugins/awmabfuhr/awm.php`), im MQTT-Präfix ab Werk (`awm`) und in den
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
+
+## Neu in 1.4.19
+
+Ansage-3: Ausgabe über Google-Lautsprecher. Gemessen an Attrappen unter PHP 7.4 und 8.5 sowie gegen den echten Sprech-Endpunkt von Chromecast 4 Lox NG 1.3.15 (Dienst-Attrappe); die Ausgabe über Alexa NG und Music Server misst vorher = nachher gleich. Nicht am Gerät, nicht an echten Lautsprechern.
+
+* **Neue Ausgabeart „Google-Lautsprecher (Chromecast 4 Lox NG)“** für die Ansagen, ab Werk nicht gewählt.
+  Sie spricht über das eigene Plugin
+  [Chromecast 4 Lox NG](https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox) ab Fassung 1.3.15
+  auf Google-/Nest-Lautsprechern und Chromecasts – dieselbe Schnittstelle wie Alexa-NG.
+* Eigene Felder: Gerät (leer = Standardgerät von Chromecast 4 Lox NG, auch Kommaliste, `gruppe:<Name>`,
+  `alle`), Lautstärke nur für die Ansage und ein **eigenes Sprechtoken** (getrennt vom Alexa-NG-Token).
+  Das Token wird wie ein Kennwort behandelt: nie angezeigt, nie in einer Adresse, im Protokoll oder in
+  „Einstellungen sichern“. Ohne Sprechtoken wird die Ausgabe beanstandet und nichts gespeichert.
+* Einrichtung in Chromecast 4 Lox NG: Reiter *Einstellungen*, Abschnitt *Sprachausgabe für andere Plugins*
+  – einschalten (ab Werk aus) und das Sprechtoken festlegen.
+* Reiter *Test*: eine Zeile prüft, ob Chromecast 4 Lox NG antwortet und das Token passt (ohne Ansage;
+  sagt auch „Sprachausgabe dort aus“ und „Dienst läuft nicht“); neuer Knopf **Testansage
+  (Google-Lautsprecher)** zeigt die Antwortzeile, Neuladen löst nichts ein zweites Mal aus.
+* Fällt Chromecast 4 Lox NG aus, ist es nicht installiert oder älter als 1.3.15, ist die Sprachausgabe dort
+  aus oder der Lautsprecher unbekannt bzw. nicht verbunden, entfällt die Ansage mit einer Protokollzeile
+  (HTTP-Code und GRUND; vom Ansagetext nur die Länge) – kein stiller Wechsel auf einen anderen
+  Lautsprecher, keine Wiederholung.
+* Eine Sicherungsdatei mit Google-Sprechtoken wird beim Zurückspielen abgewiesen; beim Zurückspielen
+  bleibt das geltende Token.
 
 ## Neu in 1.4.18
 
@@ -310,6 +336,23 @@ scheitert es, erscheint der Rat als Warnung. In WSL nachgestellt
   Zurückspielen behält das geltende); leer lassen behält es. Antwortet
   Alexa-NG nicht, entfällt die Ansage mit Protokollzeile, und der Reiter
   *Test* sagt es
+- **Ausgabe über Google-Lautsprecher** — ab Werk nicht gewählt: die Ausgabeart
+  **Google-Lautsprecher (Chromecast 4 Lox NG)** spricht über das eigene Plugin
+  [Chromecast 4 Lox NG](https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox) (ab Fassung 1.3.15)
+  auf Google-/Nest-Lautsprechern und Chromecasts. Die Schnittstelle ist die von
+  Alexa-NG: POST an `http://127.0.0.1/plugins/chromecast-4lox-ng/index.php`
+  (`aktion=sprechen`) mit einem **eigenen Sprechtoken** (nicht dem von
+  Alexa-NG), einem Gerät aus dessen Geräteliste (leer = Standardgerät, auch
+  `gruppe:<Name>` oder `alle`) und optional einer Lautstärke nur für die Ansage.
+  Einrichtung dort: Reiter *Einstellungen*, Abschnitt *Sprachausgabe für andere
+  Plugins* – einschalten (ab Werk aus) und das Sprechtoken festlegen; hier die
+  Ausgabe wählen und das Token eintragen. Der Reiter *Test* prüft das Token
+  (ohne Ansage) und hat den Knopf **Testansage (Google-Lautsprecher)** mit der
+  Antwortzeile. Fällt Chromecast 4 Lox NG aus, ist die Sprachausgabe dort aus
+  oder der Name unbekannt, entfällt die Ansage mit Protokollzeile (HTTP-Code
+  und GRUND, vom Text nur die Länge) – kein stiller Wechsel auf einen anderen
+  Lautsprecher, keine Wiederholung. Das Token steht nie in „Einstellungen
+  sichern“; eine Sicherung mit Google-Sprechtoken wird abgewiesen
 - **Ruhezeiten**: nachts nicht sprechen, im Urlaub nicht sprechen (Quelle ist
   das Plugin *Ferien und Feiertage*, falls installiert), oder bis zu einem
   Datum ganz aussetzen
