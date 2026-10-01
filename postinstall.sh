@@ -92,6 +92,14 @@ BKDIR="$BASE/config/plugins/$PFOLDER.backup.ics"
 # Pruefer, Fall D). Jetzt gehen Zweitschrift und Kalenderbestand bei einer
 # Neuinstallation nach <name>.alt, einmal gemeldet; die Bibliothek liest .alt
 # nie, die Deinstallation raeumt es ab.
+#
+# X-1 (Nachzug 01.10.2026): das Beiseitelegen macht seit 1.4.17 preinstall.sh,
+# VOR dem Kopieren der Cron-Datei - bis 1.4.16 stand es nur hier, und ein
+# Minutentakt zwischen Cron-Kopie und postinstall.sh las die Zweitschrift der
+# frueheren Installation. Der Zweig unten bleibt als Rueckfall und findet
+# nach preinstall.sh normalerweise nichts mehr. Er bleibt bewusst so scharf
+# wie bisher (eine vorhandene .alt wird ersetzt): eine Zweitschrift, die hier
+# noch liegt, darf die Selbstheilung der Bibliothek nie erreichen.
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 if [ -f "$MARKE" ]; then
     if [ -f "$BK" ]; then

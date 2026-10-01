@@ -278,7 +278,10 @@ function awm_config_teilvorgaben()
         'notify' => array('audio' => 1, 'push' => 1, 'time' => '18:00',
                           'audio2' => 0, 'time2' => '06:30'),
         'tts' => array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
-                       'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => ''),
+                       'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '',
+                       // Ansage-2: Alexa-NG (ab Werk nicht gewaehlt). Das Token
+                       // ist ein Geheimnis: nicht in der Sicherung, nie im Formular.
+                       'alexa_geraet' => '', 'alexa_token' => '', 'alexa_laut' => -1),
         'ruhe' => array('urlaub' => 0, 'nachts' => 0, 'von' => '22:00', 'bis' => '07:00',
                         'bis_datum' => ''),
         'ansage' => array('vorlage' => '', 'vorlage2' => ''),
@@ -459,7 +462,11 @@ function awm_wert_pruefen($schluessel, $wert)
         case 'melden':
             return awm_ist_schalter($wert) ? '' : awm_t_oder('PRUEF.G_SCHALTER', 'muss 0 oder 1 sein');
         case 'hinweis_woerter':
-            return is_string($wert) ? '' : awm_t_oder('PRUEF.G_TEXT', 'muss Text sein');
+            /* Nr. 19: leer ist keine Liste. Bis 1.4.16 wurde eine leere Liste im
+             * Formular still zur Standardliste; jetzt beanstanden Formular,
+             * Zurueckspielen und X-3 sie gleich. */
+            if (!is_string($wert)) { return awm_t_oder('PRUEF.G_TEXT', 'muss Text sein'); }
+            return trim($wert) !== '' ? '' : awm_t_oder('PRUEF.G_STICHWORTE', 'die Stichwortliste ist leer');
         case 'mqtt_topic':
             // Dasselbe Muster wie das MQTT-Formular. '#' und '+' sind
             // Platzhalter des Brokers und haben in einem Thema nichts zu
@@ -481,14 +488,26 @@ function awm_wert_pruefen($schluessel, $wert)
             return '';
         case 'tts':
             if (!is_array($wert)) { return awm_t_oder('PRUEF.G_KEINE_LISTE', 'muss eine Liste sein'); }
-            foreach (array('mode', 'ip', 'template', 'zones', 'lang') as $tk) {        // U6
+            foreach (array('mode', 'ip', 'template', 'zones', 'lang', 'alexa_geraet', 'alexa_token') as $tk) {        // U6
                 if (isset($wert[$tk]) && !is_string($wert[$tk])) {
                     return sprintf(awm_t_oder('PRUEF.G_TEXT_K', '%s muss Text sein'), $tk);
                 }
             }
             if (isset($wert['mode']) && !in_array($wert['mode'],
-                    array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
+                    array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang'), true)) {
                 return awm_t_oder('PRUEF.G_MODUS', 'unbekannte Ansageart');
+            }
+            // Ansage-2: Alexa-NG. Das Token steht in keiner eigenen Sicherung;
+            // eine fremde Datei mit Token wird nur auf die Form geprueft, das
+            // Zurueckspielen behaelt ohnehin das geltende.
+            if (isset($wert['alexa_geraet']) && !awm_alexa_geraet_ok($wert['alexa_geraet'])) {
+                return awm_t_oder('PRUEF.G_ALEXA_GERAET', 'Alexa-NG-Geraet ist unzulaessig');
+            }
+            if (isset($wert['alexa_laut']) && !awm_alexa_laut_ok($wert['alexa_laut'])) {
+                return awm_t_oder('PRUEF.G_ALEXA_LAUT', 'Alexa-NG-Lautstaerke ausserhalb -1..100');
+            }
+            if (isset($wert['alexa_token']) && $wert['alexa_token'] !== '' && !awm_alexa_token_ok($wert['alexa_token'])) {
+                return awm_t_oder('PRUEF.G_ALEXA_TOKEN', 'Alexa-NG-Sprechtoken passt nicht zum Muster');
             }
             if (isset($wert['ip']) && !awm_ist_host($wert['ip'])) {                    // U4
                 return awm_t_oder('PRUEF.G_HOST', 'IP-Adresse bzw. Rechnername des Music Servers ist unzulaessig');
@@ -3418,6 +3437,15 @@ function awm_tts_url($text, $zonen = '') {
 }
 
 function awm_say($text, $zonen = '') {
+    $cfg = awm_config();
+    if ($cfg['tts']['mode'] === 'alexang') {
+        /* Ansage-2: Alexa-NG. Das Token geht in keine Protokollzeile. Faellt
+         * Alexa-NG aus, entfaellt die Ansage (kein stiller Wechsel auf einen
+         * anderen Lautsprecher) - die Zeile sagt es, der Reiter Test auch. */
+        list($ok, $meldung) = awm_alexa_sprechen($text);
+        awm_log('Ansage gesendet (Alexa-NG): "' . $text . '" -> ' . ($ok ? 'OK' : 'FEHLER: ' . $meldung));
+        return $ok;
+    }
     $url = awm_tts_url($text, $zonen);
     if ($url === null) {
         awm_log('Ansage: Modus "Original Loxone Audioserver" - Sprachausgabe erfolgt ueber Loxone Config (Textgenerator)');
@@ -3431,6 +3459,143 @@ function awm_say($text, $zonen = '') {
     $r = awm_http_get($url, 10, $grund);
     awm_log('Ansage gesendet: "' . $text . '" -> ' . ($r !== false ? 'OK' : 'FEHLER: ' . $grund));
     return $r !== false;
+}
+
+/* ---------------- Ausgabeart Alexa-NG (Ansage-2, ab Werk nicht gewaehlt) ----------------
+ *
+ * Das eigene Plugin LoxBerry-Plugin-Alexa-NG (Ordner alexang) laesst
+ * Amazon-Echo-Geraete sprechen. Aufruf per POST an seinen Endpunkt auf
+ * DIESEM LoxBerry: das Sprechtoken steht so in keiner Adresse und keinem
+ * Zugriffsprotokoll. https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG
+ */
+function awm_alexa_adresse()
+{
+    return 'http://127.0.0.1:' . awm_webport() . '/plugins/alexang/index.php';
+}
+
+/** Sprechtoken: 8 bis 128 Buchstaben, Ziffern, _ und - (Alexa-NG erzeugt 24 Hexzeichen). */
+function awm_alexa_token_ok($t)
+{
+    return is_string($t) && preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t) === 1;
+}
+
+/** Leer (= Standardgeraet von Alexa-NG) oder 1 bis 200 Zeichen ohne Steuerzeichen und ohne Rand-Leerraum. */
+function awm_alexa_geraet_ok($g)
+{
+    return is_string($g) && ($g === ''
+        || (preg_match('/^.{1,200}\z/us', $g) === 1 && preg_match('/[\x00-\x1F\x7F]/', $g) !== 1
+            && trim($g) === $g));
+}
+
+/** Lautstaerke fuer die Ansage: -1 (= die des Geraets bleibt) oder 0 bis 100. */
+function awm_alexa_laut_ok($v)
+{
+    return is_int($v) && $v >= -1 && $v <= 100;
+}
+
+/**
+ * POST an Alexa-NG. Rueckgabe: array(HTTP-Code, erste Antwortzeile);
+ * Code 0 = keine Antwort. Ohne Weiterleitung, ohne Proxy. Die erste Zeile
+ * wird um ein etwa darin stehendes Token bereinigt, bevor sie irgendwo
+ * hingeht.
+ */
+function awm_alexa_rufen(array $felder, $tmo = 15)
+{
+    $url = awm_alexa_adresse();
+    $koerper = http_build_query($felder, '', '&');
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, array(
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $koerper,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_PROXY => '',
+            CURLOPT_TIMEOUT => $tmo,
+            CURLOPT_CONNECTTIMEOUT => min(3, $tmo),
+            CURLOPT_HTTPHEADER => array('Content-Type: application/x-www-form-urlencoded'),
+        ));
+        $r = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
+        $rumpf = $r === false ? '' : (string) $r;
+        if ($r === false) { $code = 0; }
+    } else {
+        $ctx = stream_context_create(array('http' => array(
+            'method' => 'POST',
+            'header' => "Content-Type: application/x-www-form-urlencoded\r\n",
+            'content' => $koerper,
+            'timeout' => $tmo,
+            'ignore_errors' => true,
+            'follow_location' => 0,
+        )));
+        list($r, $code) = awm_http_abruf($url, $ctx);
+        $rumpf = $r === false ? '' : (string) $r;
+        if ($r === false) { $code = 0; }
+    }
+    $zeilen = preg_split('/\r?\n/', trim($rumpf));
+    $erste = trim((string) $zeilen[0]);
+    if (isset($felder['token']) && is_string($felder['token']) && $felder['token'] !== '') {
+        $erste = str_replace($felder['token'], '***', $erste);
+    }
+    return array((int) $code, substr($erste, 0, 200));
+}
+
+/**
+ * Eine Ansage ueber Alexa-NG. Rueckgabe: array(ok, Meldung fuers Protokoll).
+ * Geraet und Lautstaerke aus den Einstellungen; die Zonen eines Kalenders
+ * (Music-Server-Nummern) gelten hier nicht.
+ */
+function awm_alexa_sprechen($text)
+{
+    $cfg = awm_config();
+    $t = $cfg['tts'];
+    $tok = isset($t['alexa_token']) ? $t['alexa_token'] : '';
+    if (!awm_alexa_token_ok($tok)) {
+        return array(false, awm_t_oder('TEXT.ALEXA_KEIN_TOKEN', 'kein Sprechtoken fuer Alexa-NG gespeichert'));
+    }
+    $f = array('aktion' => 'sprechen', 'token' => $tok, 'text' => (string) $text);
+    $g = isset($t['alexa_geraet']) && is_string($t['alexa_geraet']) ? $t['alexa_geraet'] : '';
+    if ($g !== '') { $f['geraet'] = $g; }
+    $laut = isset($t['alexa_laut']) ? (int) $t['alexa_laut'] : -1;
+    if ($laut >= 0 && $laut <= 100) { $f['laut'] = $laut; }
+    list($code, $zeile) = awm_alexa_rufen($f, 15);
+    if ($code === 200 && strpos($zeile, 'SPRECHEN;OK=1') === 0) {
+        return array(true, $zeile);
+    }
+    if ($code <= 0) {
+        return array(false, sprintf(awm_t_oder('TEXT.ALEXA_KEINE_ANTWORT', 'Alexa-NG antwortet nicht (%s)'),
+                                    awm_alexa_adresse()));
+    }
+    return array(false, 'HTTP ' . $code . ', ' . $zeile);
+}
+
+/** Zeile im Reiter Test: null, wenn Alexa-NG nicht die Ausgabeart ist. */
+function awm_pruef_alexang(array $cfg, $offen)
+{
+    if (!isset($cfg['tts']['mode']) || $cfg['tts']['mode'] !== 'alexang') {
+        return null;
+    }
+    if (!$offen) {
+        return array('hinweis', awm_t_oder('TEST.P_ALEXA_ZU', 'Alexa-NG wird nur geprueft, wenn der Reiter Test offen ist'));
+    }
+    if (awm_paths()['lbhome'] === '') {
+        return array('hinweis', awm_t_oder('TEST.P_ALEXA_OHNE', 'Kein installierter Aufbau - Alexa-NG ist nicht feststellbar'));
+    }
+    $tok = isset($cfg['tts']['alexa_token']) ? $cfg['tts']['alexa_token'] : '';
+    if (!awm_alexa_token_ok($tok)) {
+        return array('fehl', awm_t_oder('TEST.P_ALEXA_TOKEN', 'Ausgabeart Alexa-NG, aber kein Sprechtoken gespeichert - die Ansage entfaellt'));
+    }
+    list($code, $zeile) = awm_alexa_rufen(array('selftest' => '1', 'token' => $tok), 5);
+    if ($code === 200 && strpos($zeile, 'SELFTEST;OK=1') === 0) {
+        return array('ok', awm_t_oder('TEST.P_ALEXA_OK', 'Alexa-NG antwortet, das Sprechtoken passt (SELFTEST;OK=1)'));
+    }
+    if ($code <= 0) {
+        return array('fehl', sprintf(awm_t_oder('TEST.P_ALEXA_KEINE', 'Alexa-NG antwortet nicht (%s) - die Ansage entfaellt, bis es erreichbar ist'),
+                                     awm_alexa_adresse()));
+    }
+    return array('fehl', sprintf(awm_t_oder('TEST.P_ALEXA_FEHL', 'Alexa-NG weist ab: HTTP %d, "%s" - die Ansage entfaellt'),
+                                 $code, substr($zeile, 0, 80)));
 }
 
 /**
@@ -4580,21 +4745,27 @@ function awm_xml_virtual_in_http($kopf, $cmds) {
 
 /** Virtueller Ausgang - fuer die drei Aufrufe, die etwas ausloesen. */
 function awm_xml_virtual_out($kopf, $cmds) {
+    /* Bauform der Ausfuhr aus Loxone Config (Regeln/07): HintText vorn,
+     * templateType 3 = Ausgang, CmdSep, je Befehl die Reihenfolge von
+     * VO_Rasenmaeher...xml. Bis 1.4.16 stand hier templateType 1 (das ist
+     * der UDP-Eingang), ohne HintText und mit "CmdSeparator". */
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualOut Title="' . awm_vx($kopf['title']) . '" ';
+    $o .= '<VirtualOut HintText="" ';
+    $o .= 'Title="' . awm_vx($kopf['title']) . '" ';
     $o .= 'Comment="' . awm_vx(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . awm_vx($kopf['address']) . '" ';
-    $o .= 'CmdInit="" CloseAfterSend="true" CmdSeparator="">' . $crlf;
-    $o .= "\t" . '<Info templateType="1" minVersion="17010727"/>' . $crlf;
+    $o .= 'CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
         $o .= "\t" . '<VirtualOutCmd ';
         $o .= 'Title="' . awm_vx($c['title']) . '" ';
         $o .= 'Comment="' . awm_vx($c['comment']) . '" ';
-        $o .= 'CmdOnMethod="' . awm_vx(isset($c['method']) ? $c['method'] : 'GET') . '" ';
+        $o .= 'CmdOnMethod="' . awm_vx(isset($c['method']) ? $c['method'] : 'GET') . '" CmdOffMethod="GET" ';
         $o .= 'CmdOn="' . awm_vx($c['on']) . '" ';
-        $o .= 'CmdOnHTTP="" CmdOffMethod="GET" CmdOff="" CmdOffHTTP="" ';
-        $o .= 'Analog="false" Repeat="0" RepeatRate="0"';
+        $o .= 'CmdOnHTTP="" CmdOnPost="" ';
+        $o .= 'CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" ';
+        $o .= 'Analog="false" Repeat="0" RepeatRate="0" HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualOut>' . $crlf;
@@ -4958,7 +5129,9 @@ function awm_einmal_lesen()
  * Positivliste je Formular: Name => array(Art, Zeilen). Art 'text' oder
  * 'haken'; Zeilen 0 = ein Feld, sonst ein Listenfeld name[0..Zeilen-1].
  * Keines dieser Formulare traegt ein Geheimnis - das Aktionstoken steht in
- * keinem, das Formularmerkmal gehoert nicht dazu.
+ * keinem, das Formularmerkmal gehoert nicht dazu. Ausnahme seit Ansage-2: das
+ * Alexa-NG-Sprechtoken im Formular 'save' hat die Art 'geheim' - es kann als
+ * beanstandet markiert werden, sein Wert reist nie mit.
  * ================================================================== */
 function awm_eingabe_felder($formular)
 {
@@ -4978,6 +5151,11 @@ function awm_eingabe_felder($formular)
             'ruhe_bis_zeit' => $t, 'ruhe_bis' => $t,
             'tts_mode' => $t, 'tts_ip' => $t, 'tts_port' => $t, 'tts_zones' => $t,
             'tts_volume' => $t, 'tts_lang' => $t, 'tts_template' => $t,
+            // Ansage-2: Geraet, Lautstaerke, Loesch-Haken reisen mit. Das
+            // Sprechtoken ist 'geheim': es darf als beanstandet MARKIERT werden,
+            // sein Wert reist nie mit (awm_eingaben_sammeln/-pruefen).
+            'alexa_geraet' => $t, 'alexa_laut' => $t, 'alexa_token_loeschen' => $h,
+            'alexa_token' => array('geheim', 0),
             'ansage_vorlage' => $t, 'ansage_vorlage2' => $t),
         'mqtt' => array('mqtt_enabled' => $h, 'mqtt_topic' => $t),
         'bins' => array('bins_cal' => $t, 'bins_modus' => $t, 'bin_titel' => array('text', $z),
@@ -5006,6 +5184,9 @@ function awm_eingaben_sammeln($formular, array $post, array $falsch)
     $werte = array();
     foreach (awm_eingabe_felder($formular) as $name => $art) {
         list($typ, $zeilen) = $art;
+        if ($typ === 'geheim') {
+            continue;           // Ansage-2: nur markierbar, der Wert reist nie mit
+        }
         if ($zeilen === 0) {
             $v = isset($post[$name]) ? $post[$name] : null;
             if ($typ === 'haken') {
@@ -5040,9 +5221,14 @@ function awm_eingaben_pruefen($e)
     if (!is_array($e) || !isset($e['formular']) || !is_string($e['formular'])) { return null; }
     $s = awm_eingabe_schluessel($e['formular']);
     if (!$s) { return null; }
+    $geheim = array();
+    foreach (awm_eingabe_felder($e['formular']) as $gn => $ga) {
+        if ($ga[0] === 'geheim') { $geheim[$gn] = true; }
+    }
     $werte = array();
     foreach ((isset($e['werte']) && is_array($e['werte'])) ? $e['werte'] : array() as $k => $v) {
-        if (isset($s[(string) $k]) && is_string($v)) { $werte[(string) $k] = $v; }
+        // Ansage-2: der Wert eines Geheimnisfeldes wird nie angenommen.
+        if (isset($s[(string) $k]) && is_string($v) && !isset($geheim[(string) $k])) { $werte[(string) $k] = $v; }
     }
     $falsch = array();
     foreach ((isset($e['falsch']) && is_array($e['falsch'])) ? $e['falsch'] : array() as $n) {
@@ -5285,10 +5471,16 @@ function awm_sicherung_bauen()
 function awm_sicherung_daten(array $voll)
 {
     $cfg = array_intersect_key($voll, awm_config_vorgaben());
+    // Ansage-2: das Alexa-NG-Sprechtoken wird wie ein Kennwort behandelt und
+    // geht NICHT mit; das Zurueckspielen behaelt das geltende.
+    if (isset($cfg['tts']) && is_array($cfg['tts'])) {
+        unset($cfg['tts']['alexa_token']);
+    }
     $kopf = array(
         '_hinweis' => 'Sicherung des LoxBerry-Plugins Abfuhrkalender AWM. '
                     . 'Enthaelt das Aktionstoken und die Kalenderadresse - '
-                    . 'wie ein Passwort behandeln.',
+                    . 'wie ein Passwort behandeln. Das Alexa-NG-Sprechtoken '
+                    . 'ist absichtlich NICHT enthalten.',
         '_stand' => date('Y-m-d H:i:s'),
     );
     /* Keine Fassungsnummer im Kopf: sie stuende dann in einer PHP-Datei,

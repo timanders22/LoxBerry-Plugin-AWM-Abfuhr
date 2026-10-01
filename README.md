@@ -4,9 +4,30 @@ Bringt den Abfuhrkalender des AWM München (Abfallwirtschaftsbetrieb) — oder
 jeden anderen iCal-/ICS-Abfuhrkalender mit Tonnen-Namen in den Termin-Titeln —
 in Loxone: Welche Tonne ist **morgen** fällig, welche **heute**, und in wie
 vielen Tagen kommt die nächste Leerung. Dazu **Vorabend-Ansage**
-(TTS über Music Server/Audioserver), **MQTT**-Veröffentlichung und **JSON**.
+(TTS über Music Server/Audioserver oder Echo-Geräte über das Plugin
+[Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG)),
+**MQTT**-Veröffentlichung und **JSON**.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
+
+## Neu in 1.4.17
+
+Verbesserungen aus dem Durchgang (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidungen 16 und 19).
+Gemessen an Attrappen unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+
+* **Neue Ausgabeart „Alexa-NG“** für Ansagen über Amazon-Echo-Geräte, ab Werk
+  nicht gewählt. Voraussetzung ist das Plugin
+  [Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG). Das
+  Sprechtoken wird wie ein Kennwort behandelt; der Reiter Test prüft Alexa-NG.
+* **Neuinstallation:** Alte Einstellungen und der alte Kalender werden schon vor
+  dem ersten Minutenlauf beiseitegelegt (`preinstall.sh`). Bisher galt das alte
+  Token kurz weiter.
+* **Nach einer Beanstandung wird nichts gespeichert:** leeres MQTT-Thema, leere
+  Stichwortliste, unbekannte Regelart sowie halbe Tonnen- und Terminzeilen werden
+  beanstandet statt still ersetzt oder verworfen.
+* Die Befehlsvorlage für Loxone hat die Form eines virtuellen Ausgangs
+  (`templateType 3`, `HintText`); die Adressen bleiben gleich.
 
 ## Neu in 1.4.16
 
@@ -246,6 +267,18 @@ scheitert es, erscheint der Rat als Warnung. In WSL nachgestellt
   Abholung überhaupt, Ausfallerkennung und die Melde-Merker
 - **Vorabend-Ansage** und optional eine **zweite Ansage am Abholmorgen**
   („Steht die Tonne schon draußen?“), Text frei wählbar mit Platzhaltern
+- **Ausgabe der Ansage**: Loxone Music Server, AudioServer4Home/MusicServer4Home,
+  eine eigene URL-Vorlage, der originale Audioserver (über Loxone Config) oder —
+  ab Werk nicht gewählt — **Alexa-NG**: das eigene LoxBerry-Plugin
+  [LoxBerry-Plugin-Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG)
+  lässt Echo-Geräte sprechen. Das Plugin ruft dessen Endpunkt auf demselben
+  LoxBerry per POST (`aktion=sprechen`) mit dem **Sprechtoken** aus Alexa-NG,
+  einem Gerät (leer = Standardgerät) und optional einer Lautstärke. Das
+  Sprechtoken wird wie ein Kennwort behandelt: nie angezeigt, nie in einer
+  Adresse oder im Protokoll, nicht in „Einstellungen sichern“ (das
+  Zurückspielen behält das geltende); leer lassen behält es. Antwortet
+  Alexa-NG nicht, entfällt die Ansage mit Protokollzeile, und der Reiter
+  *Test* sagt es
 - **Ruhezeiten**: nachts nicht sprechen, im Urlaub nicht sprechen (Quelle ist
   das Plugin *Ferien und Feiertage*, falls installiert), oder bis zu einem
   Datum ganz aussetzen
@@ -274,8 +307,11 @@ scheitert es, erscheint der Rat als Warnung. In WSL nachgestellt
 - **Jahres-Erneuerung**: Endet der Kalender in weniger als 30 Tagen, versucht
   das Plugin selbst einen frischen Link — mit eigenen Strategien für AWM
   München, Abfallplus/abfall.io, Jumomind/MyMüll und ATURIS
-- Konfiguration, Protokoll und Kalender überleben Plugin-Updates und eine
-  Neuinstallation
+- Konfiguration, Protokoll und Kalender überleben Plugin-Updates. Bei einer
+  **Neuinstallation** werden gesicherte Einstellungen und Kalender einer
+  früheren Installation nicht eingespielt, sondern nach `….alt` beiseitegelegt
+  (schon vor dem ersten Minutenlauf, durch `preinstall.sh`); die
+  Deinstallation räumt sie ab
 
 ## Neu in 1.4.0
 

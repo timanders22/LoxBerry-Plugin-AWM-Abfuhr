@@ -326,11 +326,13 @@ if ($aw_post && isset($_POST['mqtt_save'])) {
     $aw_new['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
     $aw_thema = trim((string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''));
     // Was nicht ins Muster passt, wird ABGEWIESEN, nicht zurechtgebogen.
+    /* Nr. 19: auch ein LEERES Thema. Bis 1.4.16 wurde es still zu "awm" und
+     * gespeichert - wer das Feld geleert hatte, sah danach "awm" und hielt es
+     * fuer seinen Wert. */
     if ($aw_thema === '') {
-        $aw_thema = 'awm';
-    }
-    // U4: dieselbe Pruefung wie beim Zurueckspielen (mit \z statt $).
-    if (awm_wert_pruefen('mqtt_topic', $aw_thema) !== '') {
+        $aw_fehler[] = awm_t('MELD.THEMA_LEER');
+        $aw_bean[] = 'mqtt_topic';
+    } elseif (awm_wert_pruefen('mqtt_topic', $aw_thema) !== '') {
         $aw_fehler[] = awm_t('MELD.THEMA_UNGUELTIG');
         $aw_bean[] = 'mqtt_topic';
     } else {
@@ -426,8 +428,15 @@ if ($aw_post && isset($_POST['save_bins'])) {
     foreach ($aw_titel as $aw_k => $aw_tt) {
         $aw_tt = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', (string) $aw_tt));
         $aw_zz = (string) (isset($aw_tonne[$aw_k]) ? $aw_tonne[$aw_k] : '');
-        if ($aw_tt === '' || $aw_zz === '') {
-            continue;                    // leere Zeile = keine Zuordnung
+        if ($aw_zz === '') {
+            continue;                    // "keine Zuordnung" (Auswahl im Formular)
+        }
+        /* Nr. 19: eine HALBE Zeile - Tonne gewaehlt, aber kein Titel - wurde
+         * bis 1.4.16 still verworfen und "gespeichert" gemeldet. */
+        if ($aw_tt === '') {
+            $aw_fehler[] = sprintf(awm_t('MELD.ZEILE_OHNE_TITEL'), $aw_k + 1);
+            $aw_bean[] = 'bin_tonne.' . $aw_k;
+            continue;
         }
         if (!isset($aw_arten[$aw_zz])) {
             $aw_fehler[] = sprintf(awm_t('MELD.TONNE_UNBEKANNT'), $aw_zz);
@@ -442,13 +451,20 @@ if ($aw_post && isset($_POST['save_bins'])) {
         }
         $aw_regeln_neu[] = array('muster' => $aw_tt, 'tonne' => $aw_zz, 'art' => $aw_aa);
     }
+    /* Nr. 19: ein unbekannter oder fehlender Modus wurde bis 1.4.16 still zu
+     * "ersetzen" - und damit verlor die eingebaute Erkennung Tonnen, ohne dass
+     * es jemand gewaehlt hatte. */
+    $aw_mod = (isset($_POST['bins_modus']) && is_string($_POST['bins_modus'])) ? $_POST['bins_modus'] : '';
+    if (!in_array($aw_mod, array('ersetzen', 'ergaenzen'), true)) {
+        $aw_fehler[] = sprintf(awm_t('MELD.REGELMODUS'), $aw_mod);
+        $aw_bean[] = 'bins_modus';
+    }
     if ($aw_slot < 0) {
         $aw_fehler[] = awm_t('MELD.KALENDER_FEHLT');
         $aw_bean[] = '_kalender';
     } elseif (!$aw_fehler) {
         $aw_liste[$aw_slot]['regeln'] = $aw_regeln_neu;
-        $aw_mod = (string) (isset($_POST['bins_modus']) ? $_POST['bins_modus'] : 'ersetzen');
-        $aw_liste[$aw_slot]['regeln_modus'] = ($aw_mod === 'ergaenzen') ? 'ergaenzen' : 'ersetzen';
+        $aw_liste[$aw_slot]['regeln_modus'] = $aw_mod;
         $aw_new['cals'] = $aw_liste;
         if (aw_speichern($aw_new, $aw_fehler)) {
             awm_state(true, $aw_cn);
@@ -473,7 +489,15 @@ if ($aw_post && isset($_POST['save_termine'])) {
     foreach ($aw_td as $aw_k => $aw_dd) {
         $aw_dd = trim((string) $aw_dd);
         $aw_bb = (string) (isset($aw_tb[$aw_k]) ? $aw_tb[$aw_k] : '');
-        if ($aw_dd === '' && $aw_bb === '') { continue; }
+        if ($aw_dd === '' && $aw_bb === '') {
+            /* Nr. 19: eine Zeile mit Text, aber ohne Datum und Tonne wurde bis
+             * 1.4.16 still verworfen. Ganz leere Zeilen bleiben leer. */
+            if (trim((string) (isset($aw_tx[$aw_k]) ? $aw_tx[$aw_k] : '')) !== '') {
+                $aw_fehler[] = sprintf(awm_t('MELD.TERMIN_HALB'), $aw_k + 1);
+                $aw_bean[] = 'term_datum.' . $aw_k;
+            }
+            continue;
+        }
         // Erwartet TT.MM.JJJJ oder JJJJ-MM-TT. Was nicht passt, wird
         // abgewiesen und gemeldet - nicht zurechtgebogen.
         $aw_ymd = '';
@@ -606,7 +630,14 @@ if ($aw_post && isset($_POST['save'])) {
     $aw_new['melden'] = isset($_POST['melden']) ? 1 : 0;
     $aw_hw = trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
              trim((string) (isset($_POST['hinweis_woerter']) ? $_POST['hinweis_woerter'] : ''))));
-    $aw_new['hinweis_woerter'] = $aw_hw !== '' ? $aw_hw : AWM_HINWEIS_STANDARD;
+    /* Nr. 19: eine LEERE Liste wurde bis 1.4.16 still zur Standardliste. Jetzt
+     * eine Beanstandung - dieselbe Pruefung wie beim Zurueckspielen. */
+    if (awm_wert_pruefen('hinweis_woerter', $aw_hw) !== '') {
+        $aw_fehler[] = awm_t('MELD.STICHWORTE_LEER');
+        $aw_bean[] = 'hinweis_woerter';
+    } else {
+        $aw_new['hinweis_woerter'] = $aw_hw;
+    }
     $aw_zeit = (string) (isset($_POST['notify_time']) ? $_POST['notify_time'] : '');
     $aw_zeit2 = (string) (isset($_POST['notify_time2']) ? $_POST['notify_time2'] : '');
     /* U4: dieselbe Pruefung wie beim Zurueckspielen (awm_ist_zeit: 00:00 bis
@@ -683,7 +714,7 @@ if ($aw_post && isset($_POST['save'])) {
      * Bis 1.4.14: "DE1" still zu "de", "192.0.2.4/x?y" ungeprueft als
      * Adresse, "Kueche" als Zone - die eigene Sicherung wurde danach
      * abgewiesen. */
-    if (!in_array($aw_mode, array('musicserver', 'ms4h', 'audioserver', 'custom'), true)) {
+    if (!in_array($aw_mode, array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang'), true)) {
         $aw_fehler[] = sprintf(awm_t('MELD.MODUS'), $aw_mode);
         $aw_bean[] = 'tts_mode';
         $aw_mode = (string) $aw_new['tts']['mode'];
@@ -706,6 +737,46 @@ if ($aw_post && isset($_POST['save'])) {
         $aw_bean[] = 'tts_lang';
         $aw_la2 = (string) $aw_new['tts']['lang'];
     }
+    /* Ansage-2: Alexa-NG. Abgewiesen wird benannt, nicht zurechtgebogen; ein
+     * Feld, das keine Zeichenkette ist (name[]), ist eine Beanstandung. Das
+     * Sprechtoken reist nie ins Formular zurueck: leer lassen behaelt es, der
+     * Haken loescht es. */
+    $aw_al_roh = function ($feld) {
+        if (!isset($_POST[$feld])) { return ''; }
+        return is_string($_POST[$feld]) ? trim($_POST[$feld]) : false;
+    };
+    $aw_ag = $aw_al_roh('alexa_geraet');
+    if ($aw_ag === false || !awm_alexa_geraet_ok($aw_ag)) {
+        $aw_fehler[] = awm_t('MELD.ALEXA_GERAET');
+        $aw_bean[] = 'alexa_geraet';
+        $aw_ag = (string) $aw_new['tts']['alexa_geraet'];
+    }
+    $aw_al = $aw_al_roh('alexa_laut');
+    if ($aw_al === '') {
+        $aw_al = -1;
+    } elseif ($aw_al !== false && awm_ist_zahl($aw_al, 0, 100)) {
+        $aw_al = (int) $aw_al;
+    } else {
+        $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_ALEXA_LAUT'), 0, 100,
+                               $aw_al === false ? '' : $aw_al);
+        $aw_bean[] = 'alexa_laut';
+        $aw_al = (int) $aw_new['tts']['alexa_laut'];
+    }
+    $aw_at = (string) $aw_new['tts']['alexa_token'];
+    if (isset($_POST['alexa_token_loeschen'])) {
+        $aw_at = '';
+    } else {
+        $aw_atw = $aw_al_roh('alexa_token');
+        if ($aw_atw === false || ($aw_atw !== '' && !awm_alexa_token_ok($aw_atw))) {
+            $aw_fehler[] = awm_t('MELD.ALEXA_TOKEN');
+            $aw_bean[] = 'alexa_token';
+        } elseif ($aw_atw !== '') {
+            $aw_at = $aw_atw;
+        }
+    }
+    if ($aw_mode === 'alexang' && !awm_alexa_token_ok($aw_at)) {
+        $aw_hinweise[] = awm_t('MELD.ALEXA_OHNE_TOKEN');
+    }
     $aw_new['tts'] = array(
         'mode' => $aw_mode,
         'ip' => $aw_ip,
@@ -714,6 +785,9 @@ if ($aw_post && isset($_POST['save'])) {
         'volume' => $aw_vol,
         'lang' => $aw_la2,
         'template' => trim((string) (isset($_POST['tts_template']) ? $_POST['tts_template'] : '')),
+        'alexa_geraet' => $aw_ag,
+        'alexa_token' => $aw_at,
+        'alexa_laut' => $aw_al,
     );
     $aw_new['ansage'] = array(
         'vorlage' => trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
@@ -788,6 +862,11 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
                 $awm_neu['aktionstoken'] = $awm_vorher['aktionstoken'];
                 $awm_tok_behalten = true;
             }
+            /* Ansage-2: das Alexa-NG-Sprechtoken steht nicht in der Sicherung und
+             * BLEIBT - auch wenn eine fremde Datei eines mitbringt. */
+            if (!isset($awm_neu['tts']) || !is_array($awm_neu['tts'])) { $awm_neu['tts'] = array(); }
+            $awm_neu['tts']['alexa_token'] = isset($awm_vorher['tts']['alexa_token'])
+                ? (string) $awm_vorher['tts']['alexa_token'] : '';
             if (!awm_config_speichern($awm_neu)) {
                 $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
             } else {
@@ -1123,7 +1202,7 @@ if ($aw_frame) {
     </div>
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_STICHWORTE') ?></label>
-        <input data-role="none" type="text" name="hinweis_woerter" value="<?= aw_e(aw_ew('save', 'hinweis_woerter', trim((string) $aw_cfg['hinweis_woerter']) !== '' ? $aw_cfg['hinweis_woerter'] : AWM_HINWEIS_STANDARD)) ?>" placeholder="<?= aw_e(AWM_HINWEIS_STANDARD) ?>">
+        <input data-role="none" type="text" name="hinweis_woerter" value="<?= aw_e(aw_ew('save', 'hinweis_woerter', trim((string) $aw_cfg['hinweis_woerter']) !== '' ? $aw_cfg['hinweis_woerter'] : AWM_HINWEIS_STANDARD)) ?>"<?= aw_em('save', 'hinweis_woerter') ?> placeholder="<?= aw_e(AWM_HINWEIS_STANDARD) ?>">
         <div class="sm-hilfe"><?= aw_t('EINST.H_STICHWORTE') ?></div>
     </div>
 </div>
@@ -1196,6 +1275,7 @@ if ($aw_frame) {
             <option value="ms4h"<?= $aw_tm === 'ms4h' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_MS4H') ?></option>
             <option value="audioserver"<?= $aw_tm === 'audioserver' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_AS') ?></option>
             <option value="custom"<?= $aw_tm === 'custom' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_EIGEN') ?></option>
+            <option value="alexang"<?= $aw_tm === 'alexang' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_ALEXA') ?></option>
         </select>
     </div>
     <div class="sm-feld"><label><?= aw_t('EINST.L_IP') ?></label>
@@ -1220,6 +1300,31 @@ if ($aw_frame) {
     <div class="sm-hilfe"><?= awm_t('EINST.H_VORLAGE') ?></div>
 </div>
 <div id="tts_audioserver_hint" class="sm-warnung" style="display:none;"><?= awm_t('EINST.H_AUDIOSERVER') ?></div>
+<div id="tts_alexa_rows">
+<div class="sm-hilfe"><?= awm_t('EINST.H_ALEXA') ?></div>
+<div class="sm-row">
+    <div class="sm-feld">
+        <label for="alexa_geraet"><?= aw_t('EINST.L_ALEXA_GERAET') ?></label>
+        <input data-role="none" type="text" id="alexa_geraet" name="alexa_geraet" value="<?= aw_e(aw_ew('save', 'alexa_geraet', $aw_tts['alexa_geraet'])) ?>"<?= aw_em('save', 'alexa_geraet') ?> placeholder="kueche">
+        <div class="sm-hilfe"><?= awm_t('EINST.H_ALEXA_GERAET') ?></div>
+    </div>
+    <div class="sm-feld">
+        <label for="alexa_laut"><?= aw_t('EINST.L_ALEXA_LAUT') ?></label>
+        <input data-role="none" type="<?= aw_et('save', 'alexa_laut') ?>" id="alexa_laut" name="alexa_laut" value="<?= aw_e(aw_ew('save', 'alexa_laut', (int) $aw_tts['alexa_laut'] >= 0 ? (int) $aw_tts['alexa_laut'] : '')) ?>"<?= aw_em('save', 'alexa_laut') ?> min="0" max="100">
+        <div class="sm-hilfe"><?= aw_t('EINST.H_ALEXA_LAUT') ?></div>
+    </div>
+</div>
+<div class="sm-feld">
+    <label for="alexa_token"><?= aw_t('EINST.L_ALEXA_TOKEN') ?></label>
+<?php /* Das Sprechtoken reist NIE ins Formular zurueck (wie ein Kennwort):
+   angezeigt wird nur, ob eins gespeichert ist und wie lang es ist. */ ?>
+    <input data-role="none" type="password" id="alexa_token" name="alexa_token" value="" autocomplete="new-password" placeholder="<?= (string) $aw_tts['alexa_token'] !== '' ? aw_e(sprintf(awm_t('EINST.P_ALEXA_TOKEN_GESETZT'), strlen((string) $aw_tts['alexa_token']))) : aw_t('EINST.P_ALEXA_TOKEN_LEER') ?>"<?= aw_em('save', 'alexa_token') ?>>
+    <div class="sm-hilfe"><?= awm_t('EINST.H_ALEXA_TOKEN') ?></div>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;">
+        <input data-role="none" type="checkbox" name="alexa_token_loeschen" value="1"<?= aw_eh('save', 'alexa_token_loeschen', false) ? ' checked' : '' ?>> <?= aw_t('EINST.L_ALEXA_TOKEN_LOESCHEN') ?>
+    </label>
+</div>
+</div>
 
 <div class="sm-row">
     <div class="sm-feld">
@@ -1270,7 +1375,7 @@ foreach ($aw_cals as $aw_n => $aw_c) {
 <div class="sm-feld">
   <label><?= aw_t('TONNEN.L_MODUS') ?></label>
   <?php $aw_bm = aw_ew('bins', 'bins_modus', awm_regeln_modus($aw_bcal)); /* X-2 */ ?>
-  <select data-role="none" name="bins_modus">
+  <select data-role="none" name="bins_modus"<?= aw_em('bins', 'bins_modus') ?>>
     <option value="ersetzen"<?= $aw_bm === 'ersetzen' ? ' selected' : '' ?>><?= aw_t('TONNEN.MODUS_ERSETZEN') ?></option>
     <option value="ergaenzen"<?= $aw_bm === 'ergaenzen' ? ' selected' : '' ?>><?= aw_t('TONNEN.MODUS_ERGAENZEN') ?></option>
   </select>
@@ -1632,6 +1737,8 @@ $aw_pflicht = array(awm_pruef_reiter($aw_quelle, $aw_reiter), awm_pruef_formular
 $aw_pflicht[] = $aw_tab === 'tab-test' ? awm_pruef_endpunkt($aw_cfg['aktionstoken'])
     : array('hinweis', awm_t('TEST.P_ENDPUNKT_ZU'));
 $aw_pflicht[] = awm_pruef_konfiguration($aw_cfg_lage);
+$aw_alz = awm_pruef_alexang($aw_cfg, $aw_tab === 'tab-test');     // Ansage-2
+if ($aw_alz !== null) { $aw_pflicht[] = $aw_alz; }
 $aw_pflicht[] = awm_pruef_vorlagen(count($aw_cals));
 $aw_pflicht = array_merge($aw_pflicht, awm_pruef_cron());
 $aw_ph = 0;
@@ -1762,6 +1869,8 @@ function awTtsMode() {
     var v = m.value;
     document.getElementById('tts_audioserver_hint').style.display = (v === 'audioserver') ? 'block' : 'none';
     document.getElementById('tts_template_row').style.display = (v === 'ms4h' || v === 'custom') ? 'block' : 'none';
+    var al = document.getElementById('tts_alexa_rows');
+    if (al) { al.style.display = (v === 'alexang') ? 'block' : 'none'; }
     var port = document.getElementsByName('tts_port')[0];
     if (v === 'musicserver' && port && (!port.value || port.value === '80')) { port.value = 7091; }
 }
