@@ -451,6 +451,21 @@ function awm_wert_pruefen($schluessel, $wert)
                 if (isset($c['termine']) && !awm_ist_objektliste($c['termine'], array('datum', 'tonne', 'text'))) {
                     return awm_t_oder('PRUEF.G_CAL_TERMINE', 'die eigenen Termine eines Kalenders sind unzulaessig');
                 }
+                /* AWM-n19b: dieselben Zeichen, die das Formular beanstandet. Bis
+                 * 1.4.17 nahm das Zurueckspielen sie an, waehrend das Formular sie
+                 * still entfernte. Die Form der Listen ist oben schon geprueft. */
+                foreach (isset($c['regeln']) ? $c['regeln'] : array() as $r) {
+                    if (isset($r['muster']) && !awm_text_zeichen_ok($r['muster'], false, false)) {   // Nr. 24
+                        return awm_t_oder('PRUEF.G_CAL_REGEL_ZEICHEN',
+                            'der Titel einer Zuordnungsregel enthaelt ein Steuerzeichen');
+                    }
+                }
+                foreach (isset($c['termine']) ? $c['termine'] : array() as $t) {
+                    if (isset($t['text']) && !awm_text_zeichen_ok($t['text'], true)) {
+                        return awm_t_oder('PRUEF.G_CAL_TERMIN_ZEICHEN',
+                            'der Text eines eigenen Termins enthaelt ein gerades Anfuehrungszeichen, ein Semikolon oder ein Steuerzeichen');
+                    }
+                }
             }
             return '';
         case 'fetch_days':
@@ -466,6 +481,9 @@ function awm_wert_pruefen($schluessel, $wert)
              * Formular still zur Standardliste; jetzt beanstanden Formular,
              * Zurueckspielen und X-3 sie gleich. */
             if (!is_string($wert)) { return awm_t_oder('PRUEF.G_TEXT', 'muss Text sein'); }
+            if (!awm_text_zeichen_ok($wert)) {                  // AWM-n19b
+                return awm_t_oder('PRUEF.G_ZEICHEN', 'enthaelt ein gerades Anfuehrungszeichen oder ein Steuerzeichen');
+            }
             return trim($wert) !== '' ? '' : awm_t_oder('PRUEF.G_STICHWORTE', 'die Stichwortliste ist leer');
         case 'mqtt_topic':
             // Dasselbe Muster wie das MQTT-Formular. '#' und '+' sind
@@ -543,6 +561,10 @@ function awm_wert_pruefen($schluessel, $wert)
                 if (isset($wert[$k]) && !is_string($wert[$k])) {
                     return sprintf(awm_t_oder('PRUEF.G_TEXT_K', '%s muss Text sein'), $k);
                 }
+                if (isset($wert[$k]) && !awm_text_zeichen_ok($wert[$k])) {        // AWM-n19b
+                    return sprintf(awm_t_oder('PRUEF.G_ZEICHEN_K',
+                        '%s enthaelt ein gerades Anfuehrungszeichen oder ein Steuerzeichen'), $k);
+                }
             }
             return '';
         case 'aktionstoken':
@@ -560,6 +582,23 @@ function awm_wert_pruefen($schluessel, $wert)
 function awm_ist_zonen($v)
 {
     return is_string($v) && preg_match('/^[0-9,~ ]*\z/', $v) === 1;
+}
+
+/**
+ * Nr. 19 (AWM-n19b): Traegt der Text keines der Zeichen, die das Formular bis
+ * 1.4.17 still entfernte? Gerade Anfuehrungszeichen und Steuerzeichen (auch
+ * Tabulator und Zeilenumbruch); mit $semikolon zusaetzlich ';' (Texte eigener
+ * Termine). Typografische Anfuehrungszeichen sind erlaubt.
+ * Entscheidung 24: in REGELTITELN ist das gerade Anfuehrungszeichen erlaubt
+ * ($anfuehrung = false) - der Titel kommt aus der Kalenderdatei, und die Regel
+ * muss ihn mit dem Zeichen treffen; dort zaehlen nur Steuerzeichen.
+ * EINE Pruefung fuer Formular, Zurueckspielen und X-3 (awm_wert_pruefen).
+ */
+function awm_text_zeichen_ok($s, $semikolon = false, $anfuehrung = true)
+{
+    if (!is_string($s)) { return false; }
+    $muster = '\x00-\x1F\x7F' . ($anfuehrung ? '"' : '') . ($semikolon ? ';' : '');
+    return preg_match('/[' . $muster . ']/', $s) !== 1;
 }
 
 /**
@@ -4819,7 +4858,7 @@ function awm_vorlage($cal = 1) {
     }
     $c = awm_cal($cal);
     return array('VI_awm' . ($cal > 1 ? '_' . $cal : '') . '.xml', awm_xml_virtual_in_http(array(
-        'title' => 'Abfuhrkalender AWM' . ($c ? ' ' . $c['name'] : ''),
+        'title' => 'Abfuhrkalender (AWM & iCal)' . ($c ? ' ' . $c['name'] : ''),
         'address' => 'http://' . $host . '/plugins/' . $ordner . '/awm.php' . ($cal > 1 ? '?cal=' . $cal : ''),
         'polling' => '300',
         // AWM-b1: Kommentar aus der Sprachdatei, Abschnitt [VORLAGE].
@@ -5477,7 +5516,7 @@ function awm_sicherung_daten(array $voll)
         unset($cfg['tts']['alexa_token']);
     }
     $kopf = array(
-        '_hinweis' => 'Sicherung des LoxBerry-Plugins Abfuhrkalender AWM. '
+        '_hinweis' => 'Sicherung des LoxBerry-Plugins Abfuhrkalender (AWM & iCal). '
                     . 'Enthaelt das Aktionstoken und die Kalenderadresse - '
                     . 'wie ein Passwort behandeln. Das Alexa-NG-Sprechtoken '
                     . 'ist absichtlich NICHT enthalten.',

@@ -426,7 +426,7 @@ if ($aw_post && isset($_POST['save_bins'])) {
     $aw_art = isset($_POST['bin_art']) ? (array) $_POST['bin_art'] : array();
     $aw_regeln_neu = array();
     foreach ($aw_titel as $aw_k => $aw_tt) {
-        $aw_tt = trim(preg_replace('/[\x00-\x1F\x7F"]/', '', (string) $aw_tt));
+        $aw_tt = trim((string) $aw_tt);      // nur Rand-Leerraum faellt still weg (Nr. 19)
         $aw_zz = (string) (isset($aw_tonne[$aw_k]) ? $aw_tonne[$aw_k] : '');
         if ($aw_zz === '') {
             continue;                    // "keine Zuordnung" (Auswahl im Formular)
@@ -435,6 +435,18 @@ if ($aw_post && isset($_POST['save_bins'])) {
          * bis 1.4.16 still verworfen und "gespeichert" gemeldet. */
         if ($aw_tt === '') {
             $aw_fehler[] = sprintf(awm_t('MELD.ZEILE_OHNE_TITEL'), $aw_k + 1);
+            $aw_bean[] = 'bin_tonne.' . $aw_k;
+            continue;
+        }
+        /* AWM-n19b (Nr. 19): Anfuehrungs- und Steuerzeichen im Titel wurden bis
+         * 1.4.17 still entfernt - die gespeicherte Regel traf den Titel danach
+         * nicht mehr, gemeldet war "gespeichert". Entscheidung 24: das gerade
+         * Anfuehrungszeichen bleibt jetzt stehen (die Regel trifft den Titel
+         * damit), nur ein Steuerzeichen ist eine Beanstandung - dieselbe
+         * Pruefung wie beim Zurueckspielen. Der Titel kommt aus der
+         * Kalenderdatei (verstecktes Feld); markiert wird die Auswahl der Zeile. */
+        if (!awm_text_zeichen_ok($aw_tt, false, false)) {
+            $aw_fehler[] = sprintf(awm_t('MELD.TITEL_ZEICHEN'), $aw_k + 1);
             $aw_bean[] = 'bin_tonne.' . $aw_k;
             continue;
         }
@@ -498,6 +510,16 @@ if ($aw_post && isset($_POST['save_termine'])) {
             }
             continue;
         }
+        /* AWM-n19b (Nr. 19): Anfuehrungszeichen, Semikolon und Steuerzeichen im
+         * Text wurden bis 1.4.17 still entfernt und das Uebrige gespeichert.
+         * Jetzt eine Beanstandung (dieselbe Pruefung wie beim Zurueckspielen);
+         * nur Leerraum am Rand faellt still weg. */
+        $aw_txr = isset($aw_tx[$aw_k]) ? $aw_tx[$aw_k] : '';
+        $aw_txt = is_string($aw_txr) ? trim($aw_txr) : '';
+        if (!is_string($aw_txr) || !awm_text_zeichen_ok($aw_txt, true)) {
+            $aw_fehler[] = sprintf(awm_t('MELD.TERMIN_ZEICHEN'), $aw_k + 1);
+            $aw_bean[] = 'term_text.' . $aw_k;
+        }
         // Erwartet TT.MM.JJJJ oder JJJJ-MM-TT. Was nicht passt, wird
         // abgewiesen und gemeldet - nicht zurechtgebogen.
         $aw_ymd = '';
@@ -513,9 +535,7 @@ if ($aw_post && isset($_POST['save_termine'])) {
             $aw_bean[] = 'term_tonne.' . $aw_k;
             continue;
         }
-        $aw_neu[] = array('datum' => $aw_ymd, 'tonne' => $aw_bb,
-                          'text' => trim(preg_replace('/[\x00-\x1F\x7F";]/', '',
-                                    (string) (isset($aw_tx[$aw_k]) ? $aw_tx[$aw_k] : ''))));
+        $aw_neu[] = array('datum' => $aw_ymd, 'tonne' => $aw_bb, 'text' => $aw_txt);
     }
     if ($aw_slot < 0) {
         $aw_fehler[] = awm_t('MELD.KALENDER_FEHLT');
@@ -628,11 +648,16 @@ if ($aw_post && isset($_POST['save'])) {
     }
     $aw_new['autorenew'] = isset($_POST['autorenew']) ? 1 : 0;
     $aw_new['melden'] = isset($_POST['melden']) ? 1 : 0;
-    $aw_hw = trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
-             trim((string) (isset($_POST['hinweis_woerter']) ? $_POST['hinweis_woerter'] : ''))));
+    $aw_hwr = isset($_POST['hinweis_woerter']) ? $_POST['hinweis_woerter'] : '';
+    $aw_hw = is_string($aw_hwr) ? trim($aw_hwr) : '';
     /* Nr. 19: eine LEERE Liste wurde bis 1.4.16 still zur Standardliste. Jetzt
-     * eine Beanstandung - dieselbe Pruefung wie beim Zurueckspielen. */
-    if (awm_wert_pruefen('hinweis_woerter', $aw_hw) !== '') {
+     * eine Beanstandung - dieselbe Pruefung wie beim Zurueckspielen.
+     * AWM-n19b: Anfuehrungs- und Steuerzeichen wurden bis 1.4.17 still
+     * entfernt; jetzt ebenso eine Beanstandung (awm_text_zeichen_ok). */
+    if (!is_string($aw_hwr) || !awm_text_zeichen_ok($aw_hw)) {
+        $aw_fehler[] = sprintf(awm_t('MELD.TEXT_ZEICHEN'), awm_t('EINST.L_STICHWORTE'));
+        $aw_bean[] = 'hinweis_woerter';
+    } elseif (awm_wert_pruefen('hinweis_woerter', $aw_hw) !== '') {
         $aw_fehler[] = awm_t('MELD.STICHWORTE_LEER');
         $aw_bean[] = 'hinweis_woerter';
     } else {
@@ -774,8 +799,12 @@ if ($aw_post && isset($_POST['save'])) {
             $aw_at = $aw_atw;
         }
     }
-    if ($aw_mode === 'alexang' && !awm_alexa_token_ok($aw_at)) {
-        $aw_hinweise[] = awm_t('MELD.ALEXA_OHNE_TOKEN');
+    /* AWM-a2n (Nr. 19): bis 1.4.17 nur ein Hinweis, und gespeichert wurde
+     * trotzdem - die Ansage entfiel danach still. Jetzt eine Beanstandung wie
+     * im Abfahrts-Assistenten 1.6.19 und in Octopus 1.1.18. */
+    if ($aw_mode === 'alexang' && !awm_alexa_token_ok($aw_at) && !in_array('alexa_token', $aw_bean, true)) {
+        $aw_fehler[] = awm_t('MELD.ALEXA_OHNE_TOKEN');
+        $aw_bean[] = 'alexa_token';
     }
     $aw_new['tts'] = array(
         'mode' => $aw_mode,
@@ -789,12 +818,21 @@ if ($aw_post && isset($_POST['save'])) {
         'alexa_token' => $aw_at,
         'alexa_laut' => $aw_al,
     );
-    $aw_new['ansage'] = array(
-        'vorlage' => trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
-                     (string) (isset($_POST['ansage_vorlage']) ? $_POST['ansage_vorlage'] : ''))),
-        'vorlage2' => trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
-                      (string) (isset($_POST['ansage_vorlage2']) ? $_POST['ansage_vorlage2'] : ''))),
-    );
+    /* AWM-n19b (Nr. 19): Anfuehrungs- und Steuerzeichen in den Ansagetexten
+     * wurden bis 1.4.17 still entfernt. Jetzt eine Beanstandung (dieselbe
+     * Pruefung wie beim Zurueckspielen); der Rand-Leerraum faellt still weg. */
+    $aw_ansage_neu = array();
+    foreach (array('vorlage' => 'ansage_vorlage', 'vorlage2' => 'ansage_vorlage2') as $aw_ak => $aw_af) {
+        $aw_av = $aw_al_roh($aw_af);
+        if ($aw_av === false || !awm_text_zeichen_ok($aw_av)) {
+            $aw_fehler[] = sprintf(awm_t('MELD.TEXT_ZEICHEN'),
+                                   awm_t($aw_ak === 'vorlage' ? 'EINST.L_ANSAGETEXT' : 'EINST.L_ANSAGETEXT2'));
+            $aw_bean[] = $aw_af;
+            $aw_av = (string) $aw_new['ansage'][$aw_ak];
+        }
+        $aw_ansage_neu[$aw_ak] = $aw_av;
+    }
+    $aw_new['ansage'] = $aw_ansage_neu;
     /* Entscheidung 16 (30.09.2026, Regeln/04): bei einer Beanstandung wird
      * NICHTS gespeichert, auch nicht die uebrigen richtigen Felder. Bis 1.4.16
      * wurde "trotzdem gespeichert, damit nicht alles Uebrige verlorengeht" -
@@ -964,7 +1002,7 @@ $aw_tok = aw_e($aw_cfg['aktionstoken']);
 
 
 if ($aw_frame) {
-    LBWeb::lbheader('Abfuhrkalender AWM M&uuml;nchen', 'https://wiki.loxberry.de/', 'help.html');
+    LBWeb::lbheader('Abfuhrkalender (AWM &amp; iCal)', 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
@@ -1149,6 +1187,7 @@ if ($aw_frame) {
 <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
 
 <h2><?= aw_t('EINST.H_QUELLEN') ?></h2>
+<div class="sm-hinweis" id="jeder-ical"><?= awm_t('EINST.JEDER_ICAL') ?></div>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th style="width:34px;"><?= aw_t('EINST.T_NR') ?></th><th style="width:150px;"><?= aw_t('EINST.T_NAME') ?></th>
@@ -1329,12 +1368,12 @@ if ($aw_frame) {
 <div class="sm-row">
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_ANSAGETEXT') ?></label>
-        <input data-role="none" type="text" name="ansage_vorlage" value="<?= aw_e(aw_ew('save', 'ansage_vorlage', $aw_ansage['vorlage'])) ?>" placeholder="<?= aw_e(awm_t_oder('TEXT.ANSAGE_MEHRERE', '')) ?>">
+        <input data-role="none" type="text" name="ansage_vorlage" value="<?= aw_e(aw_ew('save', 'ansage_vorlage', $aw_ansage['vorlage'])) ?>"<?= aw_em('save', 'ansage_vorlage') ?> placeholder="<?= aw_e(awm_t_oder('TEXT.ANSAGE_MEHRERE', '')) ?>">
         <div class="sm-hilfe"><?= awm_t('EINST.H_ANSAGETEXT') ?></div>
     </div>
     <div class="sm-feld">
         <label><?= aw_t('EINST.L_ANSAGETEXT2') ?></label>
-        <input data-role="none" type="text" name="ansage_vorlage2" value="<?= aw_e(aw_ew('save', 'ansage_vorlage2', $aw_ansage['vorlage2'])) ?>" placeholder="<?= aw_e(awm_t_oder('TEXT.ANSAGE_MORGENS', '')) ?>">
+        <input data-role="none" type="text" name="ansage_vorlage2" value="<?= aw_e(aw_ew('save', 'ansage_vorlage2', $aw_ansage['vorlage2'])) ?>"<?= aw_em('save', 'ansage_vorlage2') ?> placeholder="<?= aw_e(awm_t_oder('TEXT.ANSAGE_MORGENS', '')) ?>">
         <div class="sm-hilfe"><?= aw_t('EINST.H_ANSAGETEXT2') ?></div>
     </div>
 </div>
@@ -1456,7 +1495,7 @@ for ($aw_i = 0; $aw_i < $aw_tz; $aw_i++) {
     <?php foreach ($aw_arten_anz as $aw_tk => $aw_tv) { ?>
     <option value="<?= aw_e($aw_tk) ?>"<?= ($aw_tt3 !== null ? $aw_tt3 === $aw_tk : ($aw_e3 && $aw_e3['eigen'] === $aw_tk)) ? ' selected' : '' ?>><?= aw_e($aw_tv['text']) ?></option>
     <?php } ?></select></td>
-<td><input data-role="none" type="text" name="term_text[<?= $aw_i ?>]" value="<?= aw_e(aw_ew('termine', 'term_text.' . $aw_i, $aw_e3 ? $aw_e3['summary'] : '')) ?>" placeholder="<?= aw_t('EIGEN.PH_TEXT') ?>"></td>
+<td><input data-role="none" type="text" name="term_text[<?= $aw_i ?>]" value="<?= aw_e(aw_ew('termine', 'term_text.' . $aw_i, $aw_e3 ? $aw_e3['summary'] : '')) ?>"<?= aw_em('termine', 'term_text.' . $aw_i) ?> placeholder="<?= aw_t('EIGEN.PH_TEXT') ?>"></td>
 </tr>
 <?php } ?>
 </table>

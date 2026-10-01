@@ -1,14 +1,45 @@
-# LoxBerry-Plugin: Abfuhrkalender AWM München
+# LoxBerry-Plugin: Abfuhrkalender (AWM & iCal)
 
-Bringt den Abfuhrkalender des AWM München (Abfallwirtschaftsbetrieb) — oder
-jeden anderen iCal-/ICS-Abfuhrkalender mit Tonnen-Namen in den Termin-Titeln —
-in Loxone: Welche Tonne ist **morgen** fällig, welche **heute**, und in wie
+**Für jeden iCal-Entsorger – nicht nur AWM München.**
+
+Bringt **jeden Abfuhrkalender im iCal-/ICS-Format** in Loxone – nicht nur den
+des AWM München (Abfallwirtschaftsbetrieb), für den das Plugin entstanden ist.
+Der Kalender kommt als Adresse (der iCal-Link des eigenen Entsorgers) oder als
+hochgeladene `.ics`-Datei. Die Tonnen erkennt das Plugin an den Namen in den
+Termin-Titeln; was es nicht selbst erkennt, ordnet man in der Oberfläche zu
+(siehe [Einrichtung (andere Entsorger)](#einrichtung-andere-entsorger)).
+In Loxone kommt an: Welche Tonne ist **morgen** fällig, welche **heute**, und in wie
 vielen Tagen kommt die nächste Leerung. Dazu **Vorabend-Ansage**
 (TTS über Music Server/Audioserver oder Echo-Geräte über das Plugin
 [Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG)),
 **MQTT**-Veröffentlichung und **JSON**.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, läuft mit PHP 7.4 und 8.x).
+
+Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
+(`/plugins/awmabfuhr/awm.php`), im MQTT-Präfix ab Werk (`awm`) und in den
+Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
+Anlagen weiterlaufen.
+
+## Neu in 1.4.18
+
+Wunsch des Hausherrn und Verbesserungsliste (`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidungen 19, 23 und 24).
+Gemessen an Attrappen unter PHP 7.4 und 8.5; nicht am Gerät.
+
+* **Für jeden iCal-Entsorger, nicht nur AWM München:** Neuer Anzeigename
+  „Abfuhrkalender (AWM & iCal)“. README, Hilfe und Oberfläche sagen deutlich, dass
+  jeder Abfuhrkalender im iCal-/ICS-Format geht (Adresse oder hochgeladene
+  `.ics`-Datei). Neuer Abschnitt „Einrichtung (andere Entsorger)“ mit den
+  Strategien der Jahres-Erneuerung. Ordner, Adressen (`/plugins/awmabfuhr/…`),
+  MQTT-Präfix und Dateinamen bleiben unverändert.
+* **Regeltitel mit Anführungszeichen:** Ein Termin-Titel wie `Tonne "Blau"` lässt
+  sich jetzt zuordnen. Bisher wurde er still zu `Tonne Blau` gekürzt, und die
+  Regel traf nie.
+* **Nach einer Beanstandung wird nichts gespeichert:** Steuerzeichen in
+  Regeltiteln sowie Anführungs- und Steuerzeichen in Stichwörtern, Ansage- und
+  Termintexten (dort auch `;`) werden beanstandet statt still entfernt. Gleiches
+  gilt beim Zurückspielen; „Einstellungen sichern“ warnt gelb.
+* Alexa-NG als Ausgabe ohne Sprechtoken wird beanstandet statt gespeichert.
 
 ## Neu in 1.4.17
 
@@ -306,7 +337,9 @@ scheitert es, erscheint der Rat als Warnung. In WSL nachgestellt
   gescheitertem Abruf und misslungener Jahres-Erneuerung
 - **Jahres-Erneuerung**: Endet der Kalender in weniger als 30 Tagen, versucht
   das Plugin selbst einen frischen Link — mit eigenen Strategien für AWM
-  München, Abfallplus/abfall.io, Jumomind/MyMüll und ATURIS
+  München, Abfallplus/abfall.io, Jumomind/MyMüll und ATURIS; bei allen anderen
+  Links zählt es eine Jahreszahl hoch, die genau einmal im Link steht
+  (Einzelheiten unter „Einrichtung (andere Entsorger)“)
 - Konfiguration, Protokoll und Kalender überleben Plugin-Updates. Bei einer
   **Neuinstallation** werden gesicherte Einstellungen und Kalender einer
   früheren Installation nicht eingespielt, sondern nach `….alt` beiseitegelegt
@@ -397,6 +430,56 @@ Endpunkt mit der Zeile des vierten.
 
 Bietet der eigene Entsorger keine dauerhafte Adresse, sondern nur eine Datei
 zum Herunterladen: die Datei unter „Kalenderdatei hochladen“ übergeben.
+
+## Einrichtung (andere Entsorger)
+
+Das Plugin liest jeden Abfuhrkalender im iCal-/ICS-Format. Der Weg führt immer
+über die Seite des eigenen Entsorgers (Stadt, Landkreis, Zweckverband); die
+Anbieter der Kalendersysteme haben keine eigene Adresseingabe.
+
+1. **iCal-Link suchen:** Auf der Abfuhrkalender-Seite des Entsorgers Ort, Straße
+   und Hausnummer wählen und den Export suchen – er heißt meist „iCal“, „ICS“,
+   „Kalender abonnieren“ oder „Kalender exportieren“. Den Link kopieren. Das
+   Plugin nimmt nur Adressen mit `http://` oder `https://`; beginnt der Link mit
+   `webcal://`, diesen Teil durch `https://` ersetzen.
+2. **Eintragen:** Unter *Einstellungen → Datenquellen* als „iCal-Adresse“
+   eintragen, speichern und „Jetzt abrufen“ klicken. Bis zu vier Kalender sind
+   möglich (`&cal=2` bis `&cal=4`).
+3. **Oder die Datei hochladen:** Gibt der Entsorger nur eine Datei zum
+   Herunterladen, die `.ics`-Datei unter *Kalenderdatei hochladen* übergeben
+   (höchstens 4 MB). Eine hochgeladene Datei wird weder abgerufen noch erneuert;
+   zum Jahreswechsel die neue Datei hochladen.
+4. **Tonnen zuordnen:** Das Plugin erkennt die Tonne am Termin-Titel. Von selbst
+   erkennt es Restmüll/Hausmüll (Titel enthält „rest“ oder „hausm“), Bio,
+   Papier und Wertstoff/Gelbe Tonne („wertstoff“ oder „gelbe“). Alles andere –
+   etwa Glas, Sperrmüll, Grünschnitt, Schadstoffe oder eigene Namen des
+   Entsorgers – wird unter *Tonnenzuordnung* zugeordnet. Die Tabelle zeigt die
+   Titel, die wirklich in der Datei stehen, mit ihrer Anzahl; daneben wählt man
+   die Tonne und den Vergleich („genau dieser Text“, „enthält“, „beginnt mit“).
+5. Im Reiter *Test* nachsehen, was ankommt: Termine, nicht auswertbare
+   Wiederholungsregeln, Abruffehler.
+
+**Jahres-Erneuerung des Links** (Haken „Kalender-Adresse zum Jahreswechsel
+automatisch erneuern“, ab Werk an): Liefert der Kalender in weniger als 30 Tagen
+keine Termine mehr oder nennt ein Jahres-Parameter im Link (`year`, `jahr`,
+`kalenderjahr`, `timeperiod`) ein vergangenes Jahr, sucht das Plugin höchstens
+einmal am Tag selbst den Link fürs Folgejahr (von Hand: `?renew=1&token=…`). Die
+Strategie wählt es am Link:
+
+| Link enthält | Strategie |
+|---|---|
+| `awm-muenchen.de` | AWM München: das Jahr im Parameter `year` hochzählen; klappt das nicht, die Ergebnisseite des AWM nach dem neuen iCal-Link durchsuchen |
+| `abfall.io` | Abfallplus/abfall.io: das Zeitfenster `timeperiod=JJJJ0101-JJJJ1231` um ein Jahr weiterschieben |
+| `jumomind` oder `mymuell` | Jumomind/MyMüll: den Parameter `year=` oder eine Jahreszahl am Ende des Pfads hochzählen |
+| `abfallkalender` | ATURIS AbfallKalenderSystem: den Parameter `jahr=`, `year=` oder `kalenderjahr=` hochzählen; ohne ihn wie „allgemein“ |
+| alles andere | allgemein: steht das laufende oder das vergangene Jahr **genau einmal** im Link, wird es hochgezählt; sonst geschieht nichts |
+
+Übernommen wird ein neuer Link nur, wenn er einen Kalender mit mindestens einem
+künftigen Termin liefert. Steht kein Jahr im Link, bleibt er in der Regel gültig,
+und es ist nichts zu erneuern. Misslingt die Erneuerung, steht es im Protokoll
+und – mit dem Haken „Warnungen in den LoxBerry-Meldebereich legen“ – im
+LoxBerry-Meldebereich; dann einen frischen
+Link beim Entsorger holen.
 
 ## Datenschutz
 
