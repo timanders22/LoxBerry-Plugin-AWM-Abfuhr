@@ -23,6 +23,25 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.20
+
+Gemeinsame Sprachausgabe, Ansagetext nicht mehr im Protokoll (Entscheidung 40, Stufe 1).
+Gemessen am Windows-Prüfstand gegen Attrappen (Alexa-NG, Chromecast 4 Lox NG, Music Server), PHP 7.4 und
+8.5; nicht am Gerät, nicht an einem echten Lautsprecher.
+
+* **Der Ansagetext steht nicht mehr im Protokoll und nicht mehr in der Antwort von `awm.php?say=1`**, sondern nur seine
+  Länge: Protokoll „Ansage gesendet: 15 Zeichen -> OK“ bzw. „Ansage gesendet (Alexa-NG): 15 Zeichen -> …“, Antwort
+  `SAY;OK=1;TEXTLAENGE=86` statt `…;TEXT=<Text>`. Ausnahme: Ausgabeart Original-Audioserver – dort ist der Text die
+  Antwort für Loxone Config und steht weiter als `TEXT=…` da.
+* Die Sprachausgabe läuft jetzt über die gemeinsame Sprachausgabe der Plugins dieses Hauses (Datei `sprachausgabe.php`,
+  dieselbe in allen Plugins mit Ansage). Einstellungen, Felder (auch die Zonen je Kalender), Testansage, Sicherungen
+  und Verhalten bleiben gleich.
+* Der Webport für Alexa-NG und Chromecast 4 Lox NG wird jetzt auch unter `WEBSERVER` in `general.json` gefunden.
+* Der Abruf beim Music Server und bei einer eigenen Adressvorlage folgt keiner Weiterleitung mehr und gilt nur bei
+  HTTP 2xx als gesendet.
+
+**In Loxone:** Wer aus der Antwort den Ansagetext gelesen hat, bekommt jetzt `TEXTLAENGE=` (außer beim Original-Audioserver).
+
 ## Neu in 1.4.19
 
 Ansage-3: Ausgabe über Google-Lautsprecher. Gemessen an Attrappen unter PHP 7.4 und 8.5 sowie gegen den echten Sprech-Endpunkt von Chromecast 4 Lox NG 1.3.15 (Dienst-Attrappe); die Ausgabe über Alexa NG und Music Server misst vorher = nachher gleich. Nicht am Gerät, nicht an echten Lautsprechern.
@@ -450,7 +469,7 @@ Tonnenzuordnung ist eine Einstellung und steht deshalb bei den Einstellungen.
 | `/plugins/awmabfuhr/awm.php?json=1` | kompletter Zustand als JSON |
 | `/plugins/awmabfuhr/awm.php?text=1` | drei fertige Sätze und der Hinweistext |
 | `/plugins/awmabfuhr/awm.php?ics=1` | der gespeicherte Kalender zum Abonnieren |
-| `/plugins/awmabfuhr/awm.php?say=1&token=…` | Ansage sofort abspielen **(Token nötig)** |
+| `/plugins/awmabfuhr/awm.php?say=1&token=…` | Ansage sofort abspielen **(Token nötig)**; Antwort `SAY;OK=…;TEXTLAENGE=…` (die Länge, nicht der Text), nur beim Original-Audioserver `SAY;OK=0;TEXT=…` |
 | `/plugins/awmabfuhr/awm.php?ptest=1&token=…` | Test-Pushnachricht auslösen **(Token nötig)** |
 | `/plugins/awmabfuhr/awm.php?ack=1&token=…` | Quittierung „Tonne steht draußen“ **(Token nötig)** |
 | `/plugins/awmabfuhr/awm.php?renew=1&token=…` | Jahres-Erneuerung jetzt versuchen **(Token nötig)** |

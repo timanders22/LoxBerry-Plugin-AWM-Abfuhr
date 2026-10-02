@@ -225,7 +225,14 @@ if (isset($_GET['say'])) {
             'Hallo! Dies ist eine Testansage des Abfuhrkalenders. Morgen wird keine Tonne abgeholt.');
     }
     $ok = awm_say($text, $awm_c ? $awm_c['zonen'] : '');
-    echo 'SAY;OK=' . ($ok ? 1 : 0) . ";TEXT=$text\n";
+    /* Nr. 36 b / Nr. 40: vom Ansagetext nur seine Laenge; beim Original-Audioserver ist der
+     * Text die Antwort (Loxone Config spricht ihn ueber den Textgenerator). */
+    $awm_cs = awm_config();
+    if ($awm_cs['tts']['mode'] === 'audioserver') {
+        echo 'SAY;OK=' . ($ok ? 1 : 0) . ";TEXT=$text\n";
+    } else {
+        echo 'SAY;OK=' . ($ok ? 1 : 0) . ';TEXTLAENGE=' . awm_zeichenzahl($text) . "\n";
+    }
     exit;
 }
 

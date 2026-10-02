@@ -76,6 +76,11 @@ define('AWM_HINWEIS_STANDARD', 'achtung, verschiebung, verschoben, feiertag, ers
 // Tonnenzuordnung und Wiederholungsregeln (ab 1.1.0). Liegt in einer eigenen
 // Datei, damit die Aenderung gegenueber 1.0.2 an einer Stelle nachlesbar ist.
 require_once __DIR__ . '/awm_regeln.php';
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b,
+ * Stufe 1). Liegt neben dieser Datei. Bindet diese Bibliothek spaeter ferien_lib.php des
+ * Plugins Ferien und Feiertage ein und traegt jenes eine eigene Abschrift, gilt die hier
+ * zuerst geladene; die Datei schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sprachausgabe.php';
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -1998,15 +2003,14 @@ function awm_state($force = false, $cal = 1) {
  * ================================================================== */
 
 function awm_webport() {
+    /* Nr. 36 b: aus der gemeinsamen Sprachausgabe (Webserver.Port oder WEBSERVER.Port, sonst 80). */
     $p = awm_paths();
-    $gj = $p['lbhome'] . '/config/system/general.json';
-    if ($p['lbhome'] !== '' && is_file($gj)) {
-        $d = json_decode((string) @file_get_contents($gj), true);
-        if (isset($d['Webserver']['Port']) && (int) $d['Webserver']['Port'] > 0) {
-            return (int) $d['Webserver']['Port'];
-        }
-    }
-    return 80;
+    return ansage_webport($p['lbhome'] !== '' ? $p['lbhome'] . '/config/system/general.json' : '');
+}
+
+/** Kontext fuer die gemeinsame Sprachausgabe: Webport und Kennung dieses Plugins. */
+function awm_ansage_k() {
+    return array('port' => awm_webport(), 'kopf' => array('User-Agent: LoxBerry Abfuhrkalender'), 'ordner' => '');
 }
 
 /** Sondertage von heute bzw. eines beliebigen Tages (Ymd). */
@@ -3439,58 +3443,19 @@ function awm_t_oder($schluessel, $ersatz)
 
 /* ---------------- Ansage (TTS) - identisch zum Abfahrtsassistenten ---------------- */
 
-/** TTS-URL fuer die konfigurierte Ausgabe bauen. Fuer mode=audioserver: null. */
+/** TTS-URL fuer die konfigurierte Ausgabe bauen. Fuer mode=audioserver: null.
+ *  Nr. 36 b: gebaut von der gemeinsamen Sprachausgabe (ansage_tts_url()); die Zonen des
+ *  Kalenders haben wie bisher Vorrang, eine unbekannte Art bekommt wie bisher die Vorlage. */
 function awm_tts_url($text, $zonen = '') {
     $cfg = awm_config();
     $tts = $cfg['tts'];
-    $mode = $tts['mode'];
-    if ($mode === 'audioserver') {
-        return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
-    }
     if (trim((string) $zonen) !== '') {
         $tts['zones'] = trim((string) $zonen);   // Zonen des Kalenders haben Vorrang
     }
-
-    /* Zonenliste EINMAL fuer alle Modi normalisieren. */
-    $zl = array();
-    foreach (explode(',', (string) $tts['zones']) as $z) {
-        $z = trim($z);
-        if ($z !== '') { $zl[] = $z; }
+    if (!isset($tts['mode']) || !in_array($tts['mode'], array('musicserver', 'ms4h', 'custom', 'audioserver'), true)) {
+        $tts['mode'] = 'custom';
     }
-    $tts['zones'] = implode(',', $zl);
-    if ($mode === 'musicserver' && (string) $tts['ip'] === '') {
-        return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
-    }
-    if ($mode === 'musicserver') {
-        // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~8,4~8,6~8".
-        // Explizite Angaben "Zone~Lautstaerke" haben Vorrang.
-        $vol = max(1, min(100, (int) $tts['volume']));
-        $zones = array();
-        foreach (explode(',', (string) $tts['zones']) as $z) {
-            $z = trim($z);
-            if ($z === '') {
-                continue;
-            }
-            $zones[] = (strpos($z, '~') === false) ? $z . '~' . $vol : $z;
-        }
-        $zoneStr = $zones ? implode(',', $zones) : '1~' . $vol;
-        return 'http://' . $tts['ip'] . ':' . (int) $tts['port'] . '/audio/grouped/tts/' . $zoneStr . '/' . rawurlencode($tts['lang'] . '|' . $text);
-    }
-    // ms4h (MusicServer4Home / Audioserver4Home) und custom: Vorlage mit Platzhaltern
-    $tpl = trim((string) $tts['template']);
-    if ($tpl === '') {
-        // Standard-Vorlage MusicServer4Home
-        $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}';
-    }
-    // Die IP wird nur verlangt, wenn die Vorlage sie auch verwendet.
-    if ((string) $tts['ip'] === '' && strpos($tpl, '{ip}') !== false) {
-        return '';
-    }
-    return str_replace(
-        array('{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'),
-        array($tts['ip'], (int) $tts['port'], $tts['zones'], (int) $tts['volume'], $tts['lang'], rawurlencode($text)),
-        $tpl
-    );
+    return ansage_tts_url($text, $tts);
 }
 
 function awm_say($text, $zonen = '') {
@@ -3500,7 +3465,8 @@ function awm_say($text, $zonen = '') {
          * Alexa-NG aus, entfaellt die Ansage (kein stiller Wechsel auf einen
          * anderen Lautsprecher) - die Zeile sagt es, der Reiter Test auch. */
         list($ok, $meldung) = awm_alexa_sprechen($text);
-        awm_log('Ansage gesendet (Alexa-NG): "' . $text . '" -> ' . ($ok ? 'OK' : 'FEHLER: ' . $meldung));
+        awm_log('Ansage gesendet (Alexa-NG): ' . awm_zeichenzahl($text) . ' Zeichen -> '
+                . ($ok ? 'OK' : 'FEHLER: ' . $meldung));
         return $ok;
     }
     if ($cfg['tts']['mode'] === 'cc4lox') {
@@ -3522,10 +3488,23 @@ function awm_say($text, $zonen = '') {
         awm_log('Ansage uebersprungen: keine TTS-IP konfiguriert');
         return false;
     }
+    /* Nr. 36 b: abgerufen ueber den Transport der gemeinsamen Sprachausgabe (ohne
+     * Weiterleitung, ohne Proxy, Erfolg nur bei HTTP 2xx). Der Grund im Fehlerfall ist der
+     * Satz von awm_http_grund() wie bisher. Ins Protokoll kommt vom Ansagetext nur seine
+     * Laenge (Entscheidung Nr. 18/40). */
+    $k = awm_ansage_k();
+    $a = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 10, $k), $k);
+    $ok = $a['code'] >= 200 && $a['code'] < 300;
     $grund = '';
-    $r = awm_http_get($url, 10, $grund);
-    awm_log('Ansage gesendet: "' . $text . '" -> ' . ($r !== false ? 'OK' : 'FEHLER: ' . $grund));
-    return $r !== false;
+    if ($a['code'] > 0 && !$ok) {
+        $grund = awm_http_grund(0, '', $a['code']);
+        if ($grund === '') { $grund = 'HTTP ' . $a['code']; }
+    } elseif ($a['code'] <= 0) {
+        $grund = in_array($a['errno'], array(6, 7, 28), true) ? awm_http_grund($a['errno'], '', 0)
+            : 'Abruf nicht moeglich - es antwortet nichts (Zeitueberschreitung oder kein Weg dorthin)';
+    }
+    awm_log('Ansage gesendet: ' . awm_zeichenzahl($text) . ' Zeichen -> ' . ($ok ? 'OK' : 'FEHLER: ' . $grund));
+    return $ok;
 }
 
 /* ---------------- Ausgabeart Alexa-NG (Ansage-2, ab Werk nicht gewaehlt) ----------------
@@ -3543,15 +3522,13 @@ function awm_alexa_adresse()
 /** Sprechtoken: 8 bis 128 Buchstaben, Ziffern, _ und - (Alexa-NG erzeugt 24 Hexzeichen). */
 function awm_alexa_token_ok($t)
 {
-    return is_string($t) && preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t) === 1;
+    return ansage_token_ok($t);     // Nr. 36 b: dieselbe Form, eine Quelle
 }
 
 /** Leer (= Standardgeraet von Alexa-NG) oder 1 bis 200 Zeichen ohne Steuerzeichen und ohne Rand-Leerraum. */
 function awm_alexa_geraet_ok($g)
 {
-    return is_string($g) && ($g === ''
-        || (preg_match('/^.{1,200}\z/us', $g) === 1 && preg_match('/[\x00-\x1F\x7F]/', $g) !== 1
-            && trim($g) === $g));
+    return ansage_geraet_ok($g);    // Nr. 36 b: dieselbe Form, eine Quelle
 }
 
 /** Lautstaerke fuer die Ansage: -1 (= die des Geraets bleibt) oder 0 bis 100. */
@@ -3576,43 +3553,11 @@ function awm_alexa_rufen(array $felder, $tmo = 15)
  *  Ordner ist anders; GOOGLE_SPRECHEN_SCHNITTSTELLE.md Abschnitt 7). */
 function awm_sprech_rufen($url, array $felder, $tmo)
 {
-    $koerper = http_build_query($felder, '', '&');
-    if (function_exists('curl_init')) {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, array(
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $koerper,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_PROXY => '',
-            CURLOPT_TIMEOUT => $tmo,
-            CURLOPT_CONNECTTIMEOUT => min(3, $tmo),
-            CURLOPT_HTTPHEADER => array('Content-Type: application/x-www-form-urlencoded'),
-        ));
-        $r = curl_exec($ch);
-        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
-        $rumpf = $r === false ? '' : (string) $r;
-        if ($r === false) { $code = 0; }
-    } else {
-        $ctx = stream_context_create(array('http' => array(
-            'method' => 'POST',
-            'header' => "Content-Type: application/x-www-form-urlencoded\r\n",
-            'content' => $koerper,
-            'timeout' => $tmo,
-            'ignore_errors' => true,
-            'follow_location' => 0,
-        )));
-        list($r, $code) = awm_http_abruf($url, $ctx);
-        $rumpf = $r === false ? '' : (string) $r;
-        if ($r === false) { $code = 0; }
-    }
-    $zeilen = preg_split('/\r?\n/', trim($rumpf));
-    $erste = trim((string) $zeilen[0]);
-    if (isset($felder['token']) && is_string($felder['token']) && $felder['token'] !== '') {
-        $erste = str_replace($felder['token'], '***', $erste);
-    }
-    return array((int) $code, substr($erste, 0, 200));
+    /* Nr. 36 b: gerufen ueber die gemeinsame Sprachausgabe (curl, sonst Datenstrom; ohne
+     * Weiterleitung, ohne Proxy). Rueckgabe wie bisher: array(HTTP-Code, erste Zeile ohne
+     * Token, hoechstens 200 Zeichen). */
+    $a = ansage_ng_rufen($url, $felder, $tmo, awm_ansage_k());
+    return array((int) $a['code'], $a['zeile']);
 }
 
 /**
@@ -5669,8 +5614,7 @@ function awm_sicherung_daten(array $voll)
     // Ansage-2: das Alexa-NG-Sprechtoken wird wie ein Kennwort behandelt und
     // geht NICHT mit; das Zurueckspielen behaelt das geltende.
     if (isset($cfg['tts']) && is_array($cfg['tts'])) {
-        unset($cfg['tts']['alexa_token']);
-        unset($cfg['tts']['google_token']);         // Ansage-3: ebenso
+        $cfg['tts'] = ansage_sicherung_bereinigen($cfg['tts']);    // Ansage-2/3, Nr. 36 b: eine Quelle
     }
     $kopf = array(
         '_hinweis' => 'Sicherung des LoxBerry-Plugins Abfuhrkalender (AWM & iCal). '
