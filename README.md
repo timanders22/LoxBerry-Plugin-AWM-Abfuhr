@@ -23,6 +23,15 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.22
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen.
+* Die Statuskacheln je Kalender über den Reitern (morgen fällig, Tage bis zur nächsten Leerung,
+  Kalender bis, Alter, Abruf) bleiben, wie sie sind.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.4.21
 
 Sprachausgabe in Hausform über die gemeinsame Sprachausgabe 1.1.1 (Entscheidung 40, Stufe 2).

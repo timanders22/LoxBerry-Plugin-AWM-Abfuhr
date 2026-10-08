@@ -1121,6 +1121,7 @@ if ($aw_frame) {
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $aw_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= awm_t('EINST.WAS_IST_DAS') ?></div>
 
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
