@@ -23,6 +23,35 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.21
+
+Sprachausgabe in Hausform über die gemeinsame Sprachausgabe 1.1.1 (Entscheidung 40, Stufe 2).
+Gemessen unter PHP 7.4 und 8.5 gegen Attrappen (Music Server, Alexa-NG, Chromecast); nicht am Gerät, nicht an
+einem echten Lautsprecher.
+
+* **Einstellungen, Abschnitt „Sprachausgabe“:** das Formular der gemeinsamen Sprachausgabe (wie Intercom und
+  Raumklima). Neu in der Auswahl ist „aus“. Ab Werk bleibt es beim Loxone Music Server ohne Adresse; gespeicherte
+  Einstellungen bleiben, wie sie sind. Die Zonen eines Kalenders haben wie bisher Vorrang.
+* Adresse des Music Servers und Adressvorlage müssen im Heimnetz liegen. Eine andere Adresse wird beim Speichern
+  und beim Zurückspielen abgewiesen und vor jedem Senden erneut geprüft (sie trüge den Ansagetext hinaus).
+* Strenger als bisher: Sprache genau zwei Buchstaben, Lautstärke für Alexa-NG und Google 1 bis 100 (0 war stumm
+  und galt trotzdem als gesendet), Zonen nur Zahlen, je wahlweise mit `~Lautstärke` 1 bis 100. Ein gespeicherter
+  Wert, der das verletzt, wird beim nächsten Speichern beanstandet (dann wird nichts gespeichert); „Einstellungen
+  sichern“ nennt ihn vorher. Eine Sicherungsdatei mit einem Sprechtoken wird jetzt abgewiesen (bisher wurde ein
+  Alexa-NG-Token darin angenommen und ersetzt).
+* **Testansage als Knopf im Reiter Test** (ein fester Satz mit den gespeicherten Einstellungen, für jede
+  Ausgabeart; Neuladen spricht nicht erneut). Der bisherige Verweis auf `?say=1` mit dem Token entfällt dort;
+  `?say=1` selbst bleibt für Loxone, mit unveränderter Antwort.
+* Reiter Test: eine Zeile zur Sprachausgabe (Alexa-NG und Google wie bisher, dazu Music Server und Vorlagen mit
+  eingetragener Adresse), mit der letzten Ansage. Alexa-NG antwortet jetzt binnen 10 s statt 15 s, sonst entfällt
+  die Ansage.
+* Protokoll: eine Zeile je Ansage, „Ansage: art=… stand=… zeichen=… http=…“ – nie Text oder Token.
+* Einbindung in Loxone: Die Baustein-Liste steht in der Form, aus der das Leitungswerkzeug die Leitungen ableitet
+  („I1 = #1, I2 = #2“, beim Status „V1 = …“, „ODER → Benachrichtigungs-Baustein“ für #14); die Eingänge der
+  Importdatei stehen dafür als Zeilen ab #15 in der Liste.
+
+**In Loxone:** nichts zu tun.
+
 ## Neu in 1.4.20
 
 Gemeinsame Sprachausgabe, Ansagetext nicht mehr im Protokoll (Entscheidung 40, Stufe 1).

@@ -719,145 +719,24 @@ if ($aw_post && isset($_POST['save'])) {
         'bis' => $aw_rb,
         'bis_datum' => $aw_bd_ymd,
     );
-    $aw_mode = (string) (isset($_POST['tts_mode']) ? $_POST['tts_mode'] : 'musicserver');
-    $aw_port = isset($_POST['tts_port']) ? $_POST['tts_port'] : 7091;
-    if (awm_ist_zahl($aw_port, 1, 65535)) { $aw_port = (int) $aw_port; }
-    else {
-        $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_PORT'), 1, 65535, $aw_port);
-        $aw_bean[] = 'tts_port';
-        $aw_port = (int) $aw_new['tts']['port'];
-    }
-    $aw_vol = isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 8;
-    if (awm_ist_zahl($aw_vol, 1, 100)) { $aw_vol = (int) $aw_vol; }
-    else {
-        $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_LAUT'), 1, 100, $aw_vol);
-        $aw_bean[] = 'tts_volume';
-        $aw_vol = (int) $aw_new['tts']['volume'];
-    }
-    /* U4/U5: Ansageart, Adresse, Zonen und Sprache mit denselben Pruefern wie
-     * beim Zurueckspielen; Unzulaessiges wird gemeldet, der alte Wert bleibt.
-     * Bis 1.4.14: "DE1" still zu "de", "192.0.2.4/x?y" ungeprueft als
-     * Adresse, "Kueche" als Zone - die eigene Sicherung wurde danach
-     * abgewiesen. */
-    if (!in_array($aw_mode, array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox'), true)) {
-        $aw_fehler[] = sprintf(awm_t('MELD.MODUS'), $aw_mode);
-        $aw_bean[] = 'tts_mode';
-        $aw_mode = (string) $aw_new['tts']['mode'];
-    }
-    $aw_ip = trim((string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : ''));
-    if (!awm_ist_host($aw_ip)) {
-        $aw_fehler[] = sprintf(awm_t('MELD.HOST'), $aw_ip);
-        $aw_bean[] = 'tts_ip';
-        $aw_ip = (string) $aw_new['tts']['ip'];
-    }
-    $aw_zo = (string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '');
-    if (!awm_ist_zonen($aw_zo)) {
-        $aw_fehler[] = sprintf(awm_t('MELD.ZONEN'), $aw_zo);
-        $aw_bean[] = 'tts_zones';
-        $aw_zo = (string) $aw_new['tts']['zones'];
-    }
-    $aw_la2 = (string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : '');
-    if (!awm_ist_sprache($aw_la2)) {
-        $aw_fehler[] = sprintf(awm_t('MELD.SPRACHE'), $aw_la2);
-        $aw_bean[] = 'tts_lang';
-        $aw_la2 = (string) $aw_new['tts']['lang'];
-    }
-    /* Ansage-2: Alexa-NG. Abgewiesen wird benannt, nicht zurechtgebogen; ein
-     * Feld, das keine Zeichenkette ist (name[]), ist eine Beanstandung. Das
-     * Sprechtoken reist nie ins Formular zurueck: leer lassen behaelt es, der
-     * Haken loescht es. */
+    /* Nr. 36 b, Stufe 2: die Sprachausgabe liest das Modul (ansage_formular_lesen()):
+     * Ausgabeart aus awm_ansage_modi(), Adresse und Vorlage im Heimnetz, Zonen,
+     * Lautstaerke 1-100, Sprache zwei Buchstaben, Sprechtoken (leer = behalten, Haken =
+     * loeschen, beides zugleich ist ein Widerspruch). Die POST-Namen bleiben die bisherigen
+     * (awm_ansage_namen()). Jede Beanstandung kommt in die Liste dieses Formulars, das Feld
+     * wird markiert, die Eingabe reist zurueck (X-2), gespeichert wird nichts (Nr. 16). */
+    $aw_tmangel = array();
+    $aw_tbean = array();
+    $aw_new['tts'] = ansage_formular_lesen($_POST, $aw_new['tts'], $aw_tmangel, $aw_tbean,
+        array('modi' => awm_ansage_modi(), 'namen' => awm_ansage_namen()), awm_ansage_k());
+    foreach ($aw_tmangel as $aw_tm) { $aw_fehler[] = $aw_tm['text']; }
+    foreach ($aw_tbean as $aw_tb) { $aw_bean[] = $aw_tb; }
+    /* Ein Feld, das keine Zeichenkette ist (name[]), ist eine Beanstandung; Rand-Leerraum
+     * faellt still weg (fuer die Ansagetexte unten). */
     $aw_al_roh = function ($feld) {
         if (!isset($_POST[$feld])) { return ''; }
         return is_string($_POST[$feld]) ? trim($_POST[$feld]) : false;
     };
-    $aw_ag = $aw_al_roh('alexa_geraet');
-    if ($aw_ag === false || !awm_alexa_geraet_ok($aw_ag)) {
-        $aw_fehler[] = awm_t('MELD.ALEXA_GERAET');
-        $aw_bean[] = 'alexa_geraet';
-        $aw_ag = (string) $aw_new['tts']['alexa_geraet'];
-    }
-    $aw_al = $aw_al_roh('alexa_laut');
-    if ($aw_al === '') {
-        $aw_al = -1;
-    } elseif ($aw_al !== false && awm_ist_zahl($aw_al, 0, 100)) {
-        $aw_al = (int) $aw_al;
-    } else {
-        $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_ALEXA_LAUT'), 0, 100,
-                               $aw_al === false ? '' : $aw_al);
-        $aw_bean[] = 'alexa_laut';
-        $aw_al = (int) $aw_new['tts']['alexa_laut'];
-    }
-    $aw_at = (string) $aw_new['tts']['alexa_token'];
-    if (isset($_POST['alexa_token_loeschen'])) {
-        $aw_at = '';
-    } else {
-        $aw_atw = $aw_al_roh('alexa_token');
-        if ($aw_atw === false || ($aw_atw !== '' && !awm_alexa_token_ok($aw_atw))) {
-            $aw_fehler[] = awm_t('MELD.ALEXA_TOKEN');
-            $aw_bean[] = 'alexa_token';
-        } elseif ($aw_atw !== '') {
-            $aw_at = $aw_atw;
-        }
-    }
-    /* AWM-a2n (Nr. 19): bis 1.4.17 nur ein Hinweis, und gespeichert wurde
-     * trotzdem - die Ansage entfiel danach still. Jetzt eine Beanstandung wie
-     * im Abfahrts-Assistenten 1.6.19 und in Octopus 1.1.18. */
-    if ($aw_mode === 'alexang' && !awm_alexa_token_ok($aw_at) && !in_array('alexa_token', $aw_bean, true)) {
-        $aw_fehler[] = awm_t('MELD.ALEXA_OHNE_TOKEN');
-        $aw_bean[] = 'alexa_token';
-    }
-    /* Ansage-3: Google-Lautsprecher (Chromecast 4 Lox NG) - dieselbe Bauform wie
-     * Alexa-NG darueber, mit eigenem Sprechtoken: benannt abweisen, nichts
-     * zurechtbiegen; das Token reist nie ins Formular zurueck, leer lassen behaelt
-     * es, der Haken loescht es; ohne Token ist die Ausgabe eine Beanstandung. */
-    $aw_gg = $aw_al_roh('google_geraet');
-    if ($aw_gg === false || !awm_alexa_geraet_ok($aw_gg)) {
-        $aw_fehler[] = awm_t('MELD.GOOGLE_GERAET');
-        $aw_bean[] = 'google_geraet';
-        $aw_gg = (string) $aw_new['tts']['google_geraet'];
-    }
-    $aw_gl = $aw_al_roh('google_laut');
-    if ($aw_gl === '') {
-        $aw_gl = -1;
-    } elseif ($aw_gl !== false && awm_ist_zahl($aw_gl, 0, 100)) {
-        $aw_gl = (int) $aw_gl;
-    } else {
-        $aw_fehler[] = sprintf(awm_t('MELD.ZAHL_BEREICH'), awm_t('EINST.L_GOOGLE_LAUT'), 0, 100,
-                               $aw_gl === false ? '' : $aw_gl);
-        $aw_bean[] = 'google_laut';
-        $aw_gl = (int) $aw_new['tts']['google_laut'];
-    }
-    $aw_gt = (string) $aw_new['tts']['google_token'];
-    if (isset($_POST['google_token_loeschen'])) {
-        $aw_gt = '';
-    } else {
-        $aw_gtw = $aw_al_roh('google_token');
-        if ($aw_gtw === false || ($aw_gtw !== '' && !awm_alexa_token_ok($aw_gtw))) {
-            $aw_fehler[] = awm_t('MELD.GOOGLE_TOKEN');
-            $aw_bean[] = 'google_token';
-        } elseif ($aw_gtw !== '') {
-            $aw_gt = $aw_gtw;
-        }
-    }
-    if ($aw_mode === 'cc4lox' && !awm_alexa_token_ok($aw_gt) && !in_array('google_token', $aw_bean, true)) {
-        $aw_fehler[] = awm_t('MELD.GOOGLE_OHNE_TOKEN');
-        $aw_bean[] = 'google_token';
-    }
-    $aw_new['tts'] = array(
-        'mode' => $aw_mode,
-        'ip' => $aw_ip,
-        'port' => $aw_port,
-        'zones' => $aw_zo,
-        'volume' => $aw_vol,
-        'lang' => $aw_la2,
-        'template' => trim((string) (isset($_POST['tts_template']) ? $_POST['tts_template'] : '')),
-        'alexa_geraet' => $aw_ag,
-        'alexa_token' => $aw_at,
-        'alexa_laut' => $aw_al,
-        'google_geraet' => $aw_gg,
-        'google_token' => $aw_gt,
-        'google_laut' => $aw_gl,
-    );
     /* AWM-n19b (Nr. 19): Anfuehrungs- und Steuerzeichen in den Ansagetexten
      * wurden bis 1.4.17 still entfernt. Jetzt eine Beanstandung (dieselbe
      * Pruefung wie beim Zurueckspielen); der Rand-Leerraum faellt still weg. */
@@ -940,15 +819,11 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
                 $awm_neu['aktionstoken'] = $awm_vorher['aktionstoken'];
                 $awm_tok_behalten = true;
             }
-            /* Ansage-2: das Alexa-NG-Sprechtoken steht nicht in der Sicherung und
-             * BLEIBT - auch wenn eine fremde Datei eines mitbringt. */
+            /* Nr. 36 b: die Sprechtoken stehen nicht in der Sicherung (eine Datei MIT einem
+             * hat awm_wert_pruefen() schon abgewiesen) - die geltenden BLEIBEN. */
             if (!isset($awm_neu['tts']) || !is_array($awm_neu['tts'])) { $awm_neu['tts'] = array(); }
-            $awm_neu['tts']['alexa_token'] = isset($awm_vorher['tts']['alexa_token'])
-                ? (string) $awm_vorher['tts']['alexa_token'] : '';
-            /* Ansage-3: ebenso das Google-Sprechtoken (eine Datei MIT einem hat
-             * awm_wert_pruefen() schon abgewiesen). */
-            $awm_neu['tts']['google_token'] = isset($awm_vorher['tts']['google_token'])
-                ? (string) $awm_vorher['tts']['google_token'] : '';
+            $awm_neu['tts'] = ansage_sicherung_tokens_behalten($awm_neu['tts'],
+                isset($awm_vorher['tts']) ? $awm_vorher['tts'] : array());
             if (!awm_config_speichern($awm_neu)) {
                 $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
             } else {
@@ -975,18 +850,24 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
 
 if ($aw_sperre) { awm_sperre_frei($aw_sperre); }     // C9: nach den Handlern
 
-/* ---------- Testansage Google-Lautsprecher (Ansage-3) ----------
- * Ein fester Satz ueber Chromecast 4 Lox NG mit den GESPEICHERTEN Einstellungen.
- * Bewusst NACH der Freigabe der Sperre: der Aufruf liest die Konfiguration nur und
- * kann bis 10 s dauern - unter der Sperre wartete der Minutenlauf so lange. Die
- * Antwortzeile (HTTP-Code und Antwort, nie Token oder Text) kommt als Einmalmeldung;
- * die Umleitung (U1) unten sorgt dafuer, dass Neuladen nichts noch einmal ausloest. */
-if ($aw_post && isset($_POST['google_test'])) {
-    list($aw_gok, $aw_gmeld) = awm_google_testansage();
-    if ($aw_gok) {
-        $aw_hinweise[] = sprintf(awm_t('MELD.GOOGLE_TEST_OK'), $aw_gmeld);
+/* ---------- Testansage (Nr. 36 b, Stufe 2) ----------
+ * Ein fester Satz (ansage_testansage(), aus der Sprachdatei) mit den GESPEICHERTEN
+ * Einstellungen, fuer jede Ausgabeart. Bis 1.4.20 war die Testansage ein Verweis auf
+ * ?say=1 mit dem Aktionstoken (F5 im neuen Fenster sprach erneut, Entwurf B6) und ein
+ * eigener Knopf nur fuer Google. Bewusst NACH der Freigabe der Sperre: der Aufruf liest
+ * die Konfiguration nur und kann bis 10 s dauern. Ergebnis als Einmalmeldung, nie Token
+ * oder Text; die Umleitung (U1) unten sorgt dafuer, dass Neuladen nichts ausloest. */
+if ($aw_post && isset($_POST['ansage_test'])) {
+    $aw_tcfg = awm_config();
+    $aw_tk = awm_ansage_k();
+    $aw_tr = ansage_testansage($aw_tcfg['tts'], $aw_tk);
+    awm_log('Testansage: ' . ansage_kurz($aw_tr));
+    if ($aw_tr['stand'] === 1) {
+        $aw_hinweise[] = awm_t('TTS.M_TEST_OK');
+    } elseif ($aw_tr['kennung'] === 'AUS') {
+        $aw_fehler[] = awm_t('TTS.M_TEST_AUS');
     } else {
-        $aw_fehler[] = sprintf(awm_t('MELD.GOOGLE_TEST_FEHL'), $aw_gmeld);
+        $aw_fehler[] = sprintf(awm_t('TTS.M_TEST_FEHL'), ansage_kennung_text($aw_tr['kennung'], $aw_tk));
     }
     $aw_tab = 'tab-test';
 }
@@ -1365,91 +1246,17 @@ if ($aw_frame) {
 </div>
 
 <h2><?= aw_t('EINST.H_SPRACHE') ?></h2>
-<div class="sm-row">
-    <div class="sm-feld">
-        <label><?= aw_t('EINST.L_MODUS') ?></label>
-        <?php $aw_tm = aw_ew('save', 'tts_mode', $aw_tts['mode']); /* X-2 */ ?>
-        <select data-role="none" name="tts_mode" id="tts_mode" onchange="awTtsMode()"<?= aw_em('save', 'tts_mode') ?>>
-            <option value="musicserver"<?= $aw_tm === 'musicserver' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_MS') ?></option>
-            <option value="ms4h"<?= $aw_tm === 'ms4h' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_MS4H') ?></option>
-            <option value="audioserver"<?= $aw_tm === 'audioserver' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_AS') ?></option>
-            <option value="custom"<?= $aw_tm === 'custom' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_EIGEN') ?></option>
-            <option value="alexang"<?= $aw_tm === 'alexang' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_ALEXA') ?></option>
-            <option value="cc4lox"<?= $aw_tm === 'cc4lox' ? ' selected' : '' ?>><?= aw_t('EINST.MODE_GOOGLE') ?></option>
-        </select>
-    </div>
-    <div class="sm-feld"><label><?= aw_t('EINST.L_IP') ?></label>
-        <input data-role="none" type="text" name="tts_ip" value="<?= aw_e(aw_ew('save', 'tts_ip', $aw_tts['ip'])) ?>"<?= aw_em('save', 'tts_ip') ?> placeholder="192.168.1.50"></div>
-    <div class="sm-feld"><label><?= aw_t('EINST.L_PORT') ?></label>
-        <input data-role="none" type="<?= aw_et('save', 'tts_port') ?>" name="tts_port" value="<?= aw_e(aw_ew('save', 'tts_port', (int) $aw_tts['port'])) ?>"<?= aw_em('save', 'tts_port') ?> min="1" max="65535"></div>
-</div>
-<div class="sm-row">
-    <div class="sm-feld">
-        <label><?= aw_t('EINST.L_ZONEN') ?></label>
-        <input data-role="none" type="text" name="tts_zones" value="<?= aw_e(aw_ew('save', 'tts_zones', $aw_tts['zones'])) ?>"<?= aw_em('save', 'tts_zones') ?> placeholder="2,4,6">
-        <div class="sm-hilfe"><?= awm_t('EINST.H_ZONEN') ?></div>
-    </div>
-    <div class="sm-feld"><label><?= aw_t('EINST.L_LAUT') ?></label>
-        <input data-role="none" type="<?= aw_et('save', 'tts_volume') ?>" name="tts_volume" value="<?= aw_e(aw_ew('save', 'tts_volume', (int) $aw_tts['volume'])) ?>"<?= aw_em('save', 'tts_volume') ?> min="1" max="100"></div>
-    <div class="sm-feld"><label><?= aw_t('EINST.L_SPRACHE') ?></label>
-        <input data-role="none" type="text" name="tts_lang" value="<?= aw_e(aw_ew('save', 'tts_lang', $aw_tts['lang'])) ?>"<?= aw_em('save', 'tts_lang') ?> maxlength="2"></div>
-</div>
-<div class="sm-feld" id="tts_template_row">
-    <label><?= aw_t('EINST.L_VORLAGE') ?></label>
-    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= aw_e(aw_ew('save', 'tts_template', $aw_tts['template'])) ?></textarea>
-    <div class="sm-hilfe"><?= awm_t('EINST.H_VORLAGE') ?></div>
-</div>
-<div id="tts_audioserver_hint" class="sm-warnung" style="display:none;"><?= awm_t('EINST.H_AUDIOSERVER') ?></div>
-<div id="tts_alexa_rows">
-<div class="sm-hilfe"><?= awm_t('EINST.H_ALEXA') ?></div>
-<div class="sm-row">
-    <div class="sm-feld">
-        <label for="alexa_geraet"><?= aw_t('EINST.L_ALEXA_GERAET') ?></label>
-        <input data-role="none" type="text" id="alexa_geraet" name="alexa_geraet" value="<?= aw_e(aw_ew('save', 'alexa_geraet', $aw_tts['alexa_geraet'])) ?>"<?= aw_em('save', 'alexa_geraet') ?> placeholder="kueche">
-        <div class="sm-hilfe"><?= awm_t('EINST.H_ALEXA_GERAET') ?></div>
-    </div>
-    <div class="sm-feld">
-        <label for="alexa_laut"><?= aw_t('EINST.L_ALEXA_LAUT') ?></label>
-        <input data-role="none" type="<?= aw_et('save', 'alexa_laut') ?>" id="alexa_laut" name="alexa_laut" value="<?= aw_e(aw_ew('save', 'alexa_laut', (int) $aw_tts['alexa_laut'] >= 0 ? (int) $aw_tts['alexa_laut'] : '')) ?>"<?= aw_em('save', 'alexa_laut') ?> min="0" max="100">
-        <div class="sm-hilfe"><?= aw_t('EINST.H_ALEXA_LAUT') ?></div>
-    </div>
-</div>
-<div class="sm-feld">
-    <label for="alexa_token"><?= aw_t('EINST.L_ALEXA_TOKEN') ?></label>
-<?php /* Das Sprechtoken reist NIE ins Formular zurueck (wie ein Kennwort):
-   angezeigt wird nur, ob eins gespeichert ist und wie lang es ist. */ ?>
-    <input data-role="none" type="password" id="alexa_token" name="alexa_token" value="" autocomplete="new-password" placeholder="<?= (string) $aw_tts['alexa_token'] !== '' ? aw_e(sprintf(awm_t('EINST.P_ALEXA_TOKEN_GESETZT'), strlen((string) $aw_tts['alexa_token']))) : aw_t('EINST.P_ALEXA_TOKEN_LEER') ?>"<?= aw_em('save', 'alexa_token') ?>>
-    <div class="sm-hilfe"><?= awm_t('EINST.H_ALEXA_TOKEN') ?></div>
-    <label style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;">
-        <input data-role="none" type="checkbox" name="alexa_token_loeschen" value="1"<?= aw_eh('save', 'alexa_token_loeschen', false) ? ' checked' : '' ?>> <?= aw_t('EINST.L_ALEXA_TOKEN_LOESCHEN') ?>
-    </label>
-</div>
-</div>
-<div id="tts_google_rows">
-<?php /* Ansage-3: Google-Lautsprecher (Chromecast 4 Lox NG), Bauform wie Alexa-NG darueber. */ ?>
-<div class="sm-hilfe"><?= awm_t('EINST.H_GOOGLE') ?></div>
-<div class="sm-row">
-    <div class="sm-feld">
-        <label for="google_geraet"><?= aw_t('EINST.L_GOOGLE_GERAET') ?></label>
-        <input data-role="none" type="text" id="google_geraet" name="google_geraet" value="<?= aw_e(aw_ew('save', 'google_geraet', $aw_tts['google_geraet'])) ?>"<?= aw_em('save', 'google_geraet') ?> placeholder="Wohnzimmer">
-        <div class="sm-hilfe"><?= awm_t('EINST.H_GOOGLE_GERAET') ?></div>
-    </div>
-    <div class="sm-feld">
-        <label for="google_laut"><?= aw_t('EINST.L_GOOGLE_LAUT') ?></label>
-        <input data-role="none" type="<?= aw_et('save', 'google_laut') ?>" id="google_laut" name="google_laut" value="<?= aw_e(aw_ew('save', 'google_laut', (int) $aw_tts['google_laut'] >= 0 ? (int) $aw_tts['google_laut'] : '')) ?>"<?= aw_em('save', 'google_laut') ?> min="0" max="100">
-        <div class="sm-hilfe"><?= aw_t('EINST.H_GOOGLE_LAUT') ?></div>
-    </div>
-</div>
-<div class="sm-feld">
-    <label for="google_token"><?= aw_t('EINST.L_GOOGLE_TOKEN') ?></label>
-<?php /* Wie beim Alexa-NG-Token: nie zurueck ins Formular, nur ob eins gespeichert ist und wie lang. */ ?>
-    <input data-role="none" type="password" id="google_token" name="google_token" value="" autocomplete="new-password" placeholder="<?= (string) $aw_tts['google_token'] !== '' ? aw_e(sprintf(awm_t('EINST.P_GOOGLE_TOKEN_GESETZT'), strlen((string) $aw_tts['google_token']))) : aw_t('EINST.P_GOOGLE_TOKEN_LEER') ?>"<?= aw_em('save', 'google_token') ?>>
-    <div class="sm-hilfe"><?= awm_t('EINST.H_GOOGLE_TOKEN') ?></div>
-    <label style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;">
-        <input data-role="none" type="checkbox" name="google_token_loeschen" value="1"<?= aw_eh('save', 'google_token_loeschen', false) ? ' checked' : '' ?>> <?= aw_t('EINST.L_GOOGLE_TOKEN_LOESCHEN') ?>
-    </label>
-</div>
-</div>
+<?php /* Nr. 36 b, Stufe 2: der Formularblock der gemeinsamen Sprachausgabe
+   (ansage_formular_html(), Klassen sm-feld/sm-hilfe/sm-hinweis aus der Vorlage). X-2
+   ueber die Helfer der Linie; die POST-Namen bleiben (awm_ansage_namen()). Die
+   Sprechtoken reisen nie in die Seite (Kennwortfeld, der Platzhalter nennt nur die
+   Laenge). */
+echo ansage_formular_html($aw_tts, array(
+    'w' => function ($n, $g) { return aw_ew('save', $n, $g); },
+    'm' => function ($n) { return aw_em('save', $n); },
+    'c' => function ($n, $g) { return aw_eh('save', $n, $g); },
+    'modi' => awm_ansage_modi(), 'namen' => awm_ansage_namen()), awm_ansage_k()); ?>
+<div class="sm-hilfe"><?= aw_e(awm_t('TTS.H_TESTANSAGE')) ?></div>
 
 <div class="sm-row">
     <div class="sm-feld">
@@ -1789,20 +1596,36 @@ if ($aw_altw) {
          sie fest deutsch in der Seite, auch in der englischen. */ ?>
 <tr><td>1</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N01') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">ANN</span></td></tr>
 <tr><td>2</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N02') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">PUSH</span></td></tr>
-<tr><td>3</td><td><?= aw_t('LOX.B_UND') ?></td><td><?= aw_t('LOX.N03') ?></td><td>&ndash;</td><td>#1, #2</td></tr>
+<tr><td>3</td><td><?= aw_t('LOX.B_UND') ?></td><td><?= aw_t('LOX.N03') ?></td><td>&ndash;</td><td>I1 = #1, I2 = #2</td></tr>
 <tr><td>4</td><td><?= aw_t('LOX.B_ODER') ?></td><td><?= aw_t('LOX.N04') ?></td><td><?= aw_t('LOX.P_SAMMLER') ?></td><td>#3</td></tr>
 <tr><td>5</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td><?= aw_t('LOX.N05') ?></td><td><?= aw_t('LOX.P_TEXT') ?></td><td>#4</td></tr>
 <tr><td>6</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N06') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">PTEST</span></td></tr>
 <tr><td>7</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td><?= aw_t('LOX.N07') ?></td><td><?= aw_t('LOX.P_EIGEN') ?></td><td>#6</td></tr>
 <tr><td>8</td><td><?= aw_t('LOX.B_TASTER') ?></td><td><?= aw_t('LOX.N08') ?></td><td><?= aw_t('LOX.P_VISU') ?></td><td>&ndash;</td></tr>
 <tr><td>9</td><td><?= aw_t('LOX.B_VAUS') ?></td><td><?= aw_t('LOX.N09') ?></td><td><span class="sm-mono">?ack=1</span></td><td>#8</td></tr>
-<tr><td>10</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N10') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">HREST</span> &hellip;</td></tr>
+<tr><td>10</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N10') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?>; <?= aw_t('LOXLISTE.P_JE_TONNE') ?></td><td><span class="sm-mono">HREST</span></td></tr>
 <tr><td>11</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N11') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">WARN</span></td></tr>
 <tr><td>12</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N12') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?>, <?= aw_t('LOX.P_INVERS') ?></td><td><span class="sm-mono">FETCH</span></td></tr>
-<tr><td>13</td><td><?= aw_t('LOX.B_STATUS') ?></td><td><?= aw_t('LOX.N13') ?></td><td><span class="sm-mono">&lt;v.1&gt; <?= aw_t('LOX.P_TAGE') ?></span></td><td><span class="sm-mono">TNEXT</span></td></tr>
-<tr><td>14</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td><?= aw_t('LOX.N14') ?></td><td><?= aw_t('LOX.P_EIGEN') ?></td><td>#11, #12 <?= aw_t('LOX.P_UEBER_ODER') ?></td></tr>
+<tr><td>13</td><td><?= aw_t('LOX.B_STATUS') ?></td><td><?= aw_t('LOX.N13') ?></td><td><span class="sm-mono">&lt;v.1&gt; <?= aw_t('LOX.P_TAGE') ?></span></td><td>V1 = <span class="sm-mono">TNEXT</span></td></tr>
+<tr><td>14</td><td><?= aw_t('LOXLISTE.B_ODER_BENACHR') ?></td><td><?= aw_t('LOX.N14') ?></td><td><?= aw_t('LOX.P_EIGEN') ?></td><td>I1 = #11, I2 = #12</td></tr>
+<?php /* X-10 (08.10.2026): die Eingaenge der Importdatei (Schritt 3, Kalender 1) als eigene Zeilen - so ordnet
+   Werkzeuge/leitungen_setzen.py die Namen der letzten Spalte (ANN, PUSH, ...) einem Baustein zu. Titel und
+   Befehlsnamen aus derselben Quelle wie die Importdatei (awm_vorlage(1), awm_felder(1)); HREST nur, wenn die
+   Tonne erkannt ist. */
+$aw_vx = awm_vorlage(1);
+$aw_vt = preg_match('/<VirtualInHttp [^>]*Title="([^"]*)"/', (string) $aw_vx[1], $aw_vm)
+    ? html_entity_decode($aw_vm[1], ENT_QUOTES, 'UTF-8') : '';
+$aw_vf = awm_felder(1);
+$aw_bz = 15; ?>
+<tr><td>15</td><td><?= aw_t('LOXLISTE.B_VI') ?></td><td><span class="sm-mono"><?= aw_e($aw_vt) ?></span></td><td><?= aw_t('LOXLISTE.P_VI') ?></td><td>&ndash;</td></tr>
+<?php foreach (array('ANN', 'PUSH', 'PTEST', 'HREST', 'WARN', 'FETCH', 'TNEXT') as $aw_bn) {
+    if (!isset($aw_vf[$aw_bn])) { continue; }
+    $aw_bz++; ?>
+<tr><td><?= $aw_bz ?></td><td><?= aw_t('LOXLISTE.B_VIB') ?></td><td><span class="sm-mono">MUELL_<?= aw_e($aw_bn) ?></span></td><td><?= aw_t('LOXLISTE.P_VIB') ?></td><td><?= aw_t('LOXLISTE.V_UNTER') ?></td></tr>
+<?php } ?>
 </table>
 <div class="sm-hilfe"><b><?= aw_t('LOX.ZU4') ?></b> <?= aw_t('LOX.ZU4_TEXT') ?></div>
+<div class="sm-hilfe"><?= aw_t('LOXLISTE.H_ZEILEN') ?></div>
 <div class="sm-hilfe"><b><?= aw_t('LOX.ZU9') ?></b> <?= aw_t('LOX.ZU9_TEXT') ?></div>
 <div class="sm-hilfe"><b><?= aw_t('LOX.ZU12') ?></b> <?= awm_t('LOX.ZU12_TEXT') ?></div>
 <div class="sm-hilfe"><b><?= aw_t('LOX.ZU13') ?></b> <?= awm_t('LOX.ZU13_TEXT') ?></div>
@@ -1862,10 +1685,8 @@ $aw_pflicht = array(awm_pruef_reiter($aw_quelle, $aw_reiter), awm_pruef_formular
 $aw_pflicht[] = $aw_tab === 'tab-test' ? awm_pruef_endpunkt($aw_cfg['aktionstoken'])
     : array('hinweis', awm_t('TEST.P_ENDPUNKT_ZU'));
 $aw_pflicht[] = awm_pruef_konfiguration($aw_cfg_lage);
-$aw_alz = awm_pruef_alexang($aw_cfg, $aw_tab === 'tab-test');     // Ansage-2
-if ($aw_alz !== null) { $aw_pflicht[] = $aw_alz; }
-$aw_glz = awm_pruef_google($aw_cfg, $aw_tab === 'tab-test');     // Ansage-3
-if ($aw_glz !== null) { $aw_pflicht[] = $aw_glz; }
+$aw_az = awm_pruef_ansage($aw_cfg, $aw_tab === 'tab-test');     // Nr. 36 b, Stufe 2: alle Ausgabearten
+if ($aw_az !== null) { $aw_pflicht[] = $aw_az; }
 $aw_pflicht[] = awm_pruef_vorlagen(count($aw_cals));
 $aw_pflicht = array_merge($aw_pflicht, awm_pruef_cron());
 $aw_ph = 0;
@@ -1951,24 +1772,24 @@ else { foreach ($aw_dg['luecken'] as $aw_l) {
 <h3><?= aw_t('TEST.H_AKTION') ?></h3>
 <p class="sm-hilfe"><?= aw_t('TEST.H_AKTION_TEXT') ?></p>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?say=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.SAY') ?></a>
 <a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?ptest=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.PTEST') ?></a>
 <a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?ack=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.ACK') ?></a>
 <a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?refresh=1&amp;debug=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.REFRESH') ?></a>
 <a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?renew=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.RENEW') ?></a>
 </div>
-<?php if ($aw_tts['mode'] === 'cc4lox' || (string) $aw_tts['google_token'] !== '') { /* Ansage-3 */ ?>
-<h3><?= aw_t('TEST.H_GOOGLE') ?></h3>
-<p class="sm-hilfe"><?= awm_t('TEST.H_GOOGLE_TEXT') ?></p>
+<?php /* Nr. 36 b, Stufe 2: Testansage per POST mit Formularmerkmal (ein fester Satz mit den
+   gespeicherten Einstellungen, jede Ausgabeart); das Ergebnis steht danach oben als Meldung.
+   Bis 1.4.20 ein Verweis auf ?say=1 mit dem Token (F5 sprach erneut) und ein Knopf nur fuer Google. */ ?>
+<h3><?= aw_t('TTS.H_TEST') ?></h3>
+<p class="sm-hilfe"><?= aw_t('TTS.H_TEST_TEXT') ?></p>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="google_test" value="1">
+    <input data-role="none" type="hidden" name="ansage_test" value="1">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= aw_t('KNOPF.GOOGLE_TEST') ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= aw_t('KNOPF.SAY') ?></button>
 </form>
 </div>
-<?php } ?>
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
@@ -2002,19 +1823,6 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 
 </div>
 <script>
-function awTtsMode() {
-    var m = document.getElementById('tts_mode');
-    if (!m) { return; }
-    var v = m.value;
-    document.getElementById('tts_audioserver_hint').style.display = (v === 'audioserver') ? 'block' : 'none';
-    document.getElementById('tts_template_row').style.display = (v === 'ms4h' || v === 'custom') ? 'block' : 'none';
-    var al = document.getElementById('tts_alexa_rows');
-    if (al) { al.style.display = (v === 'alexang') ? 'block' : 'none'; }
-    var gl = document.getElementById('tts_google_rows');
-    if (gl) { gl.style.display = (v === 'cc4lox') ? 'block' : 'none'; }
-    var port = document.getElementsByName('tts_port')[0];
-    if (v === 'musicserver' && port && (!port.value || port.value === '80')) { port.value = 7091; }
-}
 (function () {
     var tabs = document.querySelectorAll('.sm-tab');
     function activate(id) {
@@ -2034,7 +1842,6 @@ function awTtsMode() {
             }
         });
     });
-    awTtsMode();
 })();
 </script>
 <?php

@@ -76,10 +76,12 @@ define('AWM_HINWEIS_STANDARD', 'achtung, verschiebung, verschoben, feiertag, ers
 // Tonnenzuordnung und Wiederholungsregeln (ab 1.1.0). Liegt in einer eigenen
 // Datei, damit die Aenderung gegenueber 1.0.2 an einer Stelle nachlesbar ist.
 require_once __DIR__ . '/awm_regeln.php';
-/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b,
- * Stufe 1). Liegt neben dieser Datei. Bindet diese Bibliothek spaeter ferien_lib.php des
- * Plugins Ferien und Feiertage ein und traegt jenes eine eigene Abschrift, gilt die hier
- * zuerst geladene; die Datei schuetzt sich selbst gegen doppeltes Laden. */
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b).
+ * Seit 1.4.21 Stufe 2: Sprechen, Formular, Wertpruefung, Zeile im Reiter Test und
+ * Testansage kommen aus dem Modul (Fassung 1.1.1). Liegt neben dieser Datei. Bindet diese
+ * Bibliothek spaeter ferien_lib.php des Plugins Ferien und Feiertage ein und traegt jenes
+ * eine eigene Abschrift, gilt die hier zuerst geladene; die Datei schuetzt sich selbst
+ * gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
 
 
@@ -282,15 +284,12 @@ function awm_config_teilvorgaben()
     return array(
         'notify' => array('audio' => 1, 'push' => 1, 'time' => '18:00',
                           'audio2' => 0, 'time2' => '06:30'),
-        'tts' => array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
-                       'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '',
-                       // Ansage-2: Alexa-NG (ab Werk nicht gewaehlt). Das Token
-                       // ist ein Geheimnis: nicht in der Sicherung, nie im Formular.
-                       'alexa_geraet' => '', 'alexa_token' => '', 'alexa_laut' => -1,
-                       // Ansage-3: Google-Lautsprecher ueber Chromecast 4 Lox NG (ab Werk
-                       // nicht gewaehlt). Eigenes Sprechtoken, getrennt vom Alexa-NG-Token;
-                       // ebenso ein Geheimnis: nicht in der Sicherung, nie im Formular.
-                       'google_geraet' => '', 'google_token' => '', 'google_laut' => -1),
+        /* Nr. 36 b, Stufe 2: die Vorgaben des Blocks tts kommen aus der gemeinsamen
+         * Sprachausgabe - dieselben Schluessel wie bis 1.4.20 (dazu sonos_zone/sonos_laut
+         * seit Modul 1.1.0, hier ohne Wirkung). Ab Werk weiterhin "musicserver" ohne
+         * Adresse. Die Sprechtoken sind Geheimnisse: nicht in der Sicherung, nie im
+         * Formular. */
+        'tts' => ansage_vorgaben('musicserver'),
         'ruhe' => array('urlaub' => 0, 'nachts' => 0, 'von' => '22:00', 'bis' => '07:00',
                         'bis_datum' => ''),
         'ansage' => array('vorlage' => '', 'vorlage2' => ''),
@@ -357,22 +356,9 @@ function awm_token_gueltig($t)
     return is_string($t) && preg_match('/^[a-z0-9]{16,64}\z/', $t) === 1;
 }
 
-/** Rechnername oder IPv4-Adresse des Music Servers (U4/U5): leer, oder
- *  Buchstaben, Ziffern, Punkt, Bindestrich - kein Schraegstrich, kein
- *  Fragezeichen, kein Doppelpunkt (der Port hat ein eigenes Feld). Bis
- *  1.4.14 wurde "192.0.2.4/x?y" ungeprueft gespeichert, und die Ansage ging an
- *  http://192.0.2.4/x?y:7091/... */
-function awm_ist_host($v)
-{
-    return is_string($v)
-        && ($v === '' || preg_match('/^[A-Za-z0-9](?:[A-Za-z0-9.\-]{0,251}[A-Za-z0-9])?\z/', $v) === 1);
-}
-
-/** Sprachkuerzel der Ansage: 2 bis 8 Kleinbuchstaben (U4/U5). */
-function awm_ist_sprache($v)
-{
-    return is_string($v) && preg_match('/^[a-z]{2,8}\z/', $v) === 1;
-}
+/* awm_ist_host() und awm_ist_sprache() (U4/U5) sind seit 1.4.21 entfallen: Adresse und
+ * Sprache der Ansage prueft die gemeinsame Sprachausgabe (ansage_wert_pruefen(): Adresse im
+ * Heimnetz ohne Schraegstrich und Benutzerangabe, Sprache genau zwei Kleinbuchstaben). */
 
 /** Eine Liste von Eintraegen, deren genannte Felder - wenn vorhanden -
  *  Zeichenketten sind (U6: Zuordnungsregeln, eigene Termine). */
@@ -515,48 +501,23 @@ function awm_wert_pruefen($schluessel, $wert)
             return '';
         case 'tts':
             if (!is_array($wert)) { return awm_t_oder('PRUEF.G_KEINE_LISTE', 'muss eine Liste sein'); }
-            foreach (array('mode', 'ip', 'template', 'zones', 'lang', 'alexa_geraet', 'alexa_token',
-                           'google_geraet', 'google_token') as $tk) {        // U6, Ansage-3
-                if (isset($wert[$tk]) && !is_string($wert[$tk])) {
-                    return sprintf(awm_t_oder('PRUEF.G_TEXT_K', '%s muss Text sein'), $tk);
-                }
+            /* Nr. 36 b, Stufe 2: eine Sicherung dieses Plugins traegt nie ein Sprechtoken
+             * (awm_sicherung_daten()). Eine Datei MIT einem wird abgewiesen - bis 1.4.20
+             * wurde ein formgueltiges Alexa-NG-Token angenommen und dann ersetzt. Benannt
+             * wird nur der Name, nie der Wert; "" ist keines. */
+            $tm = ansage_sicherung_mangel($wert);
+            if ($tm) {
+                return sprintf(awm_t('TTS.SICH_TOKEN'), implode(', ', $tm));
             }
-            if (isset($wert['mode']) && !in_array($wert['mode'],
-                    array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox'), true)) {
-                return awm_t_oder('PRUEF.G_MODUS', 'unbekannte Ansageart');
+            /* Die Werte prueft das Modul wie beim Speichern und vor dem Senden (Ausgabeart,
+             * Adresse und Vorlage im Heimnetz, Zonen, Lautstaerke 1-100, Sprache zwei
+             * Buchstaben). Altschluessel frueherer Fassungen im Block (enabled, time,
+             * system) bleiben wie bisher ungeprueft. */
+            $tg = '';
+            $teil = ansage_sicherung_bereinigen(array_intersect_key($wert, ansage_vorgaben()));
+            if (ansage_wert_pruefen($teil, $tg, awm_ansage_modi()) === null) {
+                return ansage_kennung_text($tg, awm_ansage_k());
             }
-            // Ansage-2: Alexa-NG. Das Token steht in keiner eigenen Sicherung;
-            // eine fremde Datei mit Token wird nur auf die Form geprueft, das
-            // Zurueckspielen behaelt ohnehin das geltende.
-            if (isset($wert['alexa_geraet']) && !awm_alexa_geraet_ok($wert['alexa_geraet'])) {
-                return awm_t_oder('PRUEF.G_ALEXA_GERAET', 'Alexa-NG-Geraet ist unzulaessig');
-            }
-            if (isset($wert['alexa_laut']) && !awm_alexa_laut_ok($wert['alexa_laut'])) {
-                return awm_t_oder('PRUEF.G_ALEXA_LAUT', 'Alexa-NG-Lautstaerke ausserhalb -1..100');
-            }
-            if (isset($wert['alexa_token']) && $wert['alexa_token'] !== '' && !awm_alexa_token_ok($wert['alexa_token'])) {
-                return awm_t_oder('PRUEF.G_ALEXA_TOKEN', 'Alexa-NG-Sprechtoken passt nicht zum Muster');
-            }
-            /* Ansage-3: Google-Lautsprecher (Chromecast 4 Lox NG). Geraet und Lautstaerke
-             * mit denselben Pruefern wie bei Alexa-NG. Eine Sicherung traegt NIE ein
-             * Google-Sprechtoken (awm_sicherung_daten): eine Datei mit einem nicht leeren
-             * wird abgewiesen; "" geht durch, das Zurueckspielen behaelt das geltende. */
-            if (isset($wert['google_geraet']) && !awm_alexa_geraet_ok($wert['google_geraet'])) {
-                return awm_t_oder('PRUEF.G_GOOGLE_GERAET', 'Google-Lautsprecher-Geraet ist unzulaessig');
-            }
-            if (isset($wert['google_laut']) && !awm_alexa_laut_ok($wert['google_laut'])) {
-                return awm_t_oder('PRUEF.G_GOOGLE_LAUT', 'Google-Lautsprecher-Lautstaerke ausserhalb -1..100');
-            }
-            if (isset($wert['google_token']) && $wert['google_token'] !== '') {
-                return awm_t_oder('PRUEF.G_GOOGLE_TOKEN', 'die Datei traegt ein Google-Sprechtoken - eine Sicherung enthaelt nie eines');
-            }
-            if (isset($wert['ip']) && !awm_ist_host($wert['ip'])) {                    // U4
-                return awm_t_oder('PRUEF.G_HOST', 'IP-Adresse bzw. Rechnername des Music Servers ist unzulaessig');
-            }
-            if (isset($wert['port']) && !awm_ist_zahl($wert['port'], 1, 65535)) { return awm_t_oder('PRUEF.G_PORT', 'Port ausserhalb 1..65535'); }
-            if (isset($wert['volume']) && !awm_ist_zahl($wert['volume'], 1, 100)) { return awm_t_oder('PRUEF.G_LAUT', 'Lautstaerke ausserhalb 1..100'); }
-            if (isset($wert['zones']) && !awm_ist_zonen($wert['zones'])) { return awm_t_oder('PRUEF.G_ZONEN', 'Zonenangabe ist unzulaessig'); }
-            if (isset($wert['lang']) && !awm_ist_sprache($wert['lang'])) { return awm_t_oder('PRUEF.G_SPRACHE', 'Sprachkuerzel ist unzulaessig'); }
             return '';
         case 'ruhe':
             if (!is_array($wert)) { return awm_t_oder('PRUEF.G_KEINE_LISTE', 'muss eine Liste sein'); }
@@ -2008,9 +1969,31 @@ function awm_webport() {
     return ansage_webport($p['lbhome'] !== '' ? $p['lbhome'] . '/config/system/general.json' : '');
 }
 
-/** Kontext fuer die gemeinsame Sprachausgabe: Webport und Kennung dieses Plugins. */
+/** Die Ausgabearten, die dieses Plugin anbietet: wie bis 1.4.20 und dazu "aus" (ohne Sonos4Lox). */
+function awm_ansage_modi() {
+    return array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox');
+}
+
+/** Die POST-Namen der Sprachausgabe, die vom Modul abweichen: Alexa-NG und Google ohne tts_ (wie bis 1.4.20). */
+function awm_ansage_namen() {
+    $n = array();
+    foreach (array('alexa', 'google') as $art) {
+        foreach (array('geraet', 'laut', 'token', 'token_loeschen') as $f) { $n[$art . '_' . $f] = $art . '_' . $f; }
+    }
+    return $n;
+}
+
+/**
+ * Kontext fuer die gemeinsame Sprachausgabe: Webport, Kennung dieses Plugins, Ordner der
+ * letzten Ansage (Zwischenordner) und die Texte ([ANSAGE] der Sprachdateien). Zwei Saetze
+ * des Moduls sagen "ab Werk aus"; hier ist ab Werk der Music Server ohne Adresse
+ * eingestellt - dafuer stehen eigene Saetze unter [TTS].
+ */
 function awm_ansage_k() {
-    return array('port' => awm_webport(), 'kopf' => array('User-Agent: LoxBerry Abfuhrkalender'), 'ordner' => '');
+    return array('port' => awm_webport(), 'kopf' => array('User-Agent: LoxBerry Abfuhrkalender'),
+                 'ordner' => awm_tmpdir(),
+                 't' => function ($s) { return awm_t($s); },
+                 'schluessel' => array('ART_HINWEIS' => 'TTS.ART_HINWEIS', 'O_AUS' => 'TTS.O_AUS'));
 }
 
 /** Sondertage von heute bzw. eines beliebigen Tages (Ymd). */
@@ -3441,298 +3424,56 @@ function awm_t_oder($schluessel, $ersatz)
     return ($t === '' || $t === $schluessel) ? $ersatz : $t;
 }
 
-/* ---------------- Ansage (TTS) - identisch zum Abfahrtsassistenten ---------------- */
+/* ---------------- Ansage (TTS) - gemeinsame Sprachausgabe, Stufe 2 ----------------
+ *
+ * Bis 1.4.20 hatte jede Ausgabeart ihren eigenen Zweig (Music Server, Alexa-NG 15 s,
+ * Google-Lautsprecher) mit eigenem Protokoll und eigener Zeile im Reiter Test. Seit
+ * 1.4.21 spricht ansage_sprechen(): eine Bewertung fuer alle Arten (Alexa-NG/Chromecast
+ * nur HTTP 200 und SPRECHEN;OK=1, Music Server und Vorlagen HTTP 2xx), Adresse und
+ * Vorlage vor jedem Senden erneut auf das Heimnetz geprueft, keine Weiterleitung, kein
+ * Proxy, 10 s. Faellt ein anderes Plugin aus, entfaellt die Ansage - kein stiller Wechsel
+ * auf einen anderen Lautsprecher, keine Wiederholung. Ins Protokoll kommt nur
+ * ansage_kurz(): Art, Stand, Zeichenzahl, HTTP-Code, Antwortzeile bzw. Kennung - nie
+ * Text, nie Token, nie die Adresse des Music Servers.
+ */
 
-/** TTS-URL fuer die konfigurierte Ausgabe bauen. Fuer mode=audioserver: null.
- *  Nr. 36 b: gebaut von der gemeinsamen Sprachausgabe (ansage_tts_url()); die Zonen des
- *  Kalenders haben wie bisher Vorrang, eine unbekannte Art bekommt wie bisher die Vorlage. */
-function awm_tts_url($text, $zonen = '') {
+/**
+ * Eine Ansage. Die Zonen eines Kalenders haben wie bisher Vorrang vor den Zonen der
+ * Einstellungen (sie gelten nur fuer Music Server und Adressvorlagen). Rueckgabe: das
+ * Ergebnis des Moduls (stand 1 = gesendet, 0 = gescheitert, -1 = nichts gesendet ohne
+ * Fehler: aus, Original-Audioserver).
+ */
+function awm_say($text, $zonen = '') {
     $cfg = awm_config();
     $tts = $cfg['tts'];
     if (trim((string) $zonen) !== '') {
-        $tts['zones'] = trim((string) $zonen);   // Zonen des Kalenders haben Vorrang
+        $tts['zones'] = trim((string) $zonen);
     }
-    if (!isset($tts['mode']) || !in_array($tts['mode'], array('musicserver', 'ms4h', 'custom', 'audioserver'), true)) {
-        $tts['mode'] = 'custom';
-    }
-    return ansage_tts_url($text, $tts);
+    $r = ansage_sprechen($text, $tts, awm_ansage_k());
+    awm_log('Ansage: ' . ansage_kurz($r));
+    return $r;
 }
 
-function awm_say($text, $zonen = '') {
-    $cfg = awm_config();
-    if ($cfg['tts']['mode'] === 'alexang') {
-        /* Ansage-2: Alexa-NG. Das Token geht in keine Protokollzeile. Faellt
-         * Alexa-NG aus, entfaellt die Ansage (kein stiller Wechsel auf einen
-         * anderen Lautsprecher) - die Zeile sagt es, der Reiter Test auch. */
-        list($ok, $meldung) = awm_alexa_sprechen($text);
-        awm_log('Ansage gesendet (Alexa-NG): ' . awm_zeichenzahl($text) . ' Zeichen -> '
-                . ($ok ? 'OK' : 'FEHLER: ' . $meldung));
-        return $ok;
+/**
+ * Zeile im Reiter Test (ansage_pruefzeile()): null, wenn es nichts zu zeigen gibt - wie
+ * bis 1.4.20 bei einer Ausgabe ueber eine Adresse ohne eingetragene Adresse und beim
+ * Original-Audioserver. Alexa-NG und Chromecast werden nur bei offenem Reiter Test mit
+ * selftest=1 gefragt (spricht nicht, hoechstens 5 s), der Music Server nie - eine Probe
+ * dort spraeche. Dazu die letzte Ansage.
+ */
+function awm_pruef_ansage(array $cfg, $offen)
+{
+    $tts = (isset($cfg['tts']) && is_array($cfg['tts'])) ? $cfg['tts'] : array();
+    $mode = (isset($tts['mode']) && is_string($tts['mode'])) ? $tts['mode'] : '';
+    $unbekannt = !in_array($mode, awm_ansage_modi(), true);
+    $adresse = in_array($mode, array('musicserver', 'ms4h', 'custom'), true) && (string) ansage_tts_url('-', $tts) !== '';
+    if (!ansage_ist_ng($mode) && !$unbekannt && !$adresse) {
+        return null;
     }
-    if ($cfg['tts']['mode'] === 'cc4lox') {
-        /* Ansage-3: Google-Lautsprecher ueber Chromecast 4 Lox NG. Wie bei Alexa-NG
-         * entfaellt die Ansage, wenn es ausfaellt (kein stiller Wechsel, kein eigener
-         * Wiederholversuch). Die Zeile nennt HTTP-Code und Antwort, vom Ansagetext nur
-         * die Laenge, nie das Token. */
-        list($ok, $meldung) = awm_google_sprechen($text);
-        awm_log('Ansage gesendet (Google-Lautsprecher, Chromecast 4 Lox NG): ' . awm_zeichenzahl($text)
-                . ' Zeichen -> ' . ($ok ? 'OK, ' : 'FEHLER: ') . $meldung);
-        return $ok;
-    }
-    $url = awm_tts_url($text, $zonen);
-    if ($url === null) {
-        awm_log('Ansage: Modus "Original Loxone Audioserver" - Sprachausgabe erfolgt ueber Loxone Config (Textgenerator)');
-        return false;
-    }
-    if ($url === '') {
-        awm_log('Ansage uebersprungen: keine TTS-IP konfiguriert');
-        return false;
-    }
-    /* Nr. 36 b: abgerufen ueber den Transport der gemeinsamen Sprachausgabe (ohne
-     * Weiterleitung, ohne Proxy, Erfolg nur bei HTTP 2xx). Der Grund im Fehlerfall ist der
-     * Satz von awm_http_grund() wie bisher. Ins Protokoll kommt vom Ansagetext nur seine
-     * Laenge (Entscheidung Nr. 18/40). */
     $k = awm_ansage_k();
-    $a = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 10, $k), $k);
-    $ok = $a['code'] >= 200 && $a['code'] < 300;
-    $grund = '';
-    if ($a['code'] > 0 && !$ok) {
-        $grund = awm_http_grund(0, '', $a['code']);
-        if ($grund === '') { $grund = 'HTTP ' . $a['code']; }
-    } elseif ($a['code'] <= 0) {
-        $grund = in_array($a['errno'], array(6, 7, 28), true) ? awm_http_grund($a['errno'], '', 0)
-            : 'Abruf nicht moeglich - es antwortet nichts (Zeitueberschreitung oder kein Weg dorthin)';
-    }
-    awm_log('Ansage gesendet: ' . awm_zeichenzahl($text) . ' Zeichen -> ' . ($ok ? 'OK' : 'FEHLER: ' . $grund));
-    return $ok;
-}
-
-/* ---------------- Ausgabeart Alexa-NG (Ansage-2, ab Werk nicht gewaehlt) ----------------
- *
- * Das eigene Plugin LoxBerry-Plugin-Alexa-NG (Ordner alexang) laesst
- * Amazon-Echo-Geraete sprechen. Aufruf per POST an seinen Endpunkt auf
- * DIESEM LoxBerry: das Sprechtoken steht so in keiner Adresse und keinem
- * Zugriffsprotokoll. https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG
- */
-function awm_alexa_adresse()
-{
-    return 'http://127.0.0.1:' . awm_webport() . '/plugins/alexang/index.php';
-}
-
-/** Sprechtoken: 8 bis 128 Buchstaben, Ziffern, _ und - (Alexa-NG erzeugt 24 Hexzeichen). */
-function awm_alexa_token_ok($t)
-{
-    return ansage_token_ok($t);     // Nr. 36 b: dieselbe Form, eine Quelle
-}
-
-/** Leer (= Standardgeraet von Alexa-NG) oder 1 bis 200 Zeichen ohne Steuerzeichen und ohne Rand-Leerraum. */
-function awm_alexa_geraet_ok($g)
-{
-    return ansage_geraet_ok($g);    // Nr. 36 b: dieselbe Form, eine Quelle
-}
-
-/** Lautstaerke fuer die Ansage: -1 (= die des Geraets bleibt) oder 0 bis 100. */
-function awm_alexa_laut_ok($v)
-{
-    return is_int($v) && $v >= -1 && $v <= 100;
-}
-
-/**
- * POST an Alexa-NG. Rueckgabe: array(HTTP-Code, erste Antwortzeile);
- * Code 0 = keine Antwort. Ohne Weiterleitung, ohne Proxy. Die erste Zeile
- * wird um ein etwa darin stehendes Token bereinigt, bevor sie irgendwo
- * hingeht.
- */
-function awm_alexa_rufen(array $felder, $tmo = 15)
-{
-    return awm_sprech_rufen(awm_alexa_adresse(), $felder, $tmo);
-}
-
-/** Ansage-3: der Rumpf von awm_alexa_rufen() mit der Adresse als Parameter - EINE
- *  Funktion fuer Alexa-NG und Chromecast 4 Lox NG (gleiche Schnittstelle, nur der
- *  Ordner ist anders; GOOGLE_SPRECHEN_SCHNITTSTELLE.md Abschnitt 7). */
-function awm_sprech_rufen($url, array $felder, $tmo)
-{
-    /* Nr. 36 b: gerufen ueber die gemeinsame Sprachausgabe (curl, sonst Datenstrom; ohne
-     * Weiterleitung, ohne Proxy). Rueckgabe wie bisher: array(HTTP-Code, erste Zeile ohne
-     * Token, hoechstens 200 Zeichen). */
-    $a = ansage_ng_rufen($url, $felder, $tmo, awm_ansage_k());
-    return array((int) $a['code'], $a['zeile']);
-}
-
-/**
- * Eine Ansage ueber Alexa-NG. Rueckgabe: array(ok, Meldung fuers Protokoll).
- * Geraet und Lautstaerke aus den Einstellungen; die Zonen eines Kalenders
- * (Music-Server-Nummern) gelten hier nicht.
- */
-function awm_alexa_sprechen($text)
-{
-    $cfg = awm_config();
-    $t = $cfg['tts'];
-    $tok = isset($t['alexa_token']) ? $t['alexa_token'] : '';
-    if (!awm_alexa_token_ok($tok)) {
-        return array(false, awm_t_oder('TEXT.ALEXA_KEIN_TOKEN', 'kein Sprechtoken fuer Alexa-NG gespeichert'));
-    }
-    $f = array('aktion' => 'sprechen', 'token' => $tok, 'text' => (string) $text);
-    $g = isset($t['alexa_geraet']) && is_string($t['alexa_geraet']) ? $t['alexa_geraet'] : '';
-    if ($g !== '') { $f['geraet'] = $g; }
-    $laut = isset($t['alexa_laut']) ? (int) $t['alexa_laut'] : -1;
-    if ($laut >= 0 && $laut <= 100) { $f['laut'] = $laut; }
-    list($code, $zeile) = awm_alexa_rufen($f, 15);
-    if ($code === 200 && strpos($zeile, 'SPRECHEN;OK=1') === 0) {
-        return array(true, $zeile);
-    }
-    if ($code <= 0) {
-        return array(false, sprintf(awm_t_oder('TEXT.ALEXA_KEINE_ANTWORT', 'Alexa-NG antwortet nicht (%s)'),
-                                    awm_alexa_adresse()));
-    }
-    return array(false, 'HTTP ' . $code . ', ' . $zeile);
-}
-
-/** Zeile im Reiter Test: null, wenn Alexa-NG nicht die Ausgabeart ist. */
-function awm_pruef_alexang(array $cfg, $offen)
-{
-    if (!isset($cfg['tts']['mode']) || $cfg['tts']['mode'] !== 'alexang') {
-        return null;
-    }
-    if (!$offen) {
-        return array('hinweis', awm_t_oder('TEST.P_ALEXA_ZU', 'Alexa-NG wird nur geprueft, wenn der Reiter Test offen ist'));
-    }
-    if (awm_paths()['lbhome'] === '') {
-        return array('hinweis', awm_t_oder('TEST.P_ALEXA_OHNE', 'Kein installierter Aufbau - Alexa-NG ist nicht feststellbar'));
-    }
-    $tok = isset($cfg['tts']['alexa_token']) ? $cfg['tts']['alexa_token'] : '';
-    if (!awm_alexa_token_ok($tok)) {
-        return array('fehl', awm_t_oder('TEST.P_ALEXA_TOKEN', 'Ausgabeart Alexa-NG, aber kein Sprechtoken gespeichert - die Ansage entfaellt'));
-    }
-    list($code, $zeile) = awm_alexa_rufen(array('selftest' => '1', 'token' => $tok), 5);
-    if ($code === 200 && strpos($zeile, 'SELFTEST;OK=1') === 0) {
-        return array('ok', awm_t_oder('TEST.P_ALEXA_OK', 'Alexa-NG antwortet, das Sprechtoken passt (SELFTEST;OK=1)'));
-    }
-    if ($code <= 0) {
-        return array('fehl', sprintf(awm_t_oder('TEST.P_ALEXA_KEINE', 'Alexa-NG antwortet nicht (%s) - die Ansage entfaellt, bis es erreichbar ist'),
-                                     awm_alexa_adresse()));
-    }
-    return array('fehl', sprintf(awm_t_oder('TEST.P_ALEXA_FEHL', 'Alexa-NG weist ab: HTTP %d, "%s" - die Ansage entfaellt'),
-                                 $code, substr($zeile, 0, 80)));
-}
-
-/* ---------------- Ausgabeart Google-Lautsprecher (Ansage-3, ab Werk nicht gewaehlt) ----------------
- *
- * Das eigene Plugin Chromecast 4 Lox NG (Ordner chromecast-4lox-ng, ab 1.3.15)
- * laesst Google-/Nest-Lautsprecher und Chromecasts sprechen. Die Schnittstelle ist
- * die von Alexa-NG; verschieden sind nur der Ordner und die Geraetenamen (die der
- * Geraeteliste von Chromecast 4 Lox NG). Angenommen wird nur von 127.0.0.1.
- * Token-, Geraete- und Lautstaerkepruefung und der POST sind dieselben Funktionen
- * wie bei Alexa-NG; das Sprechtoken ist ein eigenes (tts.google_token).
- * https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox
- */
-function awm_google_adresse()
-{
-    return 'http://127.0.0.1:' . awm_webport() . '/plugins/chromecast-4lox-ng/index.php';
-}
-
-/** Zeichen eines UTF-8-Textes - fuer Protokollzeilen, die vom Text nur die Laenge nennen. */
-function awm_zeichenzahl($s)
-{
-    $n = preg_match_all('/./us', (string) $s);
-    return $n === false ? strlen((string) $s) : (int) $n;
-}
-
-/**
- * Antwort von Chromecast 4 Lox NG bewerten (Schnittstelle Abschnitt 4). Als gesendet
- * gilt nur HTTP 200 UND Zeilenanfang "<kopf>;OK=1" - auch UNVERAENDERT (gleicher Text
- * binnen 30 s) und TEXT_NULL, wie bei Alexa-NG. Rueckgabe: array(ok, Meldung); die
- * Meldung nennt HTTP-Code und Antwortzeile (das Token ist in awm_sprech_rufen() schon
- * ersetzt; den Text nennt keine Antwort). 404 OHNE GRUND kommt vom Webserver selbst:
- * das Plugin fehlt oder ist aelter als 1.3.15.
- */
-function awm_google_bewerten($code, $zeile, $kopf)
-{
-    if ($code === 200 && strpos($zeile, $kopf . ';OK=1') === 0) {
-        return array(true, 'HTTP 200, ' . $zeile);
-    }
-    if ($code <= 0) {
-        return array(false, sprintf(awm_t_oder('TEXT.GOOGLE_KEINE_ANTWORT', 'Chromecast 4 Lox NG antwortet nicht (%s)'),
-                                    awm_google_adresse()));
-    }
-    if (!preg_match('/(?:^|;)GRUND=[A-Za-z0-9_\-]+/', $zeile)) {
-        if ($code === 404) {
-            return array(false, awm_t_oder('TEXT.GOOGLE_FEHLT',
-                'Chromecast 4 Lox NG fehlt oder ist zu alt (ab 1.3.15) - HTTP 404 ohne GRUND'));
-        }
-        return array(false, sprintf(awm_t_oder('TEXT.GOOGLE_UNERWARTET',
-            'Chromecast 4 Lox NG antwortet unerwartet: HTTP %d ohne GRUND'), $code));
-    }
-    return array(false, 'HTTP ' . $code . ', ' . $zeile);
-}
-
-/**
- * Eine Ansage ueber Chromecast 4 Lox NG. Rueckgabe: array(ok, Meldung fuers Protokoll).
- * Geraet und Lautstaerke aus den Einstellungen; die Zonen eines Kalenders
- * (Music-Server-Nummern) gelten hier nicht. Zeitlimit 10 s (der Endpunkt antwortet
- * nach spaetestens etwa 7 s).
- */
-function awm_google_sprechen($text)
-{
-    $cfg = awm_config();
-    $t = $cfg['tts'];
-    $tok = isset($t['google_token']) ? $t['google_token'] : '';
-    if (!awm_alexa_token_ok($tok)) {
-        return array(false, awm_t_oder('TEXT.GOOGLE_KEIN_TOKEN', 'kein Sprechtoken fuer Chromecast 4 Lox NG gespeichert'));
-    }
-    $f = array('aktion' => 'sprechen', 'token' => $tok, 'text' => (string) $text);
-    $g = isset($t['google_geraet']) && is_string($t['google_geraet']) ? $t['google_geraet'] : '';
-    if ($g !== '') { $f['geraet'] = $g; }
-    $laut = isset($t['google_laut']) ? (int) $t['google_laut'] : -1;
-    if ($laut >= 0 && $laut <= 100) { $f['laut'] = $laut; }
-    list($code, $zeile) = awm_sprech_rufen(awm_google_adresse(), $f, 10);
-    return awm_google_bewerten($code, $zeile, 'SPRECHEN');
-}
-
-/** Knopf "Testansage" im Reiter Test: ein fester Satz ueber die GESPEICHERTEN
- *  Google-Einstellungen, gleich welche Ausgabeart gewaehlt ist. Rueckgabe wie
- *  awm_google_sprechen(); die Protokollzeile nennt nur die Laenge des Satzes. */
-function awm_google_testansage()
-{
-    $text = awm_t_oder('TEXT.GOOGLE_TESTANSAGE', 'Dies ist eine Testansage des Abfuhrkalenders.');
-    list($ok, $meldung) = awm_google_sprechen($text);
-    awm_log('Testansage (Google-Lautsprecher, Chromecast 4 Lox NG): ' . awm_zeichenzahl($text)
-            . ' Zeichen -> ' . ($ok ? 'OK, ' : 'FEHLER: ') . $meldung);
-    return array($ok, $meldung);
-}
-
-/** Zeile im Reiter Test: null, wenn Google-Lautsprecher nicht die Ausgabeart ist.
- *  Fragt selftest=1 (prueft nur das Token, spricht nichts) und nur bei offenem
- *  Reiter Test - ein haengender Dienst kostet sonst jeden Seitenaufbau Zeit.
- *  SPRECHEN=0 / DIENST=0 im Selbsttest: das Token passt, die Ansage entfiele trotzdem. */
-function awm_pruef_google(array $cfg, $offen)
-{
-    if (!isset($cfg['tts']['mode']) || $cfg['tts']['mode'] !== 'cc4lox') {
-        return null;
-    }
-    if (!$offen) {
-        return array('hinweis', awm_t_oder('TEST.P_GOOGLE_ZU', 'Chromecast 4 Lox NG wird nur geprueft, wenn der Reiter Test offen ist'));
-    }
-    if (awm_paths()['lbhome'] === '') {
-        return array('hinweis', awm_t_oder('TEST.P_GOOGLE_OHNE', 'Kein installierter Aufbau - Chromecast 4 Lox NG ist nicht feststellbar'));
-    }
-    $tok = isset($cfg['tts']['google_token']) ? $cfg['tts']['google_token'] : '';
-    if (!awm_alexa_token_ok($tok)) {
-        return array('fehl', awm_t_oder('TEST.P_GOOGLE_TOKEN', 'Ausgabe Google-Lautsprecher, aber kein Sprechtoken gespeichert - die Ansage entfaellt'));
-    }
-    list($code, $zeile) = awm_sprech_rufen(awm_google_adresse(), array('selftest' => '1', 'token' => $tok), 5);
-    list($ok, $meldung) = awm_google_bewerten($code, $zeile, 'SELFTEST');
-    if (!$ok) {
-        return array('fehl', sprintf(awm_t_oder('TEST.P_GOOGLE_FEHL', 'Chromecast 4 Lox NG: %s - die Ansage entfaellt'), $meldung));
-    }
-    if (preg_match('/(?:^|;)SPRECHEN=0(?:;|$)/', $zeile)) {
-        return array('fehl', awm_t_oder('TEST.P_GOOGLE_SPRECHEN_AUS', 'Chromecast 4 Lox NG: Sprachausgabe fuer andere Plugins aus - die Ansage entfaellt'));
-    }
-    if (preg_match('/(?:^|;)DIENST=0(?:;|$)/', $zeile)) {
-        return array('fehl', awm_t_oder('TEST.P_GOOGLE_DIENST', 'Chromecast 4 Lox NG: Dienst laeuft nicht - die Ansage entfaellt'));
-    }
-    return array('ok', awm_t_oder('TEST.P_GOOGLE_OK', 'Chromecast 4 Lox NG antwortet, das Sprechtoken passt (SELFTEST;OK=1)'));
+    $k['e'] = function ($s) { return (string) $s; };     // die Tabelle maskiert selbst (aw_e)
+    list($stand, $txt) = ansage_pruefzeile($tts, (bool) $offen, $k);
+    return array($stand === 1 ? 'ok' : ($stand >= -1 ? 'fehl' : 'hinweis'), sprintf(awm_t('TTS.P_ANSAGE'), $txt));
 }
 
 /**
@@ -4426,7 +4167,7 @@ function awm_selbstpruefung_robust()
        awm_t('SELBST.B07'));
 
     /* --- 2. Sprachausgabe: eigene Vorlage ohne IP --- */
-    $p(function_exists('awm_tts_url'), awm_t('SELBST.B08'));
+    $p(function_exists('ansage_sprechen') && function_exists('ansage_tts_url'), awm_t('SELBST.B08'));
     $p(strpos((string) awm_tts_url_test('custom', '', 'http://sprich.local/say?text={text}', 'Hallo'),
               'sprich.local') !== false,
        awm_t('SELBST.B09'));
@@ -4710,26 +4451,14 @@ function awm_selbstpruefung_robust()
 
 /**
  * Sprachausgabe-Adresse mit vorgegebenen Werten bauen - nur fuer die
- * Selbstpruefung. Die Konfiguration wird dabei NICHT angefasst.
+ * Selbstpruefung. Die Konfiguration wird dabei NICHT angefasst. Seit 1.4.21 baut
+ * sie dieselbe Funktion wie die Ansage (ansage_tts_url() des Moduls); bis 1.4.20
+ * pruefte die Selbstpruefung eine Nachbildung.
  */
 function awm_tts_url_test($mode, $ip, $template, $text)
 {
-    if ($mode === 'audioserver') {
-        return null;
-    }
-    if ($mode === 'musicserver') {
-        return $ip === '' ? '' : 'http://' . $ip . ':7091/audio/grouped/tts/1~8/'
-                                 . rawurlencode('de|' . $text);
-    }
-    $tpl = trim((string) $template);
-    if ($tpl === '') {
-        $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}';
-    }
-    if ($ip === '' && strpos($tpl, '{ip}') !== false) {
-        return '';
-    }
-    return str_replace(array('{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'),
-                       array($ip, 7091, '1', 8, 'de', rawurlencode($text)), $tpl);
+    return ansage_tts_url($text, array('mode' => $mode, 'ip' => $ip, 'template' => $template)
+                                 + ansage_vorgaben('musicserver'));
 }
 
 /* ==================================================================
@@ -5296,6 +5025,8 @@ function awm_eingabe_felder($formular)
             // Ansage-3: dieselbe Behandlung fuer das Google-Sprechtoken.
             'google_geraet' => $t, 'google_laut' => $t, 'google_token_loeschen' => $h,
             'google_token' => array('geheim', 0),
+            // Nr. 36 b, Stufe 2: die Sonos-Felder des Formularblocks (dort ohne Wirkung).
+            'tts_sonos_zone' => $t, 'tts_sonos_laut' => $t,
             'ansage_vorlage' => $t, 'ansage_vorlage2' => $t),
         'mqtt' => array('mqtt_enabled' => $h, 'mqtt_topic' => $t),
         'bins' => array('bins_cal' => $t, 'bins_modus' => $t, 'bin_titel' => array('text', $z),
