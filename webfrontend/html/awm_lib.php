@@ -1985,15 +1985,18 @@ function awm_ansage_namen() {
 
 /**
  * Kontext fuer die gemeinsame Sprachausgabe: Webport, Kennung dieses Plugins, Ordner der
- * letzten Ansage (Zwischenordner) und die Texte ([ANSAGE] der Sprachdateien). Zwei Saetze
- * des Moduls sagen "ab Werk aus"; hier ist ab Werk der Music Server ohne Adresse
- * eingestellt - dafuer stehen eigene Saetze unter [TTS].
+ * letzten Ansage (Zwischenordner) und die Texte ([ANSAGE] der Sprachdateien). Ab Werk ist
+ * der Music Server ohne Adresse eingestellt: 'werk' => 'musicserver' (Modul 1.1.2) - die
+ * Auswahl nennt "aus" schlicht und den Music Server "(ab Werk)". Den Hinweis unter der
+ * Auswahl behaelt die Linie (TTS.ART_HINWEIS, mit dem Satz zu den Zonen eines Kalenders);
+ * die Umlenkung O_AUS ist seit 1.4.23 gestrichen (X-10).
  */
 function awm_ansage_k() {
     return array('port' => awm_webport(), 'kopf' => array('User-Agent: LoxBerry Abfuhrkalender'),
                  'ordner' => awm_tmpdir(),
                  't' => function ($s) { return awm_t($s); },
-                 'schluessel' => array('ART_HINWEIS' => 'TTS.ART_HINWEIS', 'O_AUS' => 'TTS.O_AUS'));
+                 'werk' => 'musicserver',
+                 'schluessel' => array('ART_HINWEIS' => 'TTS.ART_HINWEIS'));
 }
 
 /** Sondertage von heute bzw. eines beliebigen Tages (Ymd). */

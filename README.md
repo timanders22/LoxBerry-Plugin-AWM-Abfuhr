@@ -23,6 +23,21 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.23
+
+Gemeinsame Sprachausgabe 1.1.2.
+
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Die Auswahl der
+  Ausgabeart nennt den Loxone Music Server jetzt „(ab Werk)“ und „aus“ schlicht „aus“ – das Modul
+  weiß, dass hier ab Werk der Music Server eingestellt ist. Der eigene Hinweis unter der Auswahl
+  (Zonen eines Kalenders) bleibt. Dazu aus dem Modul: eigene Sätze zu einem unbekannten Eintrag im
+  Block der Sprachausgabe, Zeichenzahl bei kaputtem UTF-8 in Zeichen, die Meldung „Port abgewiesen“
+  nennt das Feld nicht mehr doppelt.
+* Abfuhrkalender, Abfahrts-Assistent und Ferien und Feiertage teilen sich das Modul in einem Aufruf
+  (Sondertage über das Ferien-Plugin); alle drei kommen mit 1.1.2.
+* Baustein-Liste unverändert – sie war schon in der Schreibweise des Leitungswerkzeugs.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.4.22
 
 Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
