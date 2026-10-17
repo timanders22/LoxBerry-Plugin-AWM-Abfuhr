@@ -23,6 +23,39 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.24
+
+Einbindung in Loxone in Vollausstattung: drei Seiten aus dem gemeinsamen Musterprojekt mit drei Bildern und
+Schritt-für-Schritt-Anleitung. Die Quittierung am Vorabend gilt jetzt bis zum Abholmorgen.
+
+* **Reiter „Einbindung in Loxone“, Schritt 6:** Statt der bisherigen Liste (14 Bausteine und die Eingänge der
+  Vorlage) stehen dort die drei Seiten des
+  [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), je mit
+  Kasten „So übernehmen Sie diese Seite“, Tabelle, Hinweisen und Bild: „Abfuhrkalender“ (19 Zeilen: läuft das
+  Plugin – Laufzähler `ZAEHLER` an einer Analogwertvalidierung und `OK` –, Kalender läuft aus, nächste Abholung,
+  Jahres-Erneuerung), „Abfuhrkalender Tonnen“ (32: alle acht Tonnenarten mit morgen, heute, Tage und einem
+  Status in Klartext) und „Abfuhrkalender Erinnerung und Ansage“ (34: fertige Schaltsignale „Morgen Abfuhr“ und
+  „Heute Abfuhr“, Vorabend-Push, „Tonne noch nicht draußen“ mit Quittierung, Test-Push, Ansage-Taste nur bei
+  Anwesenheit). Die Tabellen zeigen nur die Tonnen, die der eigene Kalender kennt; die Nummern rücken dann nach.
+* **Die alte Liste meldete im Takt der Abfrage:** sechs Schwellwertschalter hinter digitalen, abgefragten
+  Befehlen geben bei jeder Abfrage einen kurzen Impuls – „Push ‚Tonne rausstellen‘“, „Test-Push“ und
+  „Kalender prüfen“ kamen so alle 5 Minuten. Einen stehenden LoxBerry erkannte sie nicht. Wer sie gebaut hat,
+  nimmt die Seiten neu.
+* **Verhalten geändert: Die Quittierung am Vorabend gilt bis zum Abholmorgen.** Bis 1.4.23 galt `?ack=1` nur
+  bis Mitternacht des Tages, an dem quittiert wurde – wer am Vorabend nach dem Rausstellen quittierte, bekam die
+  zweite Ansage am Abholmorgen trotzdem. Ist morgen etwas fällig, merkt sich das Plugin die Quittierung jetzt
+  für den Abholtag mit: `ACK` bleibt dort bis zum Ende des Fensters der zweiten Ansage auf 1 (deren Uhrzeit plus
+  10 Minuten, ab Werk 06:40), danach 0 bis zur nächsten Quittierung. Die Antwort lautet dann
+  `ACK;OK=1;BIS=Abholmorgen`, sonst wie bisher `ACK;OK=1;BIS=Mitternacht`.
+* **Vorlagen:** Titel des virtuellen Ausgangs und seiner vier Befehle fest deutsch („Abfuhrkalender (AWM & iCal)
+  steuern“, „Ansage jetzt“, „Test-Pushnachricht“, „Quittierung Tonne draußen“, „Jahres-Erneuerung“) – auch in
+  der englischen Oberfläche; die Kommentare bleiben übersetzt. Die Eingangsvorlage trägt `<v.0>` statt `<v.1>`
+  (alle Werte sind ganzzahlig) und den Startwert -1 an den Tage-Befehlen `MUELL_T…` und `MUELL_TNEXT` (bisher 0,
+  das dort „heute“ heißt). Suchtexte unverändert – eingelesene Vorlagen funktionieren weiter.
+* Schritt 1 nennt HTTP als Weg des Musterprojekts (MQTT als Alternative mit denselben Werten), Schritt 5 den
+  Laufzähler und `OK` zuerst.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.4.23
 
 Gemeinsame Sprachausgabe 1.1.2.
@@ -429,7 +462,7 @@ scheitert es, erscheint der Rat als Warnung. In WSL nachgestellt
   das Plugin *Ferien und Feiertage*, falls installiert), oder bis zu einem
   Datum ganz aussetzen
 - **Quittierung** aus Loxone zurück ans Plugin (`?ack=1`) — danach entfällt die
-  Morgen-Ansage
+  Morgen-Ansage; eine Quittierung am Vorabend gilt bis zum Abholmorgen
 - **MQTT** über das LoxBerry MQTT Gateway: bei jeder Änderung, der volle Satz
   alle 30 Minuten, das Lebenszeichen (`status/ok`, `status/ts`,
   `status/zaehler`) bei jedem Minutenlauf. **Alle** Werte der Loxone-Zeile,
@@ -440,6 +473,9 @@ scheitert es, erscheint der Rat als Warnung. In WSL nachgestellt
 - **Zwei Loxone-Vorlagen** zum Einlesen: virtuelle Eingänge (nur die Tonnen, die
   im eigenen Kalender vorkommen) und ein virtueller Ausgang für die
   auslösenden Aufrufe samt Token
+- **Drei Seiten aus dem LoxBerry-Plugins Musterprojekt** im Reiter *Einbindung in
+  Loxone*: läuft es und nächste Abholung, alle acht Tonnen, Erinnerung und Ansage –
+  je mit Anleitung, Baustein-Liste und Bild
 - **Ausfallerkennung**: Alter der Kalenderdatei, Erfolg des letzten Abrufs,
   letzter Termin im Kalender — als eigene Werte für Loxone. `OK` steht auf 0,
   sobald die Daten eines Kalenders mit Adresse älter sind als das Dreifache
@@ -524,7 +560,7 @@ Tonnenzuordnung ist eine Einstellung und steht deshalb bei den Einstellungen.
 | `/plugins/awmabfuhr/awm.php?ics=1` | der gespeicherte Kalender zum Abonnieren |
 | `/plugins/awmabfuhr/awm.php?say=1&token=…` | Ansage sofort abspielen **(Token nötig)**; Antwort `SAY;OK=…;TEXTLAENGE=…` (die Länge, nicht der Text), nur beim Original-Audioserver `SAY;OK=0;TEXT=…` |
 | `/plugins/awmabfuhr/awm.php?ptest=1&token=…` | Test-Pushnachricht auslösen **(Token nötig)** |
-| `/plugins/awmabfuhr/awm.php?ack=1&token=…` | Quittierung „Tonne steht draußen“ **(Token nötig)** |
+| `/plugins/awmabfuhr/awm.php?ack=1&token=…` | Quittierung „Tonne steht draußen“ **(Token nötig)**; gilt bis Mitternacht, ist morgen etwas fällig bis zum Abholmorgen (`BIS=Abholmorgen`) |
 | `/plugins/awmabfuhr/awm.php?renew=1&token=…` | Jahres-Erneuerung jetzt versuchen **(Token nötig)** |
 | `/plugins/awmabfuhr/awm.php?refresh=1&token=…` | Kalender sofort neu abrufen **(Token nötig)** |
 | `/plugins/awmabfuhr/awm.php?selftest=1&token=…` | nur prüfen, ob das Token stimmt — löst nichts aus |
@@ -532,6 +568,16 @@ Tonnenzuordnung ist eine Einstellung und steht deshalb bei den Einstellungen.
 `&cal=2` wählt den zweiten Kalender, `&cal=3` den dritten — bis `&cal=4`.
 Mehr Kalender kennt das Plugin nicht; eine höhere Nummer beantwortet der
 Endpunkt mit der Zeile des vierten.
+
+## Einbindung in Loxone
+
+Der Reiter *Einbindung in Loxone* führt in sieben Schritten durch die
+Einrichtung. Schritt 6 enthält die **drei Seiten des
+[LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt)**
+zum Nachbauen, je mit Anleitung, Baustein-Liste (eine Zeile je Baustein) und
+Bild: läuft es und nächste Abholung, alle acht Tonnen, Erinnerung und Ansage.
+Die Vorlagen für die virtuellen Eingänge und den virtuellen Ausgang stehen
+darunter unter „Alles auf einmal anlegen“.
 
 ## Einrichtung (AWM München)
 

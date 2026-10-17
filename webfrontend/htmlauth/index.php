@@ -1044,6 +1044,15 @@ if ($aw_frame) {
 /* Ergaenzung, nicht aus der Vorlage (X-2, Regeln/04): ein nach einer
    Beanstandung zurueckgegebenes Feld, das beanstandet wurde. */
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
+/* Welle Bild 18 (1.4.24): Bild der Bausteine aus dem gemeinsamen Musterprojekt, Seiten, Schritte und Hinweise
+   je Baustein-Liste (wie Octopus 1.1.25). */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 
 </style>
 <div class="sm-wrap">
@@ -1590,47 +1599,41 @@ if ($aw_altw) {
 <?= awm_t('LOX.S5_TEXT') ?>
 </div>
 
-<div class="sm-step"><b><?= aw_t('LOX.S6') ?></b>
-<table class="sm-tbl">
-<tr><th style="width:34px;">#</th><th><?= aw_t('LOX.T_BAUSTEIN') ?></th><th><?= aw_t('LOX.T_NAME') ?></th><th><?= aw_t('LOX.T_PARAM') ?></th><th><?= aw_t('LOX.T_EINGAENGE') ?></th></tr>
-<?php /* U10: Namen und Parameter ueber Sprachschluessel - bis 1.4.14 standen
-         sie fest deutsch in der Seite, auch in der englischen. */ ?>
-<tr><td>1</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N01') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">ANN</span></td></tr>
-<tr><td>2</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N02') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">PUSH</span></td></tr>
-<tr><td>3</td><td><?= aw_t('LOX.B_UND') ?></td><td><?= aw_t('LOX.N03') ?></td><td>&ndash;</td><td>I1 = #1, I2 = #2</td></tr>
-<tr><td>4</td><td><?= aw_t('LOX.B_ODER') ?></td><td><?= aw_t('LOX.N04') ?></td><td><?= aw_t('LOX.P_SAMMLER') ?></td><td>#3</td></tr>
-<tr><td>5</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td><?= aw_t('LOX.N05') ?></td><td><?= aw_t('LOX.P_TEXT') ?></td><td>#4</td></tr>
-<tr><td>6</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N06') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">PTEST</span></td></tr>
-<tr><td>7</td><td><?= aw_t('LOX.B_BENACHR') ?></td><td><?= aw_t('LOX.N07') ?></td><td><?= aw_t('LOX.P_EIGEN') ?></td><td>#6</td></tr>
-<tr><td>8</td><td><?= aw_t('LOX.B_TASTER') ?></td><td><?= aw_t('LOX.N08') ?></td><td><?= aw_t('LOX.P_VISU') ?></td><td>&ndash;</td></tr>
-<tr><td>9</td><td><?= aw_t('LOX.B_VAUS') ?></td><td><?= aw_t('LOX.N09') ?></td><td><span class="sm-mono">?ack=1</span></td><td>#8</td></tr>
-<tr><td>10</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N10') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?>; <?= aw_t('LOXLISTE.P_JE_TONNE') ?></td><td><span class="sm-mono">HREST</span></td></tr>
-<tr><td>11</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N11') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?></td><td><span class="sm-mono">WARN</span></td></tr>
-<tr><td>12</td><td><?= aw_t('LOX.B_SCHWELL') ?></td><td><?= aw_t('LOX.N12') ?></td><td><?= aw_t('LOX.P_SCHWELLE') ?>, <?= aw_t('LOX.P_INVERS') ?></td><td><span class="sm-mono">FETCH</span></td></tr>
-<tr><td>13</td><td><?= aw_t('LOX.B_STATUS') ?></td><td><?= aw_t('LOX.N13') ?></td><td><span class="sm-mono">&lt;v.1&gt; <?= aw_t('LOX.P_TAGE') ?></span></td><td>V1 = <span class="sm-mono">TNEXT</span></td></tr>
-<tr><td>14</td><td><?= aw_t('LOXLISTE.B_ODER_BENACHR') ?></td><td><?= aw_t('LOX.N14') ?></td><td><?= aw_t('LOX.P_EIGEN') ?></td><td>I1 = #11, I2 = #12</td></tr>
-<?php /* X-10 (08.10.2026): die Eingaenge der Importdatei (Schritt 3, Kalender 1) als eigene Zeilen - so ordnet
-   Werkzeuge/leitungen_setzen.py die Namen der letzten Spalte (ANN, PUSH, ...) einem Baustein zu. Titel und
-   Befehlsnamen aus derselben Quelle wie die Importdatei (awm_vorlage(1), awm_felder(1)); HREST nur, wenn die
-   Tonne erkannt ist. */
-$aw_vx = awm_vorlage(1);
-$aw_vt = preg_match('/<VirtualInHttp [^>]*Title="([^"]*)"/', (string) $aw_vx[1], $aw_vm)
-    ? html_entity_decode($aw_vm[1], ENT_QUOTES, 'UTF-8') : '';
-$aw_vf = awm_felder(1);
-$aw_bz = 15; ?>
-<tr><td>15</td><td><?= aw_t('LOXLISTE.B_VI') ?></td><td><span class="sm-mono"><?= aw_e($aw_vt) ?></span></td><td><?= aw_t('LOXLISTE.P_VI') ?></td><td>&ndash;</td></tr>
-<?php foreach (array('ANN', 'PUSH', 'PTEST', 'HREST', 'WARN', 'FETCH', 'TNEXT') as $aw_bn) {
-    if (!isset($aw_vf[$aw_bn])) { continue; }
-    $aw_bz++; ?>
-<tr><td><?= $aw_bz ?></td><td><?= aw_t('LOXLISTE.B_VIB') ?></td><td><span class="sm-mono">MUELL_<?= aw_e($aw_bn) ?></span></td><td><?= aw_t('LOXLISTE.P_VIB') ?></td><td><?= aw_t('LOXLISTE.V_UNTER') ?></td></tr>
-<?php } ?>
-</table>
-<div class="sm-hilfe"><b><?= aw_t('LOX.ZU4') ?></b> <?= aw_t('LOX.ZU4_TEXT') ?></div>
-<div class="sm-hilfe"><?= aw_t('LOXLISTE.H_ZEILEN') ?></div>
-<div class="sm-hilfe"><b><?= aw_t('LOX.ZU9') ?></b> <?= aw_t('LOX.ZU9_TEXT') ?></div>
-<div class="sm-hilfe"><b><?= aw_t('LOX.ZU12') ?></b> <?= awm_t('LOX.ZU12_TEXT') ?></div>
-<div class="sm-hilfe"><b><?= aw_t('LOX.ZU13') ?></b> <?= awm_t('LOX.ZU13_TEXT') ?></div>
+<div class="sm-step"><b><?= aw_t('LOX.S6') ?></b><br>
+<?php /* Welle Bild 18 (1.4.24; Hausherr 11.10.2026: Vollausstattung, laientauglich; Entwurf Welle 18 ab, E1/E4/E12):
+   drei Seiten aus dem LoxBerry-Plugins Musterprojekt (awm_bausteinseiten()). Je Seite: Ueberschrift, Kasten
+   "So uebernehmen Sie diese Seite", Tabelle, Hinweise, Bild, Link - alle immer sichtbar. Jede Zelle und jeder Satz
+   ist reiner Text und wird maskiert; nur MUSTERPROJEKT traegt den Link. Bis 1.4.23 stand hier eine Tabelle mit 14
+   Bausteinen und den Eingaengen aus Schritt 3 (sechs Schwellwertschalter hinter digitalen Befehlen). */
+$aw_bl = awm_bausteinseiten(); ?>
+<div class="sm-hilfe"><?= aw_t('LOX.BAUSTEINE_VORTEXT') ?></div>
 </div>
+<?php foreach ($aw_bl as $aw_bs) { ?>
+<h4 class="sm-h4"><?= aw_e($aw_bs['kopf']) ?></h4>
+<div class="sm-hinweis"><b><?= aw_t('LOX.SCHRITTE_TITEL') ?></b>
+<ol class="sm-schritte">
+<?php foreach ($aw_bs['schritte'] as $aw_bx) { ?>
+<li><?= aw_e($aw_bx) ?></li>
+<?php } ?>
+</ol></div>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;"><?= aw_t('LOX.BS_SP_NR') ?></th><th><?= aw_t('LOX.T_TYP') ?></th><th><?= aw_t('LOX.T_NAME') ?></th><th><?= aw_t('LOX.T_PARAM') ?></th><th><?= aw_t('LOX.T_EINGAENGE') ?></th></tr>
+<?php foreach ($aw_bs['zeilen'] as $aw_bz) { ?>
+<tr><td><?= (int) $aw_bz[0] ?></td><td><?= aw_e($aw_bz[1]) ?></td><td><?= aw_e($aw_bz[2]) ?></td><td><?= aw_e($aw_bz[3]) ?></td><td><?= aw_e($aw_bz[4]) ?></td></tr>
+<?php } ?>
+</table></div>
+<div class="sm-warnung"><b><?= aw_t('LOX.HINWEISE_TITEL') ?></b>
+<ul class="sm-schritte">
+<?php foreach ($aw_bs['hinweise'] as $aw_bx) { ?>
+<li><?= aw_e($aw_bx) ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= aw_e($aw_bs['bild']) ?>" alt="<?= aw_t('LOX.BILD_ALT') ?>" loading="lazy">
+<figcaption><?= aw_e(sprintf(awm_t('LOX.BILD_UNTERSCHRIFT'), $aw_bs['seite'])) ?></figcaption>
+</figure>
+<div class="sm-hilfe"><?= awm_t('LOX.MUSTERPROJEKT') ?></div>
+<?php } ?>
 
 <div class="sm-step"><b><?= aw_t('LOX.S7') ?></b><br>
 <?= aw_t('LOX.S7_TEXT') ?>

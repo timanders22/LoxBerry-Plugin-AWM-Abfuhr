@@ -2150,26 +2150,80 @@ function awm_ptest_active() {
     return (is_file($f) && time() - filemtime($f) < 300) ? 1 : 0;
 }
 
-/** Quittierung "Tonne steht draussen" - gilt bis Mitternacht. */
+/**
+ * Quittierung "Tonne steht draussen".
+ *
+ * Sie gilt bis Mitternacht des Tages, an dem quittiert wurde (Merker ack_<HEUTE>) - und seit 1.4.24 (Welle Bild 18,
+ * Entwurf Welle 18 ab, Entscheidung 10, Hausherr 17.10.2026) am VORABEND einer Abholung zusaetzlich bis zum
+ * Abholmorgen: Merker ack_vorabend_<ABHOLTAG>, gueltig am Abholtag bis zum Ende des Fensters der zweiten Ansage
+ * (Uhrzeit "Zweite Ansage am Abholmorgen", ab Werk 06:30, plus 10 Minuten).
+ *
+ * Bis 1.4.23 las awm_ack_active() nur ack_<HEUTE>. Wer am Vorabend nach dem Rausstellen quittierte - der natuerliche
+ * Zeitpunkt -, hatte am Abholmorgen keine Quittierung, und die zweite Ansage kam trotzdem; die Texte (Reiter, Vorlage)
+ * versprachen das Gegenteil. Danach faellt ACK wieder auf 0, damit "Tonne noch nicht draussen" am Abend vor einer
+ * Abholung am Folgetag nicht von der Quittierung des Vortags verdeckt wird.
+ *
+ * Beide Merkernamen enden auf JJJJMMTT und beginnen mit ack_ - das Aufraeumen in cron.php nimmt sie mit.
+ */
 function awm_ack_datei() {
     return awm_tmpdir() . '/ack_' . date('Ymd');
 }
 
-function awm_ack_active() {
-    return is_file(awm_ack_datei()) ? 1 : 0;
+/** Merker der Vorabend-Quittierung fuer den Abholtag $ymd (JJJJMMTT). */
+function awm_ack_vorabend_datei($ymd) {
+    return awm_tmpdir() . '/ack_vorabend_' . preg_replace('/[^0-9]/', '', (string) $ymd);
 }
 
-/** Quittierung setzen. Rueckgabe true nur, wenn der Merker WIRKLICH
- *  geschrieben ist (C6) - bis 1.4.14 antwortete awm.php "ACK;OK=1" auch
- *  bei schreibgeschuetztem Zwischenspeicher, und ACK blieb 0. */
+/** Ende des Abholmorgens heute: Fenster der zweiten Ansage (time2, ab Werk 06:30) plus 10 Minuten. */
+function awm_ack_morgen_ende() {
+    $cfg = awm_config();
+    $when2 = preg_match('/^\d{1,2}:\d{2}$/', (string) $cfg['notify']['time2']) ? $cfg['notify']['time2'] : '06:30';
+    list($hh, $mm) = explode(':', $when2);
+    return mktime((int) $hh, (int) $mm, 0) + 600;
+}
+
+function awm_ack_active() {
+    if (is_file(awm_ack_datei())) {
+        return 1;
+    }
+    return (is_file(awm_ack_vorabend_datei(date('Ymd'))) && time() < awm_ack_morgen_ende()) ? 1 : 0;
+}
+
+/** Ist morgen in irgendeinem Kalender etwas faellig? (Die Quittierung gilt fuer alle Kalender.) */
+function awm_ack_morgen_faellig() {
+    foreach (array_keys(awm_cals()) as $n) {
+        $st = awm_state(false, $n);
+        foreach (array_keys(awm_tonnenarten()) as $k) {
+            if (!empty($st['morgen'][$k])) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/** Quittierung setzen. Rueckgabe 'mitternacht' oder 'abholmorgen' (bis wann sie gilt), false nur, wenn ein Merker
+ *  NICHT geschrieben ist (C6) - bis 1.4.14 antwortete awm.php "ACK;OK=1" auch bei schreibgeschuetztem
+ *  Zwischenspeicher, und ACK blieb 0. */
 function awm_ack_setzen() {
     if (@file_put_contents(awm_ack_datei(), '1') !== 1) {
         awm_log('Quittierung NICHT gespeichert: der Merker ' . awm_ack_datei()
               . ' liess sich nicht schreiben.');
         return false;
     }
-    awm_log('Quittierung erhalten - die zweite Ansage entfaellt heute.');
-    return true;
+    if (!awm_ack_morgen_faellig()) {
+        awm_log('Quittierung erhalten - die zweite Ansage entfaellt heute.');
+        return 'mitternacht';
+    }
+    $morgen = date('Ymd', strtotime('+1 day'));
+    if (@file_put_contents(awm_ack_vorabend_datei($morgen), '1') !== 1) {
+        awm_log('Quittierung fuer den Abholmorgen NICHT gespeichert: der Merker ' . awm_ack_vorabend_datei($morgen)
+              . ' liess sich nicht schreiben.');
+        return false;
+    }
+    awm_log('Quittierung erhalten - sie gilt bis zum Abholmorgen (' . substr($morgen, 6, 2) . '.'
+          . substr($morgen, 4, 2) . '.), die zweite Ansage entfaellt dann.');
+    return 'abholmorgen';
 }
 
 /**
@@ -3582,7 +3636,7 @@ function awm_announce_check() {
             }
         }
 
-        // 2. Abholmorgen - nur wenn nicht quittiert
+        // 2. Abholmorgen - nur wenn nicht quittiert (seit 1.4.24 zaehlt auch die Quittierung am Vorabend, E10)
         if (empty($cfg['notify']['audio2'])) {
             continue;
         }
@@ -3590,7 +3644,7 @@ function awm_announce_check() {
         $flag2 = awm_tmpdir() . '/announced2_' . $n . '_' . date('Ymd');
         if ($imFenster($when2) && !is_file($flag2) && awm_ansage_merker($flag2)) {
             if (awm_ack_active()) {
-                awm_log('Morgen-Ansage entfaellt: heute wurde bereits quittiert.');
+                awm_log('Morgen-Ansage entfaellt: bereits quittiert (heute oder am Vorabend).');
                 continue;
             }
             $text = awm_announce_text2($st, $n);
@@ -4601,7 +4655,10 @@ function awm_xml_virtual_in_http($kopf, $cmds) {
         $o .= 'Check="' . awm_vx($c['check']) . '" ';
         $o .= 'Signed="' . ($c['min'] < 0 ? 'true' : 'false') . '" ';
         $o .= 'Analog="' . ($c['analog'] ? 'true' : 'false') . '" ';
-        $o .= 'SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" ';
+        /* Welle Bild 18 (1.4.24; Entwurf Welle 18 ab, E9 c): Startwert je Befehl - die Tage-Befehle starten mit -1
+         * (unbekannt) statt 0, das dort "heute" heisst. */
+        $o .= 'SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="'
+            . (int) (isset($c['defval']) ? $c['defval'] : 0) . '" ';
         $o .= 'MinVal="' . (int) $c['min'] . '" ';
         $o .= 'MaxVal="' . (int) $c['max'] . '" ';
         $o .= 'Unit="' . awm_vx(isset($c['unit']) ? $c['unit'] : '<v>') . '" ';
@@ -4669,6 +4726,90 @@ function awm_host() {
         : (gethostname() ?: 'loxberry');
 }
 
+/** Titel des Behaelters der Eingangsvorlage eines Kalenders - an EINER Stelle fuer die Vorlage und die
+ *  Baustein-Listen im Reiter (Welle Bild 18, 1.4.24). */
+function awm_vorlage_titel($cal = 1) {
+    $c = awm_cal($cal);
+    return 'Abfuhrkalender (AWM & iCal)' . ($c ? ' ' . $c['name'] : '');
+}
+
+/**
+ * Die Baustein-Listen fuer Schritt 6 des Reiters "Einbindung in Loxone" (Welle Bild 18, 1.4.24; Hausherr 11.10.2026:
+ * Vollausstattung, ein absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 18 ab, Entscheidungen
+ * 1, 4 und 12). Drei Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und verbunden
+ * (Musterprojekt/baustein_listen.txt, Abschnitte "Abfuhrkalender" 19, "Abfuhrkalender Tonnen" 32 und "Abfuhrkalender
+ * Erinnerung und Ansage" 34 Zeilen, wortgleich). Je Tabellenzeile EIN Sprachschluessel LOX.Z<seite>_<nn> = "Typ | Name |
+ * Parameter | Eingaenge" ohne Auszeichnung, Ausgabe ueber sprintf() (ein Prozentzeichen stuende als %% darin);
+ * index.php gibt jede Zelle und jeden Satz maskiert aus.
+ *
+ * Tonnen: Glas, Sperrmuell, Gruenschnitt und Schadstoffe stehen nur in der eigenen Vorlage, wenn Kalender 1 sie kennt
+ * (awm_aktive_tonnen). Fehlt eine, fallen ihre Zeilen weg (Seite 2: Befehle und Status, Seite 3: der morgen-Befehl),
+ * die Nummern ruecken nach, und jeder Verweis ("#n" in der Eingangsspalte, "Nr. n"/"no. n" in Parameter, Kasten und
+ * Hinweisen) wird umgerechnet; ein Formeleingang, dessen Befehl fehlt, bleibt offen (zaehlt als 0). Mit allen acht
+ * Tonnen ist jede Zeile wortgleich mit der Liste. Der Behaeltername "Abfuhrkalender (AWM & iCal) Kalender 1" folgt
+ * dem Titel der eigenen Vorlage, sobald Kalender 1 eingerichtet ist.
+ *
+ * Bis 1.4.23 stand im Reiter eine Tabelle mit 14 Bausteinen und den Eingaengen aus Schritt 3: sechs
+ * Schwellwertschalter hinter digitalen, abgefragten Befehlen gaben bei jeder Abfrage einen Impuls (Regeln/09) -
+ * "Push Tonne rausstellen", "Test-Push" und "Kalender pruefen" meldeten alle 300 s -, und ein stehender LoxBerry
+ * fiel nicht auf (Entwurf Welle 18 ab, Abschnitt 1, Befunde).
+ *
+ * Rueckgabe: je Seite 'kopf', 'seite' (Name der Musterseite), 'bild', 'schritte' und 'hinweise' (Saetze), 'zeilen'
+ * (je array(Nummer, Typ, Name, Parameter, Eingaenge)) - alles reiner Text.
+ */
+function awm_bausteinseiten()
+{
+    $aktiv = awm_aktive_tonnen(1);
+    $vi_muster = 'Abfuhrkalender (AWM & iCal) Kalender 1';
+    $vi_titel = awm_cal(1) !== null ? awm_vorlage_titel(1) : $vi_muster;
+    $seiten = array(
+        array('z' => 1, 'seite' => 'Abfuhrkalender', 'bild' => 'einbindung_loxone.png', 'n' => 19, 's' => 6, 'h' => 7,
+              'tonnen' => array()),
+        array('z' => 2, 'seite' => 'Abfuhrkalender Tonnen', 'bild' => 'einbindung_loxone_tonnen.png', 'n' => 32, 's' => 3, 'h' => 3,
+              'tonnen' => array('glas' => array(17, 18, 19, 20), 'sperr' => array(21, 22, 23, 24), 'gruen' => array(25, 26, 27, 28), 'schad' => array(29, 30, 31, 32))),
+        array('z' => 3, 'seite' => 'Abfuhrkalender Erinnerung und Ansage', 'bild' => 'einbindung_loxone_erinnerung_ansage.png', 'n' => 34, 's' => 5, 'h' => 6,
+              'tonnen' => array('glas' => array(5), 'sperr' => array(6), 'gruen' => array(7), 'schad' => array(8))),
+    );
+    $aus = array();
+    foreach ($seiten as $s) {
+        $weg = array();
+        foreach ($s['tonnen'] as $t => $nrn) {
+            if (in_array($t, $aktiv, true)) { continue; }
+            foreach ($nrn as $i) { $weg[$i] = true; }
+        }
+        $neu = array();
+        $j = 0;
+        for ($i = 1; $i <= $s['n']; $i++) {
+            if (!isset($weg[$i])) { $neu[$i] = ++$j; }
+        }
+        $nummer = function ($text) use ($neu) {
+            return preg_replace_callback('/(#|Nr\. |no\. )(\d+)/', function ($m) use ($neu) {
+                $k = (int) $m[2];
+                return isset($neu[$k]) ? $m[1] . $neu[$k] : $m[0];
+            }, (string) $text);
+        };
+        $zeilen = array();
+        for ($i = 1; $i <= $s['n']; $i++) {
+            if (isset($weg[$i])) { continue; }
+            $c = array_pad(explode(' | ', sprintf(awm_t(sprintf('LOX.Z%d_%02d', $s['z'], $i)))), 4, '');
+            $ein = array();
+            foreach (explode(', ', $c[3]) as $e) {
+                if (preg_match('/#(\d+)/', $e, $m) && isset($weg[(int) $m[1]])) { continue; }
+                $ein[] = $nummer($e);
+            }
+            $zeilen[] = array($neu[$i], str_replace($vi_muster, $vi_titel, $c[0]), $c[1], $nummer($c[2]),
+                              $ein ? implode(', ', $ein) : '—');
+        }
+        $schritte = array();
+        for ($k = 1; $k <= $s['s']; $k++) { $schritte[] = $nummer(awm_t(sprintf('LOX.BS%d_S%d', $s['z'], $k))); }
+        $hinweise = array();
+        for ($k = 1; $k <= $s['h']; $k++) { $hinweise[] = $nummer(awm_t(sprintf('LOX.BS%d_H%d', $s['z'], $k))); }
+        $aus[] = array('kopf' => awm_t(sprintf('LOX.BS%d_KOPF', $s['z'])), 'seite' => $s['seite'],
+                       'bild' => $s['bild'], 'schritte' => $schritte, 'hinweise' => $hinweise, 'zeilen' => $zeilen);
+    }
+    return $aus;
+}
+
 /** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
 function awm_vorlage($cal = 1) {
     $host = awm_host();
@@ -4682,13 +4823,16 @@ function awm_vorlage($cal = 1) {
             'comment' => $text . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
             // EINE Stelle fuer das Suchmuster - siehe awm_check().
             'check' => awm_check($name),
-            'unit' => ($einheit !== '' ? '<v.1> ' . $einheit : '<v.1>'),
+            /* Welle Bild 18 (1.4.24; Entwurf Welle 18 ab, E9 b/c): alle Werte sind ganzzahlig (0/1, Tage, h,
+             * Zaehler, Loxone-Zeit) - <v.0> statt <v.1>; T<Tonne> und TNEXT starten mit -1 (unbekannt), nicht mit 0
+             * (heute). Suchtexte unveraendert - eingelesene Vorlagen funktionieren weiter. */
+            'unit' => ($einheit !== '' ? '<v.0> ' . $einheit : '<v.0>'),
             'analog' => $analog, 'min' => $min, 'max' => $max,
+            'defval' => ($name[0] === 'T' && $min < 0) ? -1 : 0,
         );
     }
-    $c = awm_cal($cal);
     return array('VI_awm' . ($cal > 1 ? '_' . $cal : '') . '.xml', awm_xml_virtual_in_http(array(
-        'title' => 'Abfuhrkalender (AWM & iCal)' . ($c ? ' ' . $c['name'] : ''),
+        'title' => awm_vorlage_titel($cal),
         'address' => 'http://' . $host . '/plugins/' . $ordner . '/awm.php' . ($cal > 1 ? '?cal=' . $cal : ''),
         'polling' => '300',
         // AWM-b1: Kommentar aus der Sprachdatei, Abschnitt [VORLAGE].
@@ -4711,19 +4855,22 @@ function awm_vorlage_vo($cal = 1) {
     $basis = '/plugins/' . $ordner . '/awm.php';
     $cal = max(1, (int) $cal);
     $suffix = '&token=' . $tok . ($cal > 1 ? '&cal=' . $cal : '');
-    // AWM-b1: Namen und Kommentare aus der Sprachdatei, Abschnitt [VORLAGE].
+    /* Welle Bild 18 (1.4.24; Entwurf Welle 18 ab, E9 a; Sprachregel des Hausherrn 13.10.2026): Titel des Behaelters
+     * und der Befehle fest deutsch - sie sind Namen von Bausteinen in Loxone und stehen so in den Baustein-Listen
+     * des Musterprojekts. Die Kommentare bleiben uebersetzt (Abschnitt [VORLAGE]). Bis 1.4.23 kamen auch die Titel
+     * aus der Sprachdatei (englisch "Announce now", "Control Abfuhrkalender ..."). */
     $cmds = array(
-        array('title' => awm_t('VORLAGE.VO_SAY_T'), 'comment' => awm_t('VORLAGE.VO_SAY_K'),
+        array('title' => 'Ansage jetzt', 'comment' => awm_t('VORLAGE.VO_SAY_K'),
               'on' => $basis . '?say=1' . $suffix),
-        array('title' => awm_t('VORLAGE.VO_PTEST_T'), 'comment' => awm_t('VORLAGE.VO_PTEST_K'),
+        array('title' => 'Test-Pushnachricht', 'comment' => awm_t('VORLAGE.VO_PTEST_K'),
               'on' => $basis . '?ptest=1' . $suffix),
-        array('title' => awm_t('VORLAGE.VO_ACK_T'), 'comment' => awm_t('VORLAGE.VO_ACK_K'),
+        array('title' => 'Quittierung Tonne draußen', 'comment' => awm_t('VORLAGE.VO_ACK_K'),
               'on' => $basis . '?ack=1' . $suffix),
-        array('title' => awm_t('VORLAGE.VO_RENEW_T'), 'comment' => awm_t('VORLAGE.VO_RENEW_K'),
+        array('title' => 'Jahres-Erneuerung', 'comment' => awm_t('VORLAGE.VO_RENEW_K'),
               'on' => $basis . '?renew=1' . $suffix),
     );
     return array('VO_awm' . ($cal > 1 ? '_' . $cal : '') . '.xml', awm_xml_virtual_out(array(
-        'title' => awm_t('VORLAGE.VO_TITEL'),
+        'title' => 'Abfuhrkalender (AWM & iCal) steuern',
         'address' => 'http://' . $host,
         'comment' => sprintf(awm_t('VORLAGE.VO_KOMMENTAR'), date('d.m.Y')),
     ), $cmds));

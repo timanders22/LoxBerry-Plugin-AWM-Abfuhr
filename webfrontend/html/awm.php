@@ -21,7 +21,8 @@
  *                       LETZTER = letzter Termin im Kalender (Loxone-Zeit, 0 = unbegrenzt),
  *                       HINW=1 = es gibt einen Hinweis (Text ueber ?text=1),
  *                       LUECKE = Tage bis zum naechsten ersatzlos gestrichenen Termin,
- *                       ACK=1 = heute quittiert, RUHE=1 = Ansage ausgesetzt.
+ *                       ACK=1 = quittiert (heute; am Vorabend quittiert: bis zum Abholmorgen),
+ *                       RUHE=1 = Ansage ausgesetzt.
  *
  *   ?debug=1         -> zusaetzlich alle Termine im Vorschau-Fenster
  *   ?refresh=1       -> Kalender sofort neu abrufen
@@ -35,7 +36,8 @@
  *
  *   ?say=1&token=T     -> Test: Ansage sofort abspielen (bzw. Demo-Text)
  *   ?ptest=1&token=T   -> Test-Pushnachricht ausloesen (setzt PTEST fuer 5 Minuten)
- *   ?ack=1&token=T     -> Quittierung "Tonne steht draussen" (setzt ACK bis Mitternacht)
+ *   ?ack=1&token=T     -> Quittierung "Tonne steht draussen" (setzt ACK bis Mitternacht; ist morgen
+ *                         etwas faellig, bis zum Abholmorgen - seit 1.4.24)
  *   ?renew=1&token=T   -> Jahres-Erneuerung des Kalender-Links jetzt versuchen
  *   ?selftest=1&token=T -> nur pruefen, ob das Token stimmt; loest nichts aus
  *
@@ -274,7 +276,9 @@ if (isset($_GET['ack'])) {
     if (!awm_token_ok()) {
         awm_token_abweisen('ACK');
     }
-    if (!awm_ack_setzen()) {                  // C6: fail closed
+    /* Welle Bild 18 (1.4.24; Entwurf Welle 18 ab, E10): awm_ack_setzen() sagt, bis wann die Quittierung gilt. */
+    $awm_bis = awm_ack_setzen();
+    if ($awm_bis === false) {                 // C6: fail closed
         http_response_code(500);
         echo "ACK;OK=0;ERR=SCHREIBEN\n";
         exit;
@@ -282,7 +286,7 @@ if (isset($_GET['ack'])) {
     foreach (array_keys(awm_cals()) as $awm_n) {
         awm_mqtt_publish(null, $awm_n);
     }
-    echo "ACK;OK=1;BIS=Mitternacht\n";
+    echo 'ACK;OK=1;BIS=' . ($awm_bis === 'abholmorgen' ? 'Abholmorgen' : 'Mitternacht') . "\n";
     exit;
 }
 
