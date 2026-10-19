@@ -197,6 +197,17 @@ fi
 chmod 600 "$CFGDIR/awm.json" 2>/dev/null
 [ -f "$BK" ] && chmod 600 "$BK" 2>/dev/null
 
+# ---------- Gruppe 1 / MQTT (1.4.25): die Befehlsbruecke wieder starten ----------
+# Erst die Upgrade-Marke weg (sonst lehnt befehlsbruecke.sh den Start ab; die trap raeumt sie sonst erst am
+# Ende ab), dann start. Er startet nur, wenn die zurueckgespielte Konfiguration den Haken "Befehle ueber MQTT
+# annehmen" traegt (befehlsbruecke.php --soll); sonst holt es der Minutenlauf binnen einer Minute nach. Nie als
+# root - die Hakenskripte laufen als loxberry (Regeln/06).
+rm -f "$MARKE" 2>/dev/null
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ] && [ "$(id -u)" != "0" ]; then
+    timeout 40 bash "$BBSH" start 2>&1 | sed 's/^/<INFO> /'
+fi
+
 # Eigentuemer richtigstellen.
 #
 # cp -p uebernimmt Rechte und Zeitstempel, aber der Eigentuemer richtet sich

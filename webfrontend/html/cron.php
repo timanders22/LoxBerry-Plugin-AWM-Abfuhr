@@ -140,15 +140,33 @@ foreach (awm_cals() as $n => $c) {
      * seine letzte 1, und ein toter Minutenlauf sieht aus wie ein gesunder. */
     /* status/ok heisst weiter "Kalenderdaten vorhanden" wie bis 1.4.14 -
      * nicht das OK mit Altersgrenze (C8), das in 'ok' steht. */
-    awm_mqtt_lebenszeichen($n, empty($st['ereignisse']) ? 0 : 1, $awm_zaehler);
+    /* Gruppe 1 / MQTT (1.4.25; Entwurf ab, E9): awm/ok geht bei jedem Lauf mit - ohne den Zwischenspeicher-
+     * Filter; nach einem Neustart des Miniservers waere es sonst bis zu 30 Minuten 0. */
+    awm_mqtt_lebenszeichen($n, empty($st['ereignisse']) ? 0 : 1, $awm_zaehler, array('ok' => (int) $st['ok']));
 }
 /* M4: auch ohne eingerichteten Kalender geht das Lebenszeichen hinaus, unter
  * dem Grundpraefix mit status/ok 0. Bis 1.4.14 verstummte es ganz (MQTT-
  * Pruefer, Fall G3) - ein Plugin ohne Kalender sah aus wie ein toter
  * Minutenlauf. */
 if (!awm_cals()) {
-    awm_mqtt_lebenszeichen(1, 0, $awm_zaehler);
+    /* Gruppe 1 / MQTT (1.4.25; Entwurf ab, E4): ohne Kalender gehen auch die Werte des leeren Zustands hinaus -
+     * dieselben, die die Loxone-Zeile dann liefert (awm.php: Kalender 1, OK=0, Tage -1, LETZTER -1). Bis 1.4.24
+     * kam nur das Lebenszeichen, und wer alle Kalender loeschte, sah in Loxone weiter awm_ok = 1. Dieselbe
+     * Taktung wie oben (nur Aenderungen, der volle Satz alle 30 Minuten). */
+    $beat = awm_tmpdir() . '/mqtt_beat_1';
+    $voll = !is_file($beat) || time() - filemtime($beat) > 1800;
+    $st = awm_state(false, 1);
+    if (awm_mqtt_publish($st, 1, $voll) > 0 && $voll) { @touch($beat); }
+    awm_mqtt_lebenszeichen(1, 0, $awm_zaehler, array('ok' => 0));
 }
+
+/* Gruppe 1 / MQTT (1.4.25; Bauvorschrift Nachtrag 19.10.2026 "Waechter"; Entwurf gemeinsam E17): die
+ * Befehlsbruecke im Minutentakt waechten - bb_waechter() startet sie bei Haken an, haelt sie bei Haken aus an,
+ * startet sie neu, wenn zustand.json aelter als 180 s ist (hoechstens alle 600 s, nie waehrend eines Updates),
+ * und sendet <praefix>/status/befehle. Die Sperre dieses Laufs (awm_sperre('cron')) erbt der Dienst nicht:
+ * befehlsbruecke.sh schliesst geerbte Deskriptoren (Bruecken-Pruefstand F12J). Ohne Bruecke (Archiv,
+ * Arbeitsordner) geschieht nichts. */
+awm_bruecke_waechter();
 
 awm_announce_check();
 awm_renew_check();

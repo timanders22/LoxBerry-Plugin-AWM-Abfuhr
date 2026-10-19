@@ -308,12 +308,24 @@ if ($aw_post && !aw_formtoken_ok($aw_cfg_roh)) {
 /* ---------- Loxone-Vorlagen herunterladen (Hausstandard) ---------- */
 if ($aw_post && isset($_POST['vorlage'])) {
     $aw_vcal = max(1, min(9, (int) (isset($_POST['vorlage_cal']) ? $_POST['vorlage_cal'] : 1)));
-    list($aw_vname, $aw_vinhalt) = ($_POST['vorlage'] === 'vo')
-        ? awm_vorlage_vo($aw_vcal) : awm_vorlage($aw_vcal);
-    header('Content-Type: application/x-download');
-    header('Content-Disposition: attachment; filename="' . $aw_vname . '"');
-    echo $aw_vinhalt;
-    exit;
+    /* Gruppe 1 / MQTT (1.4.25): dazu die Vorlage der MQTT-Befehle (vq_mqtt, aus der Befehlsbruecke:
+     * bb_vorlage()). Fehlt die Bruecke, gibt es keine leere Datei, sondern eine Meldung. Fuer die WERTE ueber
+     * das Gateway gibt es keine Importvorlage (Hausherr 19.10.2026, Regeln/07 R2_078) - Namenstabelle. */
+    $aw_vw = is_string($_POST['vorlage']) ? $_POST['vorlage'] : '';
+    if ($aw_vw === 'vq_mqtt') {
+        $aw_v = awm_befehle_vorlage();
+    } else {
+        $aw_v = ($aw_vw === 'vo') ? awm_vorlage_vo($aw_vcal) : awm_vorlage($aw_vcal);
+    }
+    if ($aw_v !== null) {
+        list($aw_vname, $aw_vinhalt) = $aw_v;
+        header('Content-Type: application/x-download');
+        header('Content-Disposition: attachment; filename="' . $aw_vname . '"');
+        echo $aw_vinhalt;
+        exit;
+    }
+    $aw_fehler[] = awm_t('LOX.S4_KEINE');
+    $aw_tab = 'tab-loxone';
 }
 
 /* ---------- MQTT speichern (eigener Reiter, Hausstandard) ----------
@@ -340,6 +352,35 @@ if ($aw_post && isset($_POST['mqtt_save'])) {
         if (aw_speichern($aw_new, $aw_fehler)) {
             $aw_saved = true;
             aw_mqtt_folgen($aw_vorher, $aw_new, $aw_hinweise, $aw_fehler);
+        }
+    }
+    $aw_tab = 'tab-mqtt';
+}
+
+/* ---------- Befehle ueber MQTT (Gruppe 1 / MQTT, 1.4.25): eigenes Formular im Reiter MQTT ----------
+ * Eigenes Formular und eigener Handler (Regeln/07 Abschnitt 7): der MQTT-Handler setzt seine Haken per isset() und
+ * wuerde diesen Haken sonst auf 0 stellen. Die Befehlsbruecke liest ihn je Nachricht und spaetestens alle 30 s (Haken
+ * aus -> sie endet); gestartet wird sie hier sofort und sonst vom Waechter im Minutenlauf (cron.php). */
+if ($aw_post && isset($_POST['befehle_save'])) {
+    $aw_bean_form = 'befehle';
+    $aw_new = awm_config(true);
+    $aw_new['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    if (aw_speichern($aw_new, $aw_fehler)) {
+        $aw_saved = true;
+        awm_log('Befehle ueber MQTT ' . ($aw_new['befehle_mqtt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . '.');
+        if ($aw_new['befehle_mqtt_ein'] && !empty($aw_new['mqtt_enabled'])) {
+            /* Sofort starten, nicht erst im Minutenlauf: dessen Waechter startet nach einem Start hoechstens alle
+             * 600 s neu (awm_bruecke_starten()). Aus geht sie von selbst (liest den Haken spaetestens alle 30 s). */
+            list($aw_brc, $aw_baus) = awm_bruecke_starten();
+            if ($aw_brc === 0) {
+                $aw_hinweise[] = awm_t('BEFEHL.M_EIN');
+            } else {
+                $aw_fehler[] = sprintf(awm_t('BEFEHL.M_START_FEHL'), $aw_baus);
+            }
+        } elseif ($aw_new['befehle_mqtt_ein']) {
+            $aw_hinweise[] = awm_t('BEFEHL.P_MQTT_AUS');
+        } else {
+            $aw_hinweise[] = awm_t('BEFEHL.M_AUS');
         }
     }
     $aw_tab = 'tab-mqtt';
@@ -1053,6 +1094,9 @@ if ($aw_frame) {
     padding-top: 10px; border-top: 1px solid #e0e0e0; }
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
+/* Gruppe 1 / MQTT (1.4.25): Kopierknopf in der Namenstabelle (Reiter Einbindung, Schritt 3). */
+.sm-kopie { font-size: 0.8em; padding: 1px 6px; margin-left: 6px; cursor: pointer; border: 1px solid #bbb;
+    border-radius: 3px; background: #f4f4f4; }
 
 </style>
 <div class="sm-wrap">
@@ -1545,13 +1589,48 @@ if ($aw_altw) {
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= aw_t('KNOPF.SPEICHERN') ?></button>
 </div>
 </form>
+
+<?php /* Gruppe 1 / MQTT (1.4.25; Entwurf gemeinsam 2.11): Haken der Befehlsbruecke, ab Werk aus - eigenes Formular
+   (Regeln/07 Abschnitt 7), damit das MQTT-Formular ihn nicht zuruecksetzt. */ ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="befehle_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
+<h2><?= aw_t('BEFEHL.H_TITEL') ?></h2>
+<div class="sm-feld">
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="befehle_mqtt_ein" <?= aw_eh('befehle', 'befehle_mqtt_ein', !empty($aw_cfg['befehle_mqtt_ein'])) ? 'checked' : '' ?>> <?= aw_t('BEFEHL.L_ANNEHMEN') ?>
+</label>
+<div class="sm-hilfe"><?= aw_t('BEFEHL.H_ANNEHMEN') ?></div>
+</div>
+<div class="sm-hilfe"><?= sprintf(awm_t('BEFEHL.H_THEMEN'), aw_e(awm_mqtt_basis($aw_cfg))) ?></div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= aw_t('KNOPF.BEFEHLE_SPEICHERN') ?></button>
+</div>
+</form>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-seite<?= $aw_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= aw_t('LOX.H_TITEL') ?></h2>
 
-<div class="sm-step"><b><?= aw_t('LOX.S1') ?></b><br><?= aw_t('LOX.S1_TEXT') ?></div>
+<?php /* Gruppe 1 / MQTT (1.4.25; Entwurf ab 2.6, Entwurf gemeinsam 2.11): MQTT ist der Weg des Musterprojekts.
+   Schritt 1 MQTT einschalten (mit Zustand), Schritt 2 das Gateway nach seiner Fassung (V1: das Plugin bringt sein Abo
+   selbst mit; V2 und "nicht feststellbar": Hakenliste aus awm_mqtt_hakenliste(), aufgeklappt), Schritt 3 die
+   Namenstabelle (keine Importvorlage fuer Werte, Hausherr 19.10.2026), Schritt 4 die Befehle aus der Befehlsbruecke (bb_liste(), EINE Quelle mit
+   der Vorlage der MQTT-Befehle), Schritt 5 die Ausfallerkennung. Der Weg ueber HTTP (bis 1.4.24 Schritte 3 und 4)
+   steht unten unter "Bestehende Anlagen: Weg ueber HTTP". Namen aus awm_mqtt_gateway_name(). */
+$aw_gwf = awm_gateway_fassung();
+$aw_haken = awm_mqtt_hakenliste(1);
+$aw_bliste = awm_befehle_liste();
+$aw_mbasis = awm_mqtt_basis($aw_cfg); ?>
+<div class="sm-step"><b><?= aw_t('LOX.S1') ?></b><br><?= aw_t('LOX.S1_TEXT') ?>
+<?php if (!empty($aw_cfg['mqtt_enabled'])) { ?>
+<div class="sm-hinweis"><?= sprintf(awm_t('LOX.S1_EIN'), aw_e($aw_mbasis)) ?></div>
+<?php } else { ?>
+<div class="sm-warnung"><?= aw_t('LOX.S1_AUS') ?></div>
+<?php } ?>
+</div>
 
 <div class="sm-step"><b><?= aw_t('LOX.S2') ?></b><br>
 <?= aw_t('LOX.S2_TEXT') ?>
@@ -1560,43 +1639,74 @@ if ($aw_altw) {
      und der Hinweis traegt HTML. Durch aw_t() gingen dem Anwender die
      spitzen Klammern als Text auf den Bildschirm. */ ?>
 <b><?= awm_abo_text() ?></b>
+<?php if ($aw_gwf !== 1) { ?>
+<details open><summary><?= aw_e(sprintf(awm_t('LOX.HAKEN_AUF'), count($aw_haken))) ?></summary>
+<div class="sm-hilfe"><?= sprintf(awm_t('LOX.HAKEN_VOR'), aw_e($aw_mbasis)) ?></div>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= aw_t('LOX.T_HTHEMA') ?></th><th><?= aw_t('LOX.T_HNAME') ?></th><th><?= aw_t('LOX.T_BEDEUTUNG') ?></th><th><?= aw_t('LOX.T_HART') ?></th></tr>
+<?php foreach ($aw_haken as $aw_hi => $aw_hz) { ?>
+<tr><td><?= (int) $aw_hi + 1 ?></td><td><span class="sm-mono"><?= aw_e($aw_hz[0]) ?></span></td><td><span class="sm-mono"><?= aw_e($aw_hz[1]) ?></span></td><td><?= aw_e($aw_hz[2]) ?></td><td><?= aw_t($aw_hz[3] === 'text' ? 'LOX.ART_TEXT' : 'LOX.ART_ZAHL') ?></td></tr>
+<?php } ?>
+</table></div>
+<div class="sm-hilfe"><?= sprintf(awm_t('LOX.HAKEN_NACH'), aw_e($aw_mbasis . '/status/befehle')) ?></div>
+</details>
+<?php } ?>
 </div>
 
+<?php /* Gruppe 1 / MQTT (1.4.25; Hausherr 19.10.2026, Regeln/07 R2_078, LoxBerry-Anleitung widget_mqtt): fuer die
+   Werte ueber das Gateway KEINE Importvorlage, sondern die Namenstabelle - je Wert ein einfacher Virtueller Eingang
+   (Texte: Virtueller Texteingang), Name exakt; der Kopierknopf legt den Namen in die Zwischenablage. */
+$aw_namen = awm_mqtt_namen(1); ?>
 <div class="sm-step"><b><?= aw_t('LOX.S3') ?></b><br>
 <?= aw_t('LOX.S3_TEXT') ?>
-<table class="sm-tbl">
-<tr><th><?= aw_t('LOX.T_EIGENSCHAFT') ?></th><th><?= aw_t('LOX.T_WERT') ?></th></tr>
-<tr><td>URL</td><td><span class="sm-mono">http://<?= $aw_host ?><?= $aw_basis ?></span></td></tr>
-<tr><td><?= aw_t('LOX.T_ZYKLUS') ?></td><td>300 <?= aw_t('LOX.T_SEKUNDEN') ?></td></tr>
-</table>
-<?= awm_t('LOX.S3_BEFEHLE') ?>
-<table class="sm-tbl">
-<tr><th style="width:170px;"><?= aw_t('LOX.T_SUCHTEXT') ?></th><th style="width:60px;"><?= aw_t('LOX.T_TYP') ?></th><th><?= aw_t('LOX.T_BEDEUTUNG') ?></th></tr>
-<?php foreach (awm_felder($aw_bcal) as $aw_fn => $aw_ff) { ?>
-<tr><td><span class="sm-mono"><?= aw_e(awm_check($aw_fn)) ?></span></td>
-    <td><?= $aw_ff[0] ? aw_t('LOX.ANALOG') : aw_t('LOX.DIGITAL') ?></td>
-    <td><?= aw_e($aw_ff[4]) ?><?= $aw_ff[3] !== '' ? ' [' . aw_e($aw_ff[3]) . ']' : '' ?></td></tr>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= aw_t('LOX.T_KOPIEREN') ?></th><th><?= aw_t('LOX.T_BEDEUTUNG') ?></th><th><?= aw_t('LOX.T_BEREICH') ?></th><th><?= aw_t('LOX.T_HART') ?></th></tr>
+<?php foreach ($aw_namen as $aw_ni => $aw_nz) { ?>
+<tr><td><?= (int) $aw_ni + 1 ?></td><td><span class="sm-mono"><?= aw_e($aw_nz[1]) ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= aw_e($aw_nz[1]) ?>"><?= aw_t('LOX.KOPIEREN') ?></button></td><td><?= aw_e($aw_nz[2]) ?></td><td><?= $aw_nz[3] === 'text' ? '–' : aw_e($aw_nz[4] . ' … ' . $aw_nz[5] . ($aw_nz[6] !== '' ? ' ' . $aw_nz[6] : '')) ?></td><td><?= aw_t($aw_nz[3] === 'text' ? 'LOX.ART_TEXT' : 'LOX.ART_ZAHL') ?></td></tr>
 <?php } ?>
-</table>
-<div class="sm-hilfe"><?= awm_t('LOX.S3_SEMIKOLON') ?></div>
-<div class="sm-hilfe"><?= awm_t('LOX.S3_KOMPAT') ?></div>
+</table></div>
+<div class="sm-hilfe"><?= aw_t('LOX.S3_DIGITAL') ?></div>
+<div class="sm-hilfe"><?= aw_t('LOX.S3_RECHTE') ?></div>
+<div class="sm-hilfe"><?= aw_t('LOX.S3_MUSTER') ?></div>
+<script>
+(function () {
+    document.querySelectorAll('.sm-kopie').forEach(function (k) {
+        k.addEventListener('click', function () {
+            var n = k.getAttribute('data-kopie');
+            var fertig = function () { k.textContent = <?= json_encode(awm_t('LOX.KOPIERT')) ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (e) {}
+                document.body.removeChild(f);
+            }
+        });
+    });
+})();
+</script>
 </div>
 
 <div class="sm-step"><b><?= aw_t('LOX.S4') ?></b><br>
 <?= aw_t('LOX.S4_TEXT') ?>
-<table class="sm-tbl">
-<tr><th><?= aw_t('LOX.T_ZWECK') ?></th><th><?= aw_t('LOX.T_ADRESSE') ?></th></tr>
-<tr><td><?= aw_t('LOX.A_SAY') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?say=1&amp;token=<?= $aw_tok ?></span></td></tr>
-<tr><td><?= aw_t('LOX.A_PTEST') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?ptest=1&amp;token=<?= $aw_tok ?></span></td></tr>
-<tr><td><?= aw_t('LOX.A_ACK') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?ack=1&amp;token=<?= $aw_tok ?></span></td></tr>
-<tr><td><?= aw_t('LOX.A_RENEW') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?renew=1&amp;token=<?= $aw_tok ?></span></td></tr>
-<tr><td><?= aw_t('LOX.A_SELFTEST') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?selftest=1&amp;token=<?= $aw_tok ?></span></td></tr>
-</table>
-<div class="sm-hilfe"><?= aw_t('LOX.S4_TOKEN') ?></div>
+<?php if ($aw_bliste === null) { ?>
+<div class="sm-fehler"><?= aw_t('LOX.S4_KEINE') ?></div>
+<?php } else { ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th><?= aw_t('BEFEHL.T_BEDEUTUNG') ?></th><th><?= aw_t('BEFEHL.T_TITEL') ?></th><th><?= aw_t('BEFEHL.T_THEMA') ?></th><th><?= aw_t('BEFEHL.T_LOXONE') ?></th><th><?= aw_t('BEFEHL.T_SPERRE') ?></th><th><?= aw_t('BEFEHL.T_QUITTUNG') ?></th></tr>
+<?php foreach ($aw_bliste['befehle'] as $aw_bb) { ?>
+<tr><td><?= aw_t($aw_bb['kachel']) ?></td><td><?= aw_e($aw_bb['titel']) ?></td><td><span class="sm-mono"><?= aw_e($aw_bb['thema']) ?></span></td><td><?= $aw_bb['muster'] ? aw_t('BEFEHL.MUSTER') : '<span class="sm-mono">' . aw_e($aw_bb['loxone']['ein']) . '</span>' ?></td><td><?= (int) $aw_bb['sperre_s'] ?> s</td><td><?= aw_t($aw_bb['quittung'] === 'uebergeben' ? 'BEFEHL.Q_UEBERGEBEN' : 'BEFEHL.Q_AUSGEFUEHRT') ?></td></tr>
+<?php } ?>
+</table></div>
+<?php } ?>
+<div class="sm-hilfe"><?= sprintf(awm_t('LOX.S4_KAL'), aw_e($aw_mbasis)) ?></div>
 </div>
 
 <div class="sm-step"><b><?= aw_t('LOX.S5') ?></b><br>
-<?= awm_t('LOX.S5_TEXT') ?>
+<?= sprintf(awm_t('LOX.S5_TEXT'), aw_e(awm_mqtt_gateway_name(1, 'status/zaehler')), aw_e(awm_mqtt_gateway_name(1, 'ok')),
+            aw_e(awm_mqtt_gateway_name(1, 'abruf')), aw_e(awm_mqtt_gateway_name(1, 'alter')),
+            aw_e(awm_mqtt_gateway_name(1, 'letzter'))) ?>
 </div>
 
 <div class="sm-step"><b><?= aw_t('LOX.S6') ?></b><br>
@@ -1636,8 +1746,43 @@ $aw_bl = awm_bausteinseiten(); ?>
 <?php } ?>
 
 <div class="sm-step"><b><?= aw_t('LOX.S7') ?></b><br>
-<?= aw_t('LOX.S7_TEXT') ?>
+<?= sprintf(awm_t('LOX.S7_TEXT'), aw_e(awm_mqtt_gateway_name(1, 'status/zaehler'))) ?>
 </div>
+
+<?php /* Gruppe 1 / MQTT (1.4.25): der Weg ueber HTTP fuer bestehende Anlagen - bis 1.4.24 die Schritte 3
+   und 4, Tabellen unveraendert. Zugeklappt; alles bleibt im Text der Seite (Suche, Druck). */ ?>
+<details class="sm-step"><summary><b><?= aw_t('LOX.HTTP_TITEL') ?></b></summary>
+<div class="sm-hilfe"><?= aw_t('LOX.HTTP_TEXT') ?></div>
+<p><b><?= aw_t('LOX.HTTP_S3') ?></b><br>
+<?= aw_t('LOX.HTTP_S3_TEXT') ?></p>
+<table class="sm-tbl">
+<tr><th><?= aw_t('LOX.T_EIGENSCHAFT') ?></th><th><?= aw_t('LOX.T_WERT') ?></th></tr>
+<tr><td>URL</td><td><span class="sm-mono">http://<?= $aw_host ?><?= $aw_basis ?></span></td></tr>
+<tr><td><?= aw_t('LOX.T_ZYKLUS') ?></td><td>300 <?= aw_t('LOX.T_SEKUNDEN') ?></td></tr>
+</table>
+<?= awm_t('LOX.S3_BEFEHLE') ?>
+<table class="sm-tbl">
+<tr><th style="width:170px;"><?= aw_t('LOX.T_SUCHTEXT') ?></th><th style="width:60px;"><?= aw_t('LOX.T_TYP') ?></th><th><?= aw_t('LOX.T_BEDEUTUNG') ?></th></tr>
+<?php foreach (awm_felder($aw_bcal) as $aw_fn => $aw_ff) { ?>
+<tr><td><span class="sm-mono"><?= aw_e(awm_check($aw_fn)) ?></span></td>
+    <td><?= $aw_ff[0] ? aw_t('LOX.ANALOG') : aw_t('LOX.DIGITAL') ?></td>
+    <td><?= aw_e($aw_ff[4]) ?><?= $aw_ff[3] !== '' ? ' [' . aw_e($aw_ff[3]) . ']' : '' ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-hilfe"><?= awm_t('LOX.S3_SEMIKOLON') ?></div>
+<div class="sm-hilfe"><?= awm_t('LOX.S3_KOMPAT') ?></div>
+<p><b><?= aw_t('LOX.HTTP_S4') ?></b><br>
+<?= aw_t('LOX.HTTP_S4_TEXT') ?></p>
+<table class="sm-tbl">
+<tr><th><?= aw_t('LOX.T_ZWECK') ?></th><th><?= aw_t('LOX.T_ADRESSE') ?></th></tr>
+<tr><td><?= aw_t('LOX.A_SAY') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?say=1&amp;token=<?= $aw_tok ?></span></td></tr>
+<tr><td><?= aw_t('LOX.A_PTEST') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?ptest=1&amp;token=<?= $aw_tok ?></span></td></tr>
+<tr><td><?= aw_t('LOX.A_ACK') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?ack=1&amp;token=<?= $aw_tok ?></span></td></tr>
+<tr><td><?= aw_t('LOX.A_RENEW') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?renew=1&amp;token=<?= $aw_tok ?></span></td></tr>
+<tr><td><?= aw_t('LOX.A_SELFTEST') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?selftest=1&amp;token=<?= $aw_tok ?></span></td></tr>
+</table>
+<div class="sm-hilfe"><?= aw_t('LOX.S4_TOKEN') ?></div>
+</details>
 
 <h2><?= aw_t('LOX.H_VORLAGE') ?></h2>
 <div class="sm-hinweis"><?= aw_t('LOX.H_VORLAGE_TEXT') ?></div>
@@ -1645,6 +1790,15 @@ $aw_bl = awm_bausteinseiten(); ?>
 <span><i class="sm-punkt sm-b-technik"></i> <?= aw_t('LEGENDE.TECHNIK') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= aw_t('LEGENDE.AKTION') ?></span>
 </div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
+    <input data-role="none" type="hidden" name="vorlage" value="vq_mqtt">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= aw_t('KNOPF.VORLAGE_VQ_MQTT') ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><b><?= aw_t('LOX.H_VORLAGE_HTTP') ?></b></div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
@@ -1693,6 +1847,7 @@ $aw_az = awm_pruef_ansage($aw_cfg, $aw_tab === 'tab-test');     // Nr. 36 b, Stu
 if ($aw_az !== null) { $aw_pflicht[] = $aw_az; }
 $aw_pflicht[] = awm_pruef_vorlagen(count($aw_cals));
 $aw_pflicht = array_merge($aw_pflicht, awm_pruef_cron());
+$aw_pflicht[] = awm_pruef_bruecke();       // Gruppe 1 / MQTT (1.4.25): Befehlsbruecke
 $aw_ph = 0;
 foreach ($aw_pflicht as $aw_z) {
     if ($aw_z[0] === 'hinweis') { $aw_ph++; continue; }
@@ -1717,6 +1872,16 @@ if ($aw_ph) { echo ' ' . aw_e(sprintf(awm_t('TEST.HINWEISE'), $aw_ph)); } ?>
 <ul>
 <?php foreach ($aw_pruef as $aw_z) { if (!$aw_z[0]) { ?><li><?= aw_e($aw_z[1]) ?></li><?php } } ?>
 </ul>
+<?php } ?>
+
+<?php /* Gruppe 1 / MQTT (1.4.25; Entwurf gemeinsam 2.11): die Einrichtungspruefung der Befehlsbruecke
+   (bb_pruefen(), dieselben Zeilen wie "php bin/befehlsbruecke.php --pruefen") - nur bei offenem Reiter Test. */ ?>
+<h3><?= aw_t('TEST.H_BRUECKE') ?></h3>
+<?php if ($aw_tab === 'tab-test') { $aw_bbz = awm_bruecke_pruefzeilen(); ?>
+<div class="sm-hilfe"><?= aw_t('BEFEHL.H_PRUEFEN') ?></div>
+<div class="sm-pre"><?= $aw_bbz ? implode('<br>', array_map('aw_e', $aw_bbz)) : aw_t('BEFEHL.P_FEHLT') ?></div>
+<?php } else { ?>
+<div class="sm-hilfe"><?= aw_t('BEFEHL.PRUEFEN_ZU') ?></div>
 <?php } ?>
 
 <h3><?= aw_t('TEST.H_DIAGNOSE') ?></h3>

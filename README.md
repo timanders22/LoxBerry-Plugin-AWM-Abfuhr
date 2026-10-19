@@ -23,6 +23,38 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.25
+
+Werte und Befehle über MQTT – der Weg des Musterprojekts. Der Weg über HTTP bleibt für bestehende Anlagen.
+
+* **MQTT ab Werk eingeschaltet – nur für neue Installationen.** Eine bestehende Anlage behält ihre Einstellung
+  (wer den Reiter MQTT nie gespeichert hat, bleibt bei „aus“).
+* **Namenstabelle statt Importvorlage für die Werte:** Reiter „Einbindung in Loxone“, Schritt 3 nennt jeden
+  Namen, unter dem das MQTT-Gateway sendet (`awm_ok`, `awm_rest_morgen`, … `awm_status_zaehler`, dazu die
+  Texte `awm_text_naechste`, `awm_hinweis`, `awm_text_morgen`, `awm_text_heute`), mit Kopierknopf. In Loxone
+  Config je Wert einen Virtuellen Eingang (Texte: Virtuellen Texteingang) mit genau diesem Namen anlegen,
+  „Als Digitaleingang verwenden“ nicht aktivieren; der LoxBerry-Benutzer im Miniserver braucht Rechte darauf.
+  Wer die Seiten aus dem Musterprojekt kopiert, bekommt die Eingänge mit. Die HTTP-Vorlagen bleiben für
+  bestehende Anlagen.
+* **Befehle über MQTT** (Befehlsbrücke, ab Werk aus): Haken „Befehle über MQTT annehmen“ im Reiter MQTT. Dann
+  nimmt das Plugin `awm/befehl/ansage`, `…/testpush`, `…/tonne_draussen` und `…/erneuern` (Wert 1) an – für
+  die Kalender 2 bis 4 `awm/befehl/<n>/ansage` und `…/<n>/erneuern`. Dieselbe Funktion wie die Adressen mit
+  Aktionstoken; jeder Befehl höchstens einmal je Minute mit demselben Wert, die Quittung steht auf
+  `…/quittung` und im Reiter Test, das Lebenszeichen der Brücke auf `awm/status/befehle`. Neue Vorlage
+  „MQTT-Befehle“ (`VQ_awm_mqtt.xml`, Ausgang an den UDP-Eingang des Gateways).
+* **Verhalten geändert: `LETZTER` ohne Kalenderdaten ist -1** – in der Loxone-Zeile (bisher 0, das zugleich
+  „unbegrenzt“ heißt) und über MQTT (bisher „-“). Ohne eingerichteten Kalender gehen über MQTT jetzt auch die
+  Werte des leeren Zustands hinaus (OK 0, Tage -1), wie in der Loxone-Zeile; `awm/ok` geht bei jedem
+  Minutenlauf mit.
+* **Reiter „Einbindung in Loxone“:** MQTT als Weg (Schritt 1 einschalten, Schritt 2 Gateway mit Hakenliste für
+  Gateway V2, Schritt 3 Namenstabelle, Schritt 4 Befehle); der Weg über HTTP steht zugeklappt unter „Bestehende
+  Anlagen“. Die drei Seiten aus dem Musterprojekt sind auf MQTT umgestellt: „Abfuhrkalender“ (21 Zeilen, mit
+  den fertigen Sätzen im Status), „Abfuhrkalender Tonnen“ (32) und „Abfuhrkalender Erinnerung und Ansage“
+  (44: dazu Nachfass um 21 Uhr und Erinnerung „Tonne reinholen“ um 19:45, beide nur mit Push-Freigabe). Wer
+  die Seiten nach 1.4.24 gebaut hat, legt die Eingänge nach der Namenstabelle an und hängt sie um.
+* Gerendert unter PHP 7.4, 8.4 und 8.5; die Befehlsbrücke am LoxBerry in einem Wegwerfordner mit eigener
+  Broker-Attrappe geprüft, nicht an der Anlage.
+
 ## Neu in 1.4.24
 
 Einbindung in Loxone in Vollausstattung: drei Seiten aus dem gemeinsamen Musterprojekt mit drei Bildern und

@@ -92,6 +92,16 @@ if ! grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
     exit 2
 fi
 
+# ---------- Gruppe 1 / MQTT (1.4.25): die Befehlsbruecke anhalten ----------
+# Erst jetzt, da die Upgrade-Marke liegt: der Waechter im Minutenlauf startet sie dann nicht neu, und
+# befehlsbruecke.sh start lehnt waehrend der Marke ab (Bruecken-Bericht Abschnitt 6). stop beendet Dienst
+# und mosquitto_sub und zaehlt argumentweise nach. Bis 1.4.24 hatte die Linie keinen Dauerdienst - beim
+# Update von dort fehlt die Datei, und es geschieht nichts.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    timeout 40 bash "$BBSH" stop 2>&1 | sed 's/^/<INFO> /'
+fi
+
 # Sechstes Argument, wenn es da ist; sonst der alte Weg ueber das
 # Arbeitsverzeichnis, in dem der Installer uns startet.
 if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then

@@ -268,7 +268,10 @@ function awm_config_vorgaben()
         'lookahead' => 35,         // Vorschau-Fenster in Tagen
         'autorenew' => 1,          // AWM-Link zum Jahreswechsel automatisch erneuern (Best-Effort)
         'hinweis_woerter' => AWM_HINWEIS_STANDARD,
-        'mqtt_enabled' => 0,
+        /* Gruppe 1 / MQTT (1.4.25; Entwurf ab, E1; Hausherr 18.10.2026: "MQTT ab Werk ein, nur fuer neue
+         * Installationen"): MQTT ist der Weg des Musterprojekts. Eine BESTEHENDE Konfiguration ohne diesen
+         * Schluessel (der Reiter MQTT wurde nie gespeichert) behaelt "aus" - siehe awm_config(). */
+        'mqtt_enabled' => 1,
         'mqtt_topic' => 'awm',
         'notify' => array(),
         'tts' => array(),
@@ -276,6 +279,9 @@ function awm_config_vorgaben()
         'ansage' => array(),
         'melden' => 1,             // Warnungen in den LoxBerry-Meldebereich legen
         'aktionstoken' => '',      // schuetzt ?ptest= ?say= ?renew= ?ack= (unangemeldeter Endpunkt)
+        /* Gruppe 1 / MQTT (1.4.25): Haken "Befehle ueber MQTT annehmen" der Befehlsbruecke, ab Werk aus
+         * (Entwurf gemeinsam 2.3/2.11, E13). Ohne ihn startet bin/befehlsbruecke.php nicht. */
+        'befehle_mqtt_ein' => 0,
     );
 }
 
@@ -469,6 +475,7 @@ function awm_wert_pruefen($schluessel, $wert)
             return awm_ist_zahl($wert, 7, 90) ? '' : awm_t_oder('PRUEF.G_VORSCHAU', 'Vorschau ausserhalb 7..90 Tage');
         case 'autorenew':
         case 'mqtt_enabled':
+        case 'befehle_mqtt_ein':                       // Gruppe 1 / MQTT (1.4.25)
         case 'melden':
             return awm_ist_schalter($wert) ? '' : awm_t_oder('PRUEF.G_SCHALTER', 'muss 0 oder 1 sein');
         case 'hinweis_woerter':
@@ -685,6 +692,13 @@ function awm_config($anlegen = false) {
                 }
             }
         }
+    }
+    /* Gruppe 1 / MQTT (1.4.25; Entwurf ab, E1): die Vorgabe mqtt_enabled ist jetzt 1 - aber nur fuer NEUE
+     * Installationen (Hausherr 18.10.2026). Eine bestehende Konfiguration, in der der Schluessel fehlt, weil der
+     * Reiter MQTT nie gespeichert wurde, lief bis 1.4.24 ohne MQTT und behaelt das; "neu" ist nur eine leere
+     * Konfiguration (keine Datei, "{}", ohne Zweitschrift). Gespeichert wird der Wert beim naechsten Speichern. */
+    if ($cfg && !array_key_exists('mqtt_enabled', $cfg)) {
+        $cfg['mqtt_enabled'] = 0;
     }
     $cfg += awm_config_vorgaben();
     if (!is_array($cfg['cals'])) { $cfg['cals'] = array(); }
@@ -2374,7 +2388,9 @@ function awm_feldliste()
     // Ausfallerkennung
     $f['AGE']     = array(1, -1, 100000, 'h', awm_t('FELD.AGE'), 1, 'alter', '');
     $f['FETCH']   = array(0, 0, 1, '', awm_t('FELD.FETCH'), 1, 'abruf', '');
-    $f['LETZTER'] = array(1, 0, 2147483647, 's', awm_t('FELD.LETZTER'), 1, 'letzter', '');
+    /* Gruppe 1 / MQTT (1.4.25; Entwurf ab, E2): Min -1 - ohne Kalenderdaten -1 (HTTP und MQTT), 0 heisst
+     * "unbegrenzt". Vorlage damit Signed="true" MinVal="-1". */
+    $f['LETZTER'] = array(1, -1, 2147483647, 's', awm_t('FELD.LETZTER'), 1, 'letzter', '');
     $f['HINW']    = array(0, 0, 1, '', awm_t('FELD.HINW'), 1, 'hinweis_da', '');
     $f['LUECKE']  = array(1, 0, 400, $tage, awm_t('FELD.LUECKE'), 1, 'luecke', '');
     // Quittierung und Ruhe
@@ -2459,7 +2475,10 @@ function awm_werte($st = null, $cal = 1)
     $w['SNEXT'] = awm_loxzeit($st['next']['datum']);
     $w['AGE'] = (int) $st['alter'];
     $w['FETCH'] = (int) $st['abruf_ok'];
-    $w['LETZTER'] = awm_loxzeit($st['letzter']);
+    /* Gruppe 1 / MQTT (1.4.25; Entwurf ab, E2; Hausherr 18.10.2026 "-1 auch in der HTTP-Zeile"): ohne
+     * Kalenderdaten -1. Bis 1.4.24 stand hier 0, das zugleich "unbegrenzt" heisst (ein Wert, zwei Bedeutungen),
+     * und MQTT sendete "-". */
+    $w['LETZTER'] = empty($st['ereignisse']) ? -1 : awm_loxzeit($st['letzter']);
     $w['HINW'] = $st['hinweis'] !== '' ? 1 : 0;
     // Die naechste ersatzlose Luecke - berechnet aus dem Zustand, damit die
     // teure Suche nicht in jede Abfrage faellt.
@@ -2508,7 +2527,7 @@ function awm_mqtt_themen()
         $out[$f[6]] = $f[4];
     }
     // AWM-b1: die Beschreibungen aus der Sprachdatei, Abschnitt [FELD].
-    if (isset($out['letzter'])) { $out['letzter'] .= awm_t('FELD.LETZTER_MQTT'); }   // M1
+    // Gruppe 1 (1.4.25, E2): der Zusatz zu letzter ("-" = keine Kalenderdaten) entfaellt - -1 steht im Feldtext.
     $out['hinweis'] = awm_t('FELD.T_HINWEIS');
     $out['text_morgen'] = awm_t('FELD.T_MORGEN');
     $out['text_heute'] = awm_t('FELD.T_HEUTE');
@@ -3259,9 +3278,13 @@ function awm_mqtt_senden($msgs, $cal = 1, $raeumen = array())
  * Nicht retained - ein zurueckbehaltenes Lebenszeichen zeigt immer "lebt";
  * die drei Themen stehen nicht in awm_mqtt_retain_liste().
  */
-function awm_mqtt_lebenszeichen($cal = 1, $ok = 1, $zaehler = null)
+function awm_mqtt_lebenszeichen($cal = 1, $ok = 1, $zaehler = null, $zusatz = array())
 {
-    return awm_mqtt_senden(awm_mqtt_lebenszeichen_werte($ok, $zaehler), $cal);
+    /* Gruppe 1 / MQTT (1.4.25; Entwurf ab, E9): $zusatz geht im selben Lauf am Filter vorbei mit hinaus -
+     * cron.php gibt 'ok' mit. Nach einem Neustart des Miniservers stuende awm_ok sonst bis zum naechsten vollen
+     * Satz (bis 30 Minuten) auf 0, und "Meldung Plugin gestoert" kaeme nach 10 Minuten faelschlich. 'ok' ist
+     * eine Aussage des Dienstes ueber sich und geht nie retained hinaus (awm_mqtt_retain_liste()). */
+    return awm_mqtt_senden(array_merge(awm_mqtt_lebenszeichen_werte($ok, $zaehler), (array) $zusatz), $cal);
 }
 
 /** Die drei Themen des Lebenszeichens - eigene Funktion, damit die
@@ -3401,12 +3424,10 @@ function awm_mqtt_nutzlast($st = null, $cal = 1)
         if ($f[6] === '' || !isset($werte[$name])) { continue; }
         $msgs[$f[6]] = $werte[$name];
     }
-    /* M1 (Entscheidung 5, 29.09.2026): ohne Kalenderdaten hat 'letzter'
-     * keine Aussage und geht als '-' hinaus (retained) - nie als 0, denn 0
-     * heisst laut Feldbeschreibung "unbegrenzt". Bis 1.4.14 stand danach
-     * awm/letzter=0 im Broker (MQTT-Pruefer, Fall F1). Die Loxone-Zeile
-     * behaelt LETZTER=0. */
-    if (empty($st['ereignisse'])) { $msgs['letzter'] = '-'; }
+    /* M1 (Entscheidung 5, 29.09.2026): ohne Kalenderdaten hat 'letzter' keine Aussage - nie 0, denn 0 heisst
+     * laut Feldbeschreibung "unbegrenzt". Bis 1.4.24 ging dafuer "-" hinaus (retained). Seit 1.4.25 (Gruppe 1,
+     * Entwurf ab E2; Hausherr 18.10.2026 "-1 auch in der HTTP-Zeile") liefert awm_werte() -1, und dieser Wert
+     * geht hinaus wie jeder andere - retained, nicht leer (Selbstpruefung B44). */
     $msgs['hinweis'] = $st['hinweis'] !== '' ? $st['hinweis'] : '-';
     $msgs['text_morgen'] = awm_text_morgen($st);
     $msgs['text_heute'] = awm_text_heute($st);
@@ -4401,6 +4422,23 @@ function awm_selbstpruefung_robust()
        . ($nur_gesendet ? awm_t('SELBST.B34_GESENDET') . implode(', ', $nur_gesendet) : '')
        . ($nur_gelistet ? awm_t('SELBST.B34_GELISTET') . implode(', ', $nur_gelistet) : ''));
 
+    /* Gruppe 1 / MQTT (1.4.25): die Namenstabelle gegen das, was WIRKLICH gesendet wird. Jeder Name muss einer
+     * sein, unter dem das Gateway sendet - ein Thema der Nutzlast (awm_mqtt_nutzlast()) oder des Lebenszeichens,
+     * umbenannt wie vom Gateway. Zwei Wege: die Tabelle liest awm_felder() (Spalte "lox") samt Ersatz fuer
+     * ZAEHLER und die vier Textthemen, der Sender die Spalte "mqtt". Eine leere Tabelle ist kein "stimmt". */
+    $vm_namen = array();
+    foreach (array_merge(array_keys(awm_mqtt_nutzlast($st_probe, 1)),
+                         array_keys(awm_mqtt_lebenszeichen_werte(1, 0))) as $t3) {
+        $vm_namen[awm_mqtt_gateway_name(1, $t3)] = true;
+    }
+    $vm = awm_mqtt_namen(1);
+    $vm_ohne = array();
+    foreach ($vm as $t4) {
+        if (!isset($vm_namen[$t4[1]])) { $vm_ohne[] = $t4[1]; }
+    }
+    $p($vm && !$vm_ohne, sprintf(awm_t('SELBST.B58'), count($vm))
+                      . ($vm_ohne ? awm_t('SELBST.B58_FALSCH') . implode(', ', $vm_ohne) : ''));
+
     $p(count($werte) === count($felder),
        awm_t('SELBST.B37'));
     $p(awm_zaehler(false) >= -1 && awm_zaehler(false) <= 999,
@@ -4762,12 +4800,22 @@ function awm_bausteinseiten()
     $aktiv = awm_aktive_tonnen(1);
     $vi_muster = 'Abfuhrkalender (AWM & iCal) Kalender 1';
     $vi_titel = awm_cal(1) !== null ? awm_vorlage_titel(1) : $vi_muster;
+    /* Gruppe 1 / MQTT (1.4.25): die Seiten nennen die Namen des MQTT-Gateways (awm_ok, awm_tage_next, ...)
+     * und die Befehlsthemen (awm/befehl/...) mit dem Praefix des Musterprojekts "awm". Ist ein anderes
+     * eingestellt, folgen Namen und Themen ihm - aus derselben Funktion wie Vorlage und Hakenliste. */
+    $basis = awm_mqtt_basis(awm_config());
+    $gw = substr(awm_mqtt_gateway_name(1, 'x'), 0, -1);
+    $namen = function ($text) use ($basis, $gw) {
+        if ($basis === 'awm') { return (string) $text; }
+        $text = preg_replace('/(?<![A-Za-z0-9_\/])awm_(?=[a-z0-9])/', str_replace('\\', '\\\\', $gw), (string) $text);
+        return preg_replace('#(?<![A-Za-z0-9_/])awm/#', str_replace('\\', '\\\\', $basis) . '/', $text);
+    };
     $seiten = array(
-        array('z' => 1, 'seite' => 'Abfuhrkalender', 'bild' => 'einbindung_loxone.png', 'n' => 19, 's' => 6, 'h' => 7,
+        array('z' => 1, 'seite' => 'Abfuhrkalender', 'bild' => 'einbindung_loxone.png', 'n' => 21, 's' => 6, 'h' => 7,
               'tonnen' => array()),
         array('z' => 2, 'seite' => 'Abfuhrkalender Tonnen', 'bild' => 'einbindung_loxone_tonnen.png', 'n' => 32, 's' => 3, 'h' => 3,
               'tonnen' => array('glas' => array(17, 18, 19, 20), 'sperr' => array(21, 22, 23, 24), 'gruen' => array(25, 26, 27, 28), 'schad' => array(29, 30, 31, 32))),
-        array('z' => 3, 'seite' => 'Abfuhrkalender Erinnerung und Ansage', 'bild' => 'einbindung_loxone_erinnerung_ansage.png', 'n' => 34, 's' => 5, 'h' => 6,
+        array('z' => 3, 'seite' => 'Abfuhrkalender Erinnerung und Ansage', 'bild' => 'einbindung_loxone_erinnerung_ansage.png', 'n' => 44, 's' => 5, 'h' => 7,
               'tonnen' => array('glas' => array(5), 'sperr' => array(6), 'gruen' => array(7), 'schad' => array(8))),
     );
     $aus = array();
@@ -4797,13 +4845,13 @@ function awm_bausteinseiten()
                 if (preg_match('/#(\d+)/', $e, $m) && isset($weg[(int) $m[1]])) { continue; }
                 $ein[] = $nummer($e);
             }
-            $zeilen[] = array($neu[$i], str_replace($vi_muster, $vi_titel, $c[0]), $c[1], $nummer($c[2]),
+            $zeilen[] = array($neu[$i], str_replace($vi_muster, $vi_titel, $c[0]), $namen($c[1]), $nummer($namen($c[2])),
                               $ein ? implode(', ', $ein) : '—');
         }
         $schritte = array();
-        for ($k = 1; $k <= $s['s']; $k++) { $schritte[] = $nummer(awm_t(sprintf('LOX.BS%d_S%d', $s['z'], $k))); }
+        for ($k = 1; $k <= $s['s']; $k++) { $schritte[] = $nummer($namen(awm_t(sprintf('LOX.BS%d_S%d', $s['z'], $k)))); }
         $hinweise = array();
-        for ($k = 1; $k <= $s['h']; $k++) { $hinweise[] = $nummer(awm_t(sprintf('LOX.BS%d_H%d', $s['z'], $k))); }
+        for ($k = 1; $k <= $s['h']; $k++) { $hinweise[] = $nummer($namen(awm_t(sprintf('LOX.BS%d_H%d', $s['z'], $k)))); }
         $aus[] = array('kopf' => awm_t(sprintf('LOX.BS%d_KOPF', $s['z'])), 'seite' => $s['seite'],
                        'bild' => $s['bild'], 'schritte' => $schritte, 'hinweise' => $hinweise, 'zeilen' => $zeilen);
     }
@@ -4876,6 +4924,318 @@ function awm_vorlage_vo($cal = 1) {
     ), $cmds));
 }
 
+
+/* ==================================================================
+ * Gruppe 1 / MQTT (1.4.25; Hausherr 18.10.2026: "Werte UND Befehle zwischen Plugin und Loxone gehen ueber MQTT";
+ * Entwurf Musterprojekt/entwurf_gruppe1_ab.txt, alle Empfehlungen E1-E14)
+ * ================================================================== */
+
+/**
+ * Der Name, unter dem das MQTT-Gateway ein Thema an den Miniserver gibt - EINE Funktion fuer die MQTT-Vorlage, die
+ * Hakenliste (Gateway V2), die Namen in Reiter und Baustein-Seiten und die Selbstpruefung (Regeln/07 "Themennamen aus
+ * EINER Funktion"). Beide Gateway-Fassungen machen "/" und "%" zu "_" (Regeln/07 Umbenennungsregel; V2
+ * build_vi_name, am Geraet gelesen 18.10.2026), Punkte bleiben. Das Praefix ist einstellbar und darf "/" tragen.
+ */
+function awm_mqtt_gateway_name($cal, $thema)
+{
+    return str_replace(array('/', '%'), '_', awm_mqtt_praefix($cal) . '/' . $thema);
+}
+
+/**
+ * Die Namen, unter denen das MQTT-Gateway die Werte eines Kalenders an den Miniserver gibt - EINE Liste fuer die
+ * Namenstabelle (Reiter "Einbindung in Loxone", Schritt 3), die Hakenliste (Gateway V2) und die Selbstpruefung.
+ *
+ * Hausherr 19.10.2026 (Regeln/07 R2_078; LoxBerry-Anleitung widget_mqtt): fuer Werte ueber das Gateway gibt es KEINE
+ * Importvorlage (kein VirtualHttpIn mit http://localhost) - man legt je Wert einen einfachen "Virtuellen Eingang" an
+ * (Texte: "Virtuellen Texteingang"), Name exakt. Die Liste folgt den Feldern der HTTP-Vorlage (awm_felder(): Tonnen nur,
+ * wenn der Kalender sie kennt), in derselben Reihenfolge, mit Bedeutung, Grenzen und Einheit wie dort; dazu die vier
+ * Textthemen. ZAEHLER hat kein MQTT-Thema (awm_feldliste: er wuerde die Signatur des Minutenlaufs wertlos machen); an
+ * seiner Stelle steht status/zaehler aus dem Lebenszeichen, 0 bis 999 (ueber MQTT nie -1).
+ * Rueckgabe: je Wert array(thema, name, bedeutung, 'zahl'|'text', min, max, einheit).
+ */
+function awm_mqtt_namen($cal = 1)
+{
+    $liste = awm_feldliste();
+    $aus = array();
+    foreach (awm_felder($cal) as $name => $f) {
+        list($analog, $min, $max, $einheit, $text) = $f;
+        $thema = $liste[$name][6];
+        if ($name === 'ZAEHLER') {
+            $thema = 'status/zaehler';
+            $text = awm_t('FELD.S_ZAEHLER');
+            $min = 0;
+        }
+        if ($thema === '') { continue; }
+        $aus[] = array($thema, awm_mqtt_gateway_name($cal, $thema), $text, 'zahl', $min, $max, $einheit);
+    }
+    foreach (array('text_heute' => 'FELD.T_HEUTE', 'text_morgen' => 'FELD.T_MORGEN',
+                   'text_naechste' => 'FELD.T_NAECHSTE', 'hinweis' => 'FELD.T_HINWEIS') as $t => $k) {
+        $aus[] = array($t, awm_mqtt_gateway_name($cal, $t), awm_t($k), 'text', null, null, '');
+    }
+    return $aus;
+}
+
+/**
+ * Die Hakenliste fuer Gateway V2 (Entwurf ab 2.6, E7): alle Namen der Namenstabelle - Vollausstattung 48 Zahlen + 4
+ * Texte = 52, mit den vier klassischen Tonnen 32 + 4 = 36. Rueckgabe: je Zeile array(thema voll, Name in Loxone,
+ * Bedeutung, 'zahl'|'text').
+ */
+function awm_mqtt_hakenliste($cal = 1)
+{
+    $praefix = awm_mqtt_praefix($cal);
+    $aus = array();
+    foreach (awm_mqtt_namen($cal) as $b) {
+        $aus[] = array($praefix . '/' . $b[0], $b[1], $b[2], $b[3]);
+    }
+    return $aus;
+}
+
+/** Ergebnis einer Aktion: ok, Grund (ASCII, fuer die Quittung der Befehlsbruecke), HTTP-Status und Antwort. */
+function awm_aktion_ergebnis($ok, $grund, $http, $antwort)
+{
+    return array('ok' => (bool) $ok, 'grund' => (string) $grund, 'http' => (int) $http, 'antwort' => (string) $antwort);
+}
+
+/**
+ * Die vier ausloesenden Aktionen - EINE Stelle fuer den HTTP-Endpunkt (awm.php, Quelle 'http') und die
+ * Befehlsbruecke (bin/befehle_zuordnung.php, Quelle 'mqtt'). Bauvorschrift Gruppe 1, Nachtrag 19.10.2026; Entwurf ab
+ * Abschnitt 3: "damit HTTP und Bruecke dieselbe Pruefung nehmen - keine zweite Logik".
+ *
+ *   say    Ansage sofort (Zonen des Kalenders), ohne Termin der Testsatz
+ *   ptest  Test-Pushnachricht: Merker PTEST fuer 5 Minuten, sofort ueber MQTT gemeldet (alle Kalender)
+ *   ack    Quittierung "Tonne steht draussen" (bis Mitternacht; am Vorabend bis zum Abholmorgen) - alle Kalender
+ *   renew  Jahres-Erneuerung des Kalender-Links; hoechstens einmal je Stunde und Kalender (Merker VOR dem Versuch,
+ *          damit auch ein Fehlschlag zaehlt; laesst er sich nicht schreiben, wird nicht erneuert)
+ *
+ * Bis 1.4.24 standen die vier Zweige in awm.php. Code, Statuscode und Antwortzeilen des HTTP-Wegs sind unveraendert
+ * (Wirkungstest Quelle gegen Bau); die Token-Pruefung bleibt im Endpunkt - auf dem MQTT-Weg ersetzt sie der Haken
+ * "Befehle ueber MQTT annehmen" (Entwurf gemeinsam E13). Nur der Protokollsatz der Test-Pushnachricht nennt bei
+ * Quelle 'mqtt' den sofortigen Versand statt des 300-s-Takts. Rueckgabe: awm_aktion_ergebnis().
+ */
+function awm_aktion($aktion, $cal = 1, $quelle = 'http')
+{
+    $cal = max(1, min(AWM_MAX_KALENDER, (int) $cal));
+    if ($aktion === 'say') {
+        awm_fetch(false, $cal);
+        $c = awm_cal($cal);
+        $text = awm_announce_text(null, $cal);
+        if ($text === '') {
+            $text = awm_t_oder('TEXT.ANSAGE_TEST',
+                'Hallo! Dies ist eine Testansage des Abfuhrkalenders. Morgen wird keine Tonne abgeholt.');
+        }
+        /* Nr. 36 b, Stufe 2: gesprochen ueber die gemeinsame Sprachausgabe; die Antwort bleibt in der Form bis
+         * 1.4.20. Vom Ansagetext nur seine Laenge; beim Original-Audioserver ist der Text die Antwort (Loxone Config
+         * spricht ihn ueber den Textgenerator). */
+        $r = awm_say($text, $c ? $c['zonen'] : '');
+        $ok = $r['stand'] === 1;
+        $antwort = ($r['art'] === 'audioserver')
+            ? 'SAY;OK=' . ($ok ? 1 : 0) . ";TEXT=$text\n"
+            : 'SAY;OK=' . ($ok ? 1 : 0) . ';TEXTLAENGE=' . ansage_zeichen($text) . "\n";
+        return awm_aktion_ergebnis($ok, $ok ? '' : ($r['kennung'] !== '' ? $r['kennung'] : 'NICHT_GESPROCHEN'),
+                                   200, $antwort);
+    }
+    if ($aktion === 'ptest') {
+        /* C6: das Schreiben auswerten. Bis 1.4.14 antwortete dieser Zweig "PTEST;OK=1" auch bei
+         * schreibgeschuetztem Zwischenspeicher, und die Zeile fuer Loxone zeigte danach PTEST=0 (gemessen, WSL). */
+        if (@file_put_contents(awm_tmpdir() . '/ptest', '1') !== 1) {
+            awm_log('Test-Pushnachricht NICHT gesetzt: der Merker ' . awm_tmpdir()
+                  . '/ptest liess sich nicht schreiben.');
+            return awm_aktion_ergebnis(false, 'SCHREIBEN', 500, "PTEST;OK=0;ERR=SCHREIBEN\n");
+        }
+        awm_log($quelle === 'mqtt'
+            ? 'Test-Pushnachricht ueber MQTT angefordert (PTEST=1 fuer 5 Minuten, sofort gesendet)'
+            : 'Test-Pushnachricht angefordert (PTEST=1 fuer 5 Minuten; Loxone fragt im 300-s-Takt ab)');
+        /* Sofort melden, statt bis zu einer Minute auf den Cron zu warten. Ueber HTTP holt sich der Miniserver den
+         * Merker beim naechsten Abruf; ueber MQTT muss ihn das Plugin schicken - und ein Test, der erst eine Minute
+         * spaeter wirkt, sieht aus wie ein Test, der nicht wirkt. Ueber alle Kalender, weil der Merker fuer alle
+         * gilt. */
+        foreach (array_keys(awm_cals()) as $n) {
+            awm_mqtt_publish(null, $n);
+        }
+        return awm_aktion_ergebnis(true, '', 200, "PTEST;OK=1;DAUER=300\nHinweis: Loxone pollt alle 300 s - die "
+            . "Push-Nachricht kommt innerhalb von 5 Minuten,\nsofern der Test-Benachrichtigungsbaustein laut "
+            . "Anleitung (Schritt 6) verdrahtet ist.\n");
+    }
+    if ($aktion === 'ack') {
+        /* Welle Bild 18 (1.4.24; Entwurf Welle 18 ab, E10): awm_ack_setzen() sagt, bis wann die Quittierung gilt. */
+        $bis = awm_ack_setzen();
+        if ($bis === false) {                 // C6: fail closed
+            return awm_aktion_ergebnis(false, 'SCHREIBEN', 500, "ACK;OK=0;ERR=SCHREIBEN\n");
+        }
+        foreach (array_keys(awm_cals()) as $n) {
+            awm_mqtt_publish(null, $n);
+        }
+        return awm_aktion_ergebnis(true, '', 200,
+            'ACK;OK=1;BIS=' . ($bis === 'abholmorgen' ? 'Abholmorgen' : 'Mitternacht') . "\n");
+    }
+    if ($aktion === 'renew') {
+        /* C5: hoechstens einmal je Stunde und Kalender. Bis 1.4.14 hatte ?renew=1 weder Tagesmerker noch
+         * Mindestabstand - jeder Aufruf ging mit bis zu 25 s je Kandidat ins Netz. */
+        $merk = awm_tmpdir() . '/renew_hand_' . (int) $cal;
+        clearstatcache(true, $merk);
+        $warte = is_file($merk) ? filemtime($merk) + AWM_RENEW_ABSTAND - time() : 0;
+        if ($warte > 0) {
+            awm_log_if_changed('renew_gebremst_' . (int) $cal, 'Jahres-Erneuerung von Hand fuer Kalender '
+                . (int) $cal . ' gebremst - hoechstens einmal je Stunde (' . date('Y-m-d H') . ' Uhr).');
+            return awm_aktion_ergebnis(false, 'GEBREMST (noch ' . min(AWM_RENEW_ABSTAND, $warte) . ' s)', 429,
+                'RENEW;OK=0;ERR=GEBREMST;WARTE=' . min(AWM_RENEW_ABSTAND, $warte) . "\n"
+                . "Die Jahres-Erneuerung von Hand ist hoechstens einmal je Stunde erlaubt.\n");
+        }
+        if (@file_put_contents($merk, (string) time()) === false) {
+            return awm_aktion_ergebnis(false, 'SCHREIBEN', 500, "RENEW;OK=0;ERR=SCHREIBEN\n");
+        }
+        $ok = awm_renew($cal);
+        return awm_aktion_ergebnis($ok, $ok ? '' : 'ERNEUERUNG_GESCHEITERT', 200, 'RENEW;OK=' . ($ok ? 1 : 0) . "\n"
+            . ($ok ? 'Neuer Link gespeichert.' : 'Erneuerung fehlgeschlagen - Details im Protokoll.') . "\n");
+    }
+    return awm_aktion_ergebnis(false, 'UNBEKANNT', 400, '');
+}
+
+/**
+ * Eine Aktion fuer Kalender 2 bis 4 ueber die Befehlsbruecke (Themen <praefix>/befehl/<n>/ansage und .../erneuern,
+ * Bauvorschrift Nachtrag 19.10.2026: die Bruecke abonniert nur das Grundpraefix; ansage und erneuern gelten je
+ * Kalender). Ein Kalender, den es nicht gibt, wird abgelehnt - der HTTP-Weg klemmt ?cal= stattdessen, das bleibt.
+ */
+function awm_aktion_kalender($aktion, $kal)
+{
+    $n = (int) $kal;
+    if ($n < 2 || $n > AWM_MAX_KALENDER || awm_cal($n) === null) {
+        return awm_aktion_ergebnis(false, 'KALENDER_FEHLT', 404, '');
+    }
+    return awm_aktion($aktion, $n, 'mqtt');
+}
+
+/**
+ * Die Einstellungen fuer die Befehlsbruecke (Zuordnung 'einstellungen', Entwurf gemeinsam 2.5): Praefix aus der
+ * EINEN Themenfunktion (Grundpraefix, Kalender 1), annehmen = Haken "Befehle ueber MQTT annehmen" UND MQTT an,
+ * kein eingreifender Befehl (die Linie hat keinen zweiten Haken).
+ */
+function awm_befehle_einstellungen()
+{
+    $cfg = awm_config();
+    $mqtt = !empty($cfg['mqtt_enabled']);
+    return array('praefix' => awm_mqtt_basis($cfg), 'annehmen' => !empty($cfg['befehle_mqtt_ein']) && $mqtt,
+                 'eingreifend' => false, 'mqtt_ein' => $mqtt);
+}
+
+/** Wo liegt bin/befehlsbruecke.php? Installiert unter bin/plugins/<ordner>, sonst neben dem Arbeitsordner. */
+function awm_bruecke_datei()
+{
+    $p = awm_paths();
+    $kand = array();
+    if ($p['lbhome'] !== '') { $kand[] = $p['lbhome'] . '/bin/plugins/' . $p['plugin'] . '/befehlsbruecke.php'; }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) { return $k; }
+    }
+    return '';
+}
+
+/** Die Befehlsbruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). Rueckgabe true, wenn sie da ist. */
+function awm_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $f = awm_bruecke_datei();
+    if ($f === '') { return false; }
+    if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Waechter der Befehlsbruecke im Minutentakt (cron.php; Bauvorschrift Nachtrag 19.10.2026: "Linien mit
+ * PHP-Minutentakt rufen bb_waechter()"). Startet, haelt an, misst zustand.json (nicht die PID), sendet
+ * <praefix>/status/befehle. Ohne Bruecke (Archiv, Arbeitsordner) geschieht nichts. Rueckgabe array(status, text).
+ */
+function awm_bruecke_waechter()
+{
+    if (!awm_bruecke_laden()) { return array(null, 'keine Befehlsbruecke'); }
+    return bb_waechter();
+}
+
+/**
+ * Die Bruecke sofort starten (Reiter MQTT, nach dem Einschalten von "Befehle ueber MQTT annehmen"):
+ * befehlsbruecke.sh start - startet nur, wenn sie laufen soll (--soll), nie als root, nie waehrend eines Updates, nie
+ * zweimal (Sperre und argumentweise Probe im Startskript). Warum hier und nicht nur im Waechter: der Waechter startet
+ * nach einem Start hoechstens alle 600 s neu (Stammfassung, Neustart-Bremse) - wer den Haken aus- und gleich wieder
+ * einschaltet, haette bis zu 10 Minuten keine Bruecke (Pruefstand A6). Rueckgabe array(rc, Ausgabe).
+ */
+function awm_bruecke_starten()
+{
+    if (!awm_bruecke_laden()) { return array(1, awm_t('BEFEHL.P_FEHLT')); }
+    $p = bb_pfade();
+    if (!$p) { return array(1, 'keine LoxBerry-Installation erkannt'); }
+    return bb_sh($p, 'start');
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter und Vorlage) oder null. */
+function awm_befehle_liste()
+{
+    if (!awm_bruecke_laden()) { return null; }
+    list($z) = bb_zuordnung_laden();
+    if ($z === null) { return null; }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return null; }
+    return bb_liste($z, bb_einstellungen($z));
+}
+
+/** Vorlage "<Plugin> MQTT-Befehle" (bb_vorlage(), Entwurf gemeinsam E3): eigener Ausgang an den UDP-Eingang des
+ *  Gateways. Rueckgabe array(name, inhalt) oder null. */
+function awm_befehle_vorlage()
+{
+    $l = awm_befehle_liste();
+    if ($l === null) { return null; }
+    $port = awm_mqtt_udpport();
+    return array('VQ_awm_mqtt.xml', bb_vorlage($l, preg_replace('/:\d+\z/', '', awm_host()), $port > 0 ? $port : 11884));
+}
+
+/**
+ * Zeile "Befehlsbruecke" im Reiter Test (Entwurf gemeinsam 2.11): Rueckgabe array('ok'|'fehl'|'hinweis', Text).
+ * Gemessen wird das Erzeugnis (zustand.json: ts, abo, Zaehler) und ob ein Dienst argumentweise laeuft - wie der
+ * Waechter, nicht die PID.
+ */
+function awm_pruef_bruecke()
+{
+    if (!awm_bruecke_laden()) { return array('fehl', awm_t('BEFEHL.P_FEHLT')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array('fehl', sprintf(awm_t('BEFEHL.P_DEFEKT'), $fehler)); }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return array('fehl', sprintf(awm_t('BEFEHL.P_DEFEKT'), $f[0])); }
+    $cfg = awm_config();
+    if (empty($cfg['befehle_mqtt_ein'])) { return array('hinweis', awm_t('BEFEHL.P_AUS')); }
+    if (empty($cfg['mqtt_enabled'])) { return array('hinweis', awm_t('BEFEHL.P_MQTT_AUS')); }
+    $zu = bb_zustand_lesen();
+    $laeuft = (bool) bb_dienste();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!$laeuft) { return array('fehl', awm_t('BEFEHL.P_STEHT')); }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) {
+        return array('fehl', sprintf(awm_t('BEFEHL.P_HAENGT'), (int) $alter));
+    }
+    if (empty($zu['abo'])) {
+        return array('fehl', sprintf(awm_t('BEFEHL.P_OHNE_ABO'), isset($zu['fehler']) ? (string) $zu['fehler'] : ''));
+    }
+    $zl = isset($zu['zaehler']) && is_array($zu['zaehler']) ? $zu['zaehler'] : array();
+    $t = sprintf(awm_t('BEFEHL.P_LAEUFT'), date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+                 isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0,
+                 isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0,
+                 isset($zl['verworfen']) ? (int) $zl['verworfen'] : 0);
+    if (!empty($zu['letzter']) && is_array($zu['letzter'])) {
+        $t .= ' ' . sprintf(awm_t('BEFEHL.P_LETZTER'), (string) $zu['letzter']['name'],
+                            (string) $zu['letzter']['ergebnis'], max(0, time() - (int) $zu['letzter']['zeit']));
+    }
+    if (!empty($zl['verworfen'])) { $t .= ' ' . awm_t('BEFEHL.P_VERWORFEN'); }
+    return array('ok', $t);
+}
+
+/** Die Zeilen von "befehlsbruecke.php --pruefen" (bb_pruefen()) fuer den Reiter Test; leer ohne Bruecke. */
+function awm_bruecke_pruefzeilen()
+{
+    if (!awm_bruecke_laden()) { return array(); }
+    ob_start();
+    bb_pruefen();
+    $aus = (string) ob_get_clean();
+    return array_values(array_filter(explode("\n", $aus), 'strlen'));
+}
 
 /**
  * Die Fassung des LoxBerry-MQTT-Gateways - 0 heisst "nicht feststellbar".
@@ -5077,7 +5437,10 @@ function awm_sicherung_lesen($roh, &$namen = null)
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
     foreach (array_keys(awm_config_vorgaben()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
+        /* Gruppe 1 / MQTT (1.4.25): ein Schluessel, den eine Sicherung einer frueheren Fassung nicht kennen
+         * kann, ist kein fehlender - sonst wiese das Zurueckspielen JEDE Sicherung vor 1.4.25 ab. Er behaelt die
+         * Vorgabe (befehle_mqtt_ein: aus), das ist die sichere Seite. */
+        if (!array_key_exists($fk, $daten) && !in_array($fk, awm_spaet_schluessel(), true)) {
             $fehlend[] = $fk;
         }
     }
@@ -5179,6 +5542,7 @@ function awm_eingabe_felder($formular)
             'tts_sonos_zone' => $t, 'tts_sonos_laut' => $t,
             'ansage_vorlage' => $t, 'ansage_vorlage2' => $t),
         'mqtt' => array('mqtt_enabled' => $h, 'mqtt_topic' => $t),
+        'befehle' => array('befehle_mqtt_ein' => $h),            // Gruppe 1 / MQTT (1.4.25)
         'bins' => array('bins_cal' => $t, 'bins_modus' => $t, 'bin_titel' => array('text', $z),
                         'bin_tonne' => array('text', $z), 'bin_art' => array('text', $z)),
         'termine' => array('term_cal' => $t, 'term_datum' => array('text', $z),
@@ -5451,6 +5815,13 @@ function awm_pruef_cron()
             : array('fehl', sprintf(awm_t_oder('TEST.P_LAUF_ALT', 'Der Minutenlauf hat seit %d s nicht gezaehlt'), $alter));
     }
     return $aus;
+}
+
+/** Gruppe 1 / MQTT (1.4.25): Schluessel, die erst eine spaetere Fassung kennt - eine Sicherung davor traegt
+ *  sie nicht (awm_sicherung_lesen()). */
+function awm_spaet_schluessel()
+{
+    return array('befehle_mqtt_ein');
 }
 
 /** Schluessel frueherer Fassungen, die es nicht mehr gibt. */

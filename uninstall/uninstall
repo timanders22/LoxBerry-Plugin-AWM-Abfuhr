@@ -27,8 +27,18 @@
 # Wer die Konfiguration behalten will, sichert sie VORHER von Hand - das
 # Deinstallieren ist der falsche Ort fuer eine Aufbewahrung, die niemand
 # angefordert hat.
+ARGV2=$2
 ARGV3=$3
 ARGV5=$5
+# Gruppe 1 / MQTT (1.4.25): plugininstall.pl ruft beim Deinstallieren jedes data/system/uninstall/$pname*
+# und gibt als $2 den NAMEN des deinstallierten Plugins (am Geraet gemessen 08.10.2026: zigbee2mqtt riss
+# so zigbee2mqttng mit). Traegt ein anderes Plugin einen Namen, mit dem "awmabfuhr" beginnt, liefe dieses
+# Skript mit - seit 1.4.25 hielte es dabei auch die Befehlsbruecke an und loeschte ihre Zugangsdaten.
+# Deshalb: $2 gesetzt und nicht der eigene Name -> nichts tun.
+if [ -n "$ARGV2" ] && [ "$ARGV2" != "awmabfuhr" ]; then
+    echo "<INFO> Deinstallation von '$ARGV2' - dieses Skript gehoert zu awmabfuhr und tut nichts."
+    exit 0
+fi
 PFOLDER="${ARGV3:-awmabfuhr}"
 BASE="${ARGV5:-$LBHOMEDIR}"
 # Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
@@ -67,6 +77,52 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
     echo "<WARNING> Es wurde NICHTS geloescht."
     exit 1
+fi
+
+# ---------- Gruppe 1 / MQTT (1.4.25): die Befehlsbruecke anhalten und abraeumen ----------
+# Bauart vb_g1_bruecke_bau/beispiel/uninstall/uninstall (Entwurf gemeinsam 2.9): stop beendet Dienst und
+# mosquitto_sub; danach argumentweise nachzaehlen (argv[0] php, argv[1] genau der Dienstpfad, kein argv[2])
+# und verwaiste mosquitto_sub mit UNSERER Optionsdatei beenden; die Optionsdateien (Broker-Kennwort)
+# ueberschreiben und den Ordner befehle/ entfernen; nachzaehlen. VOR dem Leeren der Themen, damit kein
+# Befehl mehr dazwischenkommt. Die Lage ist oben schon gegen eine LoxBerry-Wurzel geprueft (fail-closed).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+BBPHP="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.php"
+BBDIR="$BASE/data/plugins/$PFOLDER/befehle"
+if [ -f "$BBSH" ]; then
+    timeout 40 bash "$BBSH" stop 2>&1 | sed 's/^/<INFO> /'
+fi
+bb_rest=0
+for d in /proc/[0-9]*; do
+    mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+    if [ "${#a[@]}" -eq 2 ] && [ "${a[1]}" = "$BBPHP" ] && [[ "${a[0]}" =~ (^|/)php[0-9.]*$ ]]; then
+        kill -9 "${d#/proc/}" 2>/dev/null
+        bb_rest=$((bb_rest + 1))
+    fi
+done
+bb_abos=0
+for d in /proc/[0-9]*; do
+    read -r c 2>/dev/null < "$d/comm" || continue
+    [ "$c" = "mosquitto_sub" ] || continue
+    mapfile -d '' -t e 2>/dev/null < "$d/environ" || continue
+    for x in "${e[@]}"; do
+        if [ "$x" = "XDG_CONFIG_HOME=$BBDIR/mosquitto" ]; then kill -9 "${d#/proc/}" 2>/dev/null; bb_abos=$((bb_abos + 1)); fi
+    done
+done
+[ "$bb_rest" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $bb_rest Dienst(e) erst mit kill -9 beendet."
+[ "$bb_abos" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $bb_abos mosquitto_sub erst mit kill -9 beendet."
+if [ -d "$BBDIR" ]; then
+    for f in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+        if [ -f "$f" ]; then
+            n=$(stat -c %s "$f" 2>/dev/null || echo 64)
+            head -c "$n" /dev/zero > "$f" 2>/dev/null
+        fi
+    done
+    rm -rf "${BBDIR:?}"
+    if [ -e "$BBDIR/mosquitto/mosquitto_sub" ] || [ -e "$BBDIR/mosquitto/mosquitto_pub" ]; then
+        echo "<WARNING> Befehlsbruecke: Optionsdateien liegen noch unter $BBDIR/mosquitto - von Hand entfernen."
+    else
+        echo "<OK> Befehlsbruecke angehalten, Zugangsdaten der Befehlsbruecke entfernt."
+    fi
 fi
 
 # Die zurueckbehaltenen MQTT-Themen der Linie leeren - VOR dem Loeschen, denn

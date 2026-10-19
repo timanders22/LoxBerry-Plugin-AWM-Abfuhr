@@ -18,7 +18,8 @@
  *                       AUDIO/PUSH = Freigaben aus der Plugin-Konfiguration;
  *                       PTEST=1 = Test-Pushnachricht angefordert (5 min aktiv);
  *                       AGE = Alter der Kalenderdatei in Stunden, FETCH = letzter Abruf ok,
- *                       LETZTER = letzter Termin im Kalender (Loxone-Zeit, 0 = unbegrenzt),
+ *                       LETZTER = letzter Termin im Kalender (Loxone-Zeit, 0 = unbegrenzt,
+ *                       -1 = keine Kalenderdaten - seit 1.4.25),
  *                       HINW=1 = es gibt einen Hinweis (Text ueber ?text=1),
  *                       LUECKE = Tage bis zum naechsten ersatzlos gestrichenen Termin,
  *                       ACK=1 = quittiert (heute; am Vorabend quittiert: bis zum Abholmorgen),
@@ -40,6 +41,10 @@
  *                         etwas faellig, bis zum Abholmorgen - seit 1.4.24)
  *   ?renew=1&token=T   -> Jahres-Erneuerung des Kalender-Links jetzt versuchen
  *   ?selftest=1&token=T -> nur pruefen, ob das Token stimmt; loest nichts aus
+ *
+ * Seit 1.4.25 (Gruppe 1 / MQTT) nimmt dieselben vier Aktionen auch die Befehlsbruecke
+ * an (<praefix>/befehl/ansage|testpush|tonne_draussen|erneuern, Haken "Befehle ueber MQTT
+ * annehmen"); beide Wege rufen awm_aktion() in awm_lib.php.
  *
  * Zugangsdaten stehen ausschliesslich in der Plugin-Konfiguration - diese URL
  * enthaelt kein Passwort.
@@ -212,114 +217,27 @@ if (isset($_GET['selftest'])) {
     exit;
 }
 
-/* ---------- Test-Ansage ---------- */
-if (isset($_GET['say'])) {
-    /* Seit 1.3.6 tokenpflichtig: der Aufruf laesst das Haus sprechen. Ohne
-     * Token konnte jedes Geraet im Heimnetz die Ansage ausloesen. */
+/* ---------- Ausloesende Aufrufe: Ansage, Test-Push, Quittierung, Jahres-Erneuerung ----------
+ *
+ * Gruppe 1 / MQTT (1.4.25; Bauvorschrift Nachtrag 19.10.2026, Entwurf ab Abschnitt 3): die vier Zweige stehen jetzt
+ * in awm_aktion() (awm_lib.php) - dieselbe Funktion ruft die Befehlsbruecke (bin/befehle_zuordnung.php, Quelle
+ * 'mqtt'). Hier bleibt, was nur der HTTP-Weg hat: die Token-Pruefung (seit 1.3.6 tokenpflichtig - ohne Token konnte
+ * jedes Geraet im Heimnetz das Haus sprechen lassen, eine Pushnachricht ausloesen oder die Konfiguration umschreiben),
+ * Statuscode und Antwortzeilen. Beide sind byte-gleich wie bis 1.4.24 (Wirkungstest Quelle gegen Bau), ebenso die
+ * Reihenfolge der Zweige (say vor ptest vor ack vor renew).
+ */
+foreach (array('say' => 'SAY', 'ptest' => 'PTEST', 'ack' => 'ACK', 'renew' => 'RENEW') as $awm_a => $awm_k) {
+    if (!isset($_GET[$awm_a])) {
+        continue;
+    }
     if (!awm_token_ok()) {
-        awm_token_abweisen('SAY');
+        awm_token_abweisen($awm_k);
     }
-    awm_fetch(false, $cal);
-    $awm_c = awm_cal($cal);
-    $text = awm_announce_text(null, $cal);
-    if ($text === '') {
-        $text = awm_t_oder('TEXT.ANSAGE_TEST',
-            'Hallo! Dies ist eine Testansage des Abfuhrkalenders. Morgen wird keine Tonne abgeholt.');
+    $awm_r = awm_aktion($awm_a, $cal, 'http');
+    if ($awm_r['http'] !== 200) {
+        http_response_code($awm_r['http']);
     }
-    /* Nr. 36 b, Stufe 2: gesprochen ueber die gemeinsame Sprachausgabe; die Antwort bleibt
-     * in der Form bis 1.4.20. Vom Ansagetext nur seine Laenge; beim Original-Audioserver ist
-     * der Text die Antwort (Loxone Config spricht ihn ueber den Textgenerator). */
-    $awm_r = awm_say($text, $awm_c ? $awm_c['zonen'] : '');
-    $ok = $awm_r['stand'] === 1;
-    if ($awm_r['art'] === 'audioserver') {
-        echo 'SAY;OK=' . ($ok ? 1 : 0) . ";TEXT=$text\n";
-    } else {
-        echo 'SAY;OK=' . ($ok ? 1 : 0) . ';TEXTLAENGE=' . ansage_zeichen($text) . "\n";
-    }
-    exit;
-}
-
-/* ---------- Test-Pushnachricht ---------- */
-if (isset($_GET['ptest'])) {
-    /* Seit 1.3.6 tokenpflichtig - Hausstandard fuer alle Aktionsendpunkte. */
-    if (!awm_token_ok()) {
-        awm_token_abweisen('PTEST');
-    }
-    /* C6: das Schreiben auswerten. Bis 1.4.14 antwortete dieser Zweig
-     * "PTEST;OK=1" auch bei schreibgeschuetztem Zwischenspeicher, und die
-     * Zeile fuer Loxone zeigte danach PTEST=0 (gemessen, WSL). */
-    if (@file_put_contents(awm_tmpdir() . '/ptest', '1') !== 1) {
-        awm_log('Test-Pushnachricht NICHT gesetzt: der Merker ' . awm_tmpdir()
-              . '/ptest liess sich nicht schreiben.');
-        http_response_code(500);
-        echo "PTEST;OK=0;ERR=SCHREIBEN\n";
-        exit;
-    }
-    awm_log('Test-Pushnachricht angefordert (PTEST=1 fuer 5 Minuten; Loxone fragt im 300-s-Takt ab)');
-    /* Sofort melden, statt bis zu einer Minute auf den Cron zu warten.
-     * Ueber HTTP holt sich der Miniserver den Merker beim naechsten Abruf;
-     * ueber MQTT muss ihn das Plugin schicken - und ein Test, der erst eine
-     * Minute spaeter wirkt, sieht aus wie ein Test, der nicht wirkt.
-     * Ueber alle Kalender, weil der Merker fuer alle gilt. */
-    foreach (array_keys(awm_cals()) as $awm_n) {
-        awm_mqtt_publish(null, $awm_n);
-    }
-    echo "PTEST;OK=1;DAUER=300\nHinweis: Loxone pollt alle 300 s - die Push-Nachricht kommt innerhalb von 5 Minuten,\nsofern der Test-Benachrichtigungsbaustein laut Anleitung (Schritt 6) verdrahtet ist.\n";
-    exit;
-}
-
-/* ---------- Quittierung "Tonne steht draussen" ----------
- * Bis 1.3.8 lebte die Quittierung ausschliesslich im Miniserver, und der
- * Reiter "Einbindung in Loxone" brauchte dafuer sieben Bausteine. Jetzt
- * weiss auch das Plugin davon und laesst die Morgen-Ansage aus. */
-if (isset($_GET['ack'])) {
-    if (!awm_token_ok()) {
-        awm_token_abweisen('ACK');
-    }
-    /* Welle Bild 18 (1.4.24; Entwurf Welle 18 ab, E10): awm_ack_setzen() sagt, bis wann die Quittierung gilt. */
-    $awm_bis = awm_ack_setzen();
-    if ($awm_bis === false) {                 // C6: fail closed
-        http_response_code(500);
-        echo "ACK;OK=0;ERR=SCHREIBEN\n";
-        exit;
-    }
-    foreach (array_keys(awm_cals()) as $awm_n) {
-        awm_mqtt_publish(null, $awm_n);
-    }
-    echo 'ACK;OK=1;BIS=' . ($awm_bis === 'abholmorgen' ? 'Abholmorgen' : 'Mitternacht') . "\n";
-    exit;
-}
-
-/* ---------- Jahres-Erneuerung manuell ---------- */
-if (isset($_GET['renew'])) {
-    /* Seit 1.3.6 tokenpflichtig: der Aufruf schreibt die Konfiguration um
-     * (neuer Kalender-Link) und geht dafuer ins Netz. */
-    if (!awm_token_ok()) {
-        awm_token_abweisen('RENEW');
-    }
-    /* C5: hoechstens einmal je Stunde und Kalender. Bis 1.4.14 hatte
-     * ?renew=1 weder Tagesmerker noch Mindestabstand - jeder Aufruf ging mit
-     * bis zu 25 s je Kandidat ins Netz. Der Merker wird VOR dem Versuch
-     * gesetzt, damit auch ein Fehlschlag zaehlt; laesst er sich nicht
-     * schreiben, wird nicht erneuert (fail closed). */
-    $awm_rmerk = awm_tmpdir() . '/renew_hand_' . (int) $cal;
-    clearstatcache(true, $awm_rmerk);
-    $awm_rw = is_file($awm_rmerk) ? filemtime($awm_rmerk) + AWM_RENEW_ABSTAND - time() : 0;
-    if ($awm_rw > 0) {
-        awm_log_if_changed('renew_gebremst_' . (int) $cal, 'Jahres-Erneuerung von Hand fuer Kalender '
-            . (int) $cal . ' gebremst - hoechstens einmal je Stunde (' . date('Y-m-d H') . ' Uhr).');
-        http_response_code(429);
-        echo 'RENEW;OK=0;ERR=GEBREMST;WARTE=' . min(AWM_RENEW_ABSTAND, $awm_rw) . "\n"
-           . "Die Jahres-Erneuerung von Hand ist hoechstens einmal je Stunde erlaubt.\n";
-        exit;
-    }
-    if (@file_put_contents($awm_rmerk, (string) time()) === false) {
-        http_response_code(500);
-        echo "RENEW;OK=0;ERR=SCHREIBEN\n";
-        exit;
-    }
-    $ok = awm_renew($cal);
-    echo 'RENEW;OK=' . ($ok ? 1 : 0) . "\n" . ($ok ? 'Neuer Link gespeichert.' : 'Erneuerung fehlgeschlagen - Details im Protokoll.') . "\n";
+    echo $awm_r['antwort'];
     exit;
 }
 
