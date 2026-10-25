@@ -181,8 +181,9 @@ function aw_speichern($daten, &$fehler)
      * (Regeln/05); dieselbe Zahl wie bei Robonect und MG iSmart. */
     $ok = awm_json_schreiben($p['config'], $daten, 0600, true);
     if ($ok) {
-        @copy($p['config'], $p['backup']);
-        @chmod($p['backup'], 0600);
+        /* Gruppe 18 (1.4.26; A4): unteilbar mit den Rechten vor dem Inhalt (awm_datei_kopieren()) - bis 1.4.25
+         * @copy an Ort und Stelle, eine neue Zweitschrift stand bis zum chmod auf 0644. */
+        awm_datei_kopieren($p['config'], $p['backup'], 0600);
     } else {
         $fehler[] = sprintf(awm_t('MELD.NICHT_GESPEICHERT'), $p['config']);
     }
@@ -209,6 +210,25 @@ function aw_mqtt_folgen($alt, $neu, &$hinweise, &$fehler)
         aw_speichern($jetzt, $fehler);
     }
     awm_abo_datei($basis, true);
+}
+
+/**
+ * Gruppe 18 (1.4.26; Entwurf 2.4, E16): nach einem Speichern die Folgen fuer die Haus-Themen haus/abfuhr/* ziehen -
+ * eingeschaltet: der naechste Minutenlauf schickt den vollen Satz; ausgeschaltet (Haken oder MQTT, auch beim
+ * Zurueckspielen): die sechs retained Themen mit Rueckfrage beim Broker abraeumen. Ist das Raeumen nicht bestaetigt,
+ * bleibt der Merker '_haus_frueher' in der Konfiguration (nicht Teil der Sicherung) - die Deinstallation raeumt noch
+ * einmal. Nur Themen dieser Installation, nie fremde.
+ */
+function aw_haus_folgen($alt, $neu, &$hinweise, &$fehler)
+{
+    $f = awm_haus_folgen($alt, $neu);
+    if ($f['meldung'] !== '') { $hinweise[] = $f['meldung']; }
+    $jetzt = awm_config(true);
+    $soll = (int) $f['frueher'];
+    if ((int) !empty($jetzt['_haus_frueher']) !== $soll) {
+        if ($soll) { $jetzt['_haus_frueher'] = 1; } else { unset($jetzt['_haus_frueher']); }
+        aw_speichern($jetzt, $fehler);
+    }
 }
 
 /** Zu welcher Kalendernummer gehoert der Platz (0-basiert) in der Liste? */
@@ -305,6 +325,18 @@ if ($aw_post && !aw_formtoken_ok($aw_cfg_roh)) {
  * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
  * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
  * ================================================================== */
+/* ---------- Gruppe 18 (1.4.26; N7, E11): lesende Ansichten hinter der LoxBerry-Anmeldung ----------
+ * Zeile, JSON, Text, ICS und Debug aus awm_ansicht() - derselben Funktion wie awm.php, ohne erzwungenen Abruf und
+ * unabhaengig vom Schalter endpunkt_ein. Eine Neuinstallation (HTTP-Weg aus) sieht so die Terminansicht, auf die die
+ * Statustexte des Musterprojekts zeigen ("Reiter Test 'Alle Termine (Debug)'"). Positivliste der Arten. */
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ansicht']) && is_string($_GET['ansicht'])
+        && in_array($_GET['ansicht'], array('zeile', 'json', 'text', 'ics', 'debug'), true)) {
+    $aw_acal = (isset($_GET['cal']) && is_scalar($_GET['cal'])) ? (int) $_GET['cal'] : 1;
+    if ($aw_sperre) { awm_sperre_frei($aw_sperre); }
+    awm_ansicht($_GET['ansicht'], $aw_acal);
+    exit;
+}
+
 /* ---------- Loxone-Vorlagen herunterladen (Hausstandard) ---------- */
 if ($aw_post && isset($_POST['vorlage'])) {
     $aw_vcal = max(1, min(9, (int) (isset($_POST['vorlage_cal']) ? $_POST['vorlage_cal'] : 1)));
@@ -336,6 +368,7 @@ if ($aw_post && isset($_POST['mqtt_save'])) {
     $aw_new = awm_config(true);
     $aw_vorher = $aw_new;
     $aw_new['mqtt_enabled'] = isset($_POST['mqtt_enabled']) ? 1 : 0;
+    $aw_new['haus_abfuhr_ein'] = isset($_POST['haus_abfuhr_ein']) ? 1 : 0;      // Gruppe 18 (1.4.26)
     $aw_thema = trim((string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''));
     // Was nicht ins Muster passt, wird ABGEWIESEN, nicht zurechtgebogen.
     /* Nr. 19: auch ein LEERES Thema. Bis 1.4.16 wurde es still zu "awm" und
@@ -352,6 +385,11 @@ if ($aw_post && isset($_POST['mqtt_save'])) {
         if (aw_speichern($aw_new, $aw_fehler)) {
             $aw_saved = true;
             aw_mqtt_folgen($aw_vorher, $aw_new, $aw_hinweise, $aw_fehler);
+            /* Gruppe 18 (1.4.26): Haus-Themen an/aus - auch "MQTT aus" raeumt sie ab (Entwurf 2.4). */
+            if ((int) !empty($aw_vorher['haus_abfuhr_ein']) !== (int) $aw_new['haus_abfuhr_ein']) {
+                awm_log('Haus-Themen haus/abfuhr ' . ($aw_new['haus_abfuhr_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . '.');
+            }
+            aw_haus_folgen($aw_vorher, $aw_new, $aw_hinweise, $aw_fehler);
         }
     }
     $aw_tab = 'tab-mqtt';
@@ -384,6 +422,21 @@ if ($aw_post && isset($_POST['befehle_save'])) {
         }
     }
     $aw_tab = 'tab-mqtt';
+}
+
+/* ---------- Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 2, Entwurf 3.3): HTTP-Weg (endpunkt_ein) ----------
+ * Eigenes Formular im aufklappbaren Abschnitt "Bestehende Anlagen: Weg ueber HTTP" (Reiter Einbindung) - ein anderes
+ * Formular setzt diesen Haken nie zurueck. */
+if ($aw_post && isset($_POST['endpunkt_save'])) {
+    $aw_bean_form = 'endpunkt';
+    $aw_new = awm_config(true);
+    $aw_new['endpunkt_ein'] = isset($_POST['endpunkt_ein']) ? 1 : 0;
+    if (aw_speichern($aw_new, $aw_fehler)) {
+        $aw_saved = true;
+        awm_log('HTTP-Weg (awm.php) ' . ($aw_new['endpunkt_ein'] ? 'eingeschaltet' : 'ausgeschaltet') . '.');
+        $aw_hinweise[] = awm_t($aw_new['endpunkt_ein'] ? 'LOX.EP_M_EIN' : 'LOX.EP_M_AUS');
+    }
+    $aw_tab = 'tab-loxone';
 }
 
 /* ---------- Neues Aktionstoken erzeugen ---------- */
@@ -566,16 +619,25 @@ if ($aw_post && isset($_POST['save_termine'])) {
         $aw_ymd = '';
         if (preg_match('/^(\d{2})\.(\d{2})\.(\d{4})$/', $aw_dd, $m)) { $aw_ymd = $m[3] . $m[2] . $m[1]; }
         elseif (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $aw_dd, $m)) { $aw_ymd = $m[1] . $m[2] . $m[3]; }
+        /* Gruppe 18 (1.4.26; A6): nach einem Datumsfehler wird die Tonne derselben Zeile trotzdem geprueft (zwei
+         * Markierungen, Regeln/04), eine gesetzte, aber unbekannte Tonne bekommt eine eigene Meldung; eine Zeile mit
+         * Fehler kommt nie in die Liste. */
+        $aw_zeile_gut = true;
         if ($aw_ymd === '' || awm_tagnummer($aw_ymd) < 0) {
             $aw_fehler[] = sprintf(awm_t('MELD.DATUM_UNGUELTIG'), $aw_dd);
             $aw_bean[] = 'term_datum.' . $aw_k;
-            continue;
+            $aw_zeile_gut = false;
         }
-        if (!isset($aw_arten[$aw_bb])) {
+        if ($aw_bb === '') {
             $aw_fehler[] = sprintf(awm_t('MELD.TONNE_FEHLT'), $aw_dd);
             $aw_bean[] = 'term_tonne.' . $aw_k;
-            continue;
+            $aw_zeile_gut = false;
+        } elseif (!isset($aw_arten[$aw_bb])) {
+            $aw_fehler[] = sprintf(awm_t('MELD.TERMIN_TONNE_UNBEKANNT'), $aw_dd);
+            $aw_bean[] = 'term_tonne.' . $aw_k;
+            $aw_zeile_gut = false;
         }
+        if (!$aw_zeile_gut) { continue; }
         $aw_neu[] = array('datum' => $aw_ymd, 'tonne' => $aw_bb, 'text' => $aw_txt);
     }
     if ($aw_slot < 0) {
@@ -689,6 +751,9 @@ if ($aw_post && isset($_POST['save'])) {
     }
     $aw_new['autorenew'] = isset($_POST['autorenew']) ? 1 : 0;
     $aw_new['melden'] = isset($_POST['melden']) ? 1 : 0;
+    /* Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 4): V2, ab Werk aus. Abschalten loescht nur haus_quellen.json
+     * (fremde Themen fasst der Abnehmer nie an). */
+    $aw_new['anwesenheit_ein'] = isset($_POST['anwesenheit_ein']) ? 1 : 0;
     $aw_hwr = isset($_POST['hinweis_woerter']) ? $_POST['hinweis_woerter'] : '';
     $aw_hw = is_string($aw_hwr) ? trim($aw_hwr) : '';
     /* Nr. 19: eine LEERE Liste wurde bis 1.4.16 still zur Standardliste. Jetzt
@@ -804,6 +869,9 @@ if ($aw_post && isset($_POST['save'])) {
         $aw_saved = true;
         foreach (array_keys(awm_cals()) as $aw_n) { awm_state(true, $aw_n); }
         aw_mqtt_folgen($aw_vorher, $aw_new, $aw_hinweise, $aw_fehler);    // M4: entfernte Kalender
+        if (!empty($aw_vorher['anwesenheit_ein']) && empty($aw_new['anwesenheit_ein'])) {
+            @unlink(awm_haus_quellen_datei());                                // Gruppe 18 (1.4.26)
+        }
     }
     $aw_tab = 'tab-settings';
 }
@@ -842,8 +910,8 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
     } elseif ((int) $_FILES['awm_sicherung']['size'] > 262144) {
         $aw_fehler[] = awm_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($awm_neu, $awm_mangel, $awm_n) = awm_sicherung_lesen(
-            (string) @file_get_contents($_FILES['awm_sicherung']['tmp_name']));
+        $awm_roh = (string) @file_get_contents($_FILES['awm_sicherung']['tmp_name']);
+        list($awm_neu, $awm_mangel, $awm_n) = awm_sicherung_lesen($awm_roh);
         if ($awm_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert
              * wird nichts. */
@@ -862,6 +930,10 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
             }
             /* Nr. 36 b: die Sprechtoken stehen nicht in der Sicherung (eine Datei MIT einem
              * hat awm_wert_pruefen() schon abgewiesen) - die geltenden BLEIBEN. */
+            /* Gruppe 18 (1.4.26; N3, Pflicht): ein Spaetschluessel, den die Datei NICHT traegt (Sicherung einer
+             * frueheren Fassung), behaelt den AKTUELLEN Wert - awm_sicherung_lesen() beginnt bei den Vorgaben, und
+             * eine 1.4.25-Sicherung schaltete sonst endpunkt_ein einer Bestandsanlage still auf 0 (wie G17 N2). */
+            list($awm_neu, $awm_spaet) = awm_sicherung_spaet_behalten($awm_neu, $awm_roh, $awm_vorher);
             if (!isset($awm_neu['tts']) || !is_array($awm_neu['tts'])) { $awm_neu['tts'] = array(); }
             $awm_neu['tts'] = ansage_sicherung_tokens_behalten($awm_neu['tts'],
                 isset($awm_vorher['tts']) ? $awm_vorher['tts'] : array());
@@ -870,7 +942,9 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
             } else {
             $aw_hinweise[] = sprintf(awm_t('EINST.SICH_UEBERNOMMEN'), $awm_n);
             if ($awm_tok_behalten) { $aw_hinweise[] = awm_t('EINST.SICH_TOKEN_BEHALTEN'); }
+            if ($awm_spaet) { $aw_hinweise[] = sprintf(awm_t('EINST.SICH_SPAET_BEHALTEN'), implode(', ', $awm_spaet)); }
             aw_mqtt_folgen($awm_vorher, $awm_neu, $aw_hinweise, $aw_fehler);     // M2-M4, M8
+            aw_haus_folgen($awm_vorher, $awm_neu, $aw_hinweise, $aw_fehler);     // Gruppe 18 (1.4.26)
             /* Den Dienst nachziehen UND sagen, was mit ihm geschah
              * (Regeln/05). Ohne das stimmt die Seite, aber der Miniserver
              * rechnet bis zum naechsten Minutenlauf mit dem alten Stand. */
@@ -909,6 +983,36 @@ if ($aw_post && isset($_POST['ansage_test'])) {
         $aw_fehler[] = awm_t('TTS.M_TEST_AUS');
     } else {
         $aw_fehler[] = sprintf(awm_t('TTS.M_TEST_FEHL'), ansage_kennung_text($aw_tr['kennung'], $aw_tk));
+    }
+    $aw_tab = 'tab-test';
+}
+
+/* ---------- Gruppe 18 (1.4.26; N7, E11): Test-Push, Quittieren, Abrufen, Erneuern im Reiter Test ----------
+ * Bis 1.4.25 Verweise auf awm.php mit dem Aktionstoken (ein neues Fenster, F5 loeste erneut aus). Jetzt POST mit
+ * Formularmerkmal ueber awm_aktion() (dieselbe Stelle wie awm.php und Befehlsbruecke) - unabhaengig vom Schalter
+ * endpunkt_ein; Abrufen wie "Jetzt abrufen" fuer Kalender 1. Nach der Freigabe der Sperre (Erneuerung schreibt die
+ * Konfiguration selbst). Ergebnis als Einmalmeldung, nie das Token. */
+if ($aw_post && isset($_POST['test_aktion']) && is_string($_POST['test_aktion'])
+        && in_array($_POST['test_aktion'], array('ptest', 'ack', 'abrufen', 'renew'), true)) {
+    $aw_ta = $_POST['test_aktion'];
+    if ($aw_ta === 'abrufen') {
+        list($aw_fok, $aw_fq) = awm_fetch(true, 1);
+        awm_state(true, 1);
+        if ($aw_fq === 'gebremst') {
+            $aw_fehler[] = sprintf(awm_t('MELD.ABRUF_GEBREMST'), AWM_SOFORT_ABSTAND, awm_sofortabruf_warte(1));
+        } elseif ($aw_fok) {
+            $aw_hinweise[] = awm_t('MELD.ABRUF') . ' ' . $aw_fq;
+        } else {
+            $aw_fehler[] = awm_t('MELD.ABRUF') . ' ' . awm_t('MELD.FEHLGESCHLAGEN');
+        }
+    } else {
+        $aw_tr = awm_aktion($aw_ta, 1, 'oberflaeche');
+        $aw_z1 = trim((string) strtok($aw_tr['antwort'], "\n"));
+        if ($aw_tr['ok']) {
+            $aw_hinweise[] = sprintf(awm_t('TEST.M_AKTION_OK'), $aw_z1);
+        } else {
+            $aw_fehler[] = sprintf(awm_t('TEST.M_AKTION_FEHL'), $aw_z1 !== '' ? $aw_z1 : $aw_tr['grund']);
+        }
     }
     $aw_tab = 'tab-test';
 }
@@ -984,7 +1088,8 @@ $aw_tok = aw_e($aw_cfg['aktionstoken']);
 
 
 if ($aw_frame) {
-    LBWeb::lbheader('Abfuhrkalender (AWM &amp; iCal)', 'https://wiki.loxberry.de/', 'help.html');
+    /* Gruppe 18 (1.4.26; A9): die eigene Wiki-Seite (seit 01.10.2026) statt der Startseite. */
+    LBWeb::lbheader('Abfuhrkalender (AWM &amp; iCal)', 'https://wiki.loxberry.de/plugins/awmabfuhr/start', 'help.html');
 }
 
 ?>
@@ -1260,6 +1365,11 @@ if ($aw_frame) {
         <input data-role="none" type="checkbox" name="notify_push" <?= aw_eh('save', 'notify_push', !empty($aw_notify['push'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_PUSH') ?>
     </label>
     <div class="sm-hilfe"><?= awm_t('EINST.H_AUDIOPUSH') ?></div>
+<?php /* Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 4): V2, ab Werk aus. */ ?>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;">
+        <input data-role="none" type="checkbox" name="anwesenheit_ein" <?= aw_eh('save', 'anwesenheit_ein', !empty($aw_cfg['anwesenheit_ein'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_ANWESENHEIT') ?>
+    </label>
+    <div class="sm-hilfe"><?= aw_t('EINST.H_ANWESENHEIT') ?></div>
 </div>
 <div class="sm-row">
     <div class="sm-feld">
@@ -1555,6 +1665,14 @@ if ($aw_altw) {
     <input data-role="none" type="text" name="mqtt_topic" value="<?= aw_e(aw_ew('mqtt', 'mqtt_topic', $aw_cfg['mqtt_topic'])) ?>"<?= aw_em('mqtt', 'mqtt_topic') ?> placeholder="awm">
     <div class="sm-hilfe"><?= aw_t('MQTT.H_PRAEFIX') ?></div>
 </div>
+<?php /* Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 3, Entwurf 2.4): Anbieter haus/abfuhr/*, ab Werk aus. */ ?>
+<div class="sm-feld">
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="haus_abfuhr_ein" <?= aw_eh('mqtt', 'haus_abfuhr_ein', !empty($aw_cfg['haus_abfuhr_ein'])) ? 'checked' : '' ?>> <?= aw_t('MQTT.L_HAUS') ?>
+</label>
+<div class="sm-hilfe"><?= awm_t('MQTT.H_HAUS') ?></div>
+<div class="sm-hilfe"><?= awm_t('MQTT.H_HAUS_GATEWAY') ?></div>
+</div>
 
 <div class="sm-step"><b><?= aw_t('MQTT.H_ABO') ?></b><br>
 <?= aw_t('MQTT.T_ABO') ?>
@@ -1643,11 +1761,12 @@ $aw_mbasis = awm_mqtt_basis($aw_cfg); ?>
 <details open><summary><?= aw_e(sprintf(awm_t('LOX.HAKEN_AUF'), count($aw_haken))) ?></summary>
 <div class="sm-hilfe"><?= sprintf(awm_t('LOX.HAKEN_VOR'), aw_e($aw_mbasis)) ?></div>
 <div class="sm-breit"><table class="sm-tbl">
-<tr><th style="width:34px;">#</th><th><?= aw_t('LOX.T_HTHEMA') ?></th><th><?= aw_t('LOX.T_HNAME') ?></th><th><?= aw_t('LOX.T_BEDEUTUNG') ?></th><th><?= aw_t('LOX.T_HART') ?></th></tr>
+<tr><th style="width:34px;">#</th><th><?= aw_t('LOX.T_HTHEMA') ?></th><th><?= aw_t('LOX.T_HNAME') ?></th><th><?= aw_t('LOX.T_BEDEUTUNG') ?></th><th><?= aw_t('LOX.T_HART') ?></th><th><?= aw_t('LOX.T_NONCACHED') ?></th></tr>
 <?php foreach ($aw_haken as $aw_hi => $aw_hz) { ?>
-<tr><td><?= (int) $aw_hi + 1 ?></td><td><span class="sm-mono"><?= aw_e($aw_hz[0]) ?></span></td><td><span class="sm-mono"><?= aw_e($aw_hz[1]) ?></span></td><td><?= aw_e($aw_hz[2]) ?></td><td><?= aw_t($aw_hz[3] === 'text' ? 'LOX.ART_TEXT' : 'LOX.ART_ZAHL') ?></td></tr>
+<tr><td><?= (int) $aw_hi + 1 ?></td><td><span class="sm-mono"><?= aw_e($aw_hz[0]) ?></span></td><td><span class="sm-mono"><?= aw_e($aw_hz[1]) ?></span></td><td><?= aw_e($aw_hz[2]) ?></td><td><?= aw_t($aw_hz[3] === 'text' ? 'LOX.ART_TEXT' : 'LOX.ART_ZAHL') ?></td><td><?= $aw_hz[4] === 'N' ? '&#10003;' : '' ?></td></tr>
 <?php } ?>
 </table></div>
+<div class="sm-hilfe"><?= aw_t('LOX.HAKEN_NONCACHED') ?></div>
 <div class="sm-hilfe"><?= sprintf(awm_t('LOX.HAKEN_NACH'), aw_e($aw_mbasis . '/status/befehle')) ?></div>
 </details>
 <?php } ?>
@@ -1753,6 +1872,29 @@ $aw_bl = awm_bausteinseiten(); ?>
    und 4, Tabellen unveraendert. Zugeklappt; alles bleibt im Text der Seite (Suche, Druck). */ ?>
 <details class="sm-step"><summary><b><?= aw_t('LOX.HTTP_TITEL') ?></b></summary>
 <div class="sm-hilfe"><?= aw_t('LOX.HTTP_TEXT') ?></div>
+<?php /* Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 2, Entwurf 3.3): der HTTP-Weg nur mit Haken - eigenes Formular,
+   Speichern orange. Bestehende Anlagen behalten ihn beim Update, eine Neuinstallation hat ihn aus. Adressen und
+   Tabellen erscheinen nur bei gesetztem Haken. */ ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="endpunkt_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
+<div class="sm-feld">
+<label style="display:inline-flex;align-items:center;gap:6px;">
+    <input data-role="none" type="checkbox" name="endpunkt_ein" value="1" <?= aw_eh('endpunkt', 'endpunkt_ein', (int) $aw_cfg['endpunkt_ein'] === 1) ? 'checked' : '' ?>> <?= aw_t('LOX.EP_L') ?>
+</label>
+<div class="sm-hilfe"><?= aw_t('LOX.EP_H') ?></div>
+</div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= aw_t('LEGENDE.AKTION') ?></span>
+</div>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= aw_t('KNOPF.SPEICHERN') ?></button>
+</div>
+</form>
+<?php if ((int) $aw_cfg['endpunkt_ein'] !== 1) { ?>
+<div class="sm-hinweis"><?= aw_t('LOX.EP_ERST') ?></div>
+<?php } else { ?>
 <p><b><?= aw_t('LOX.HTTP_S3') ?></b><br>
 <?= aw_t('LOX.HTTP_S3_TEXT') ?></p>
 <table class="sm-tbl">
@@ -1782,6 +1924,7 @@ $aw_bl = awm_bausteinseiten(); ?>
 <tr><td><?= aw_t('LOX.A_SELFTEST') ?></td><td><span class="sm-mono"><?= $aw_basis ?>?selftest=1&amp;token=<?= $aw_tok ?></span></td></tr>
 </table>
 <div class="sm-hilfe"><?= aw_t('LOX.S4_TOKEN') ?></div>
+<?php } ?>
 </details>
 
 <h2><?= aw_t('LOX.H_VORLAGE') ?></h2>
@@ -1798,8 +1941,9 @@ $aw_bl = awm_bausteinseiten(); ?>
     <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= aw_t('KNOPF.VORLAGE_VQ_MQTT') ?></button>
   </form>
 </div>
-<div class="sm-hilfe"><b><?= aw_t('LOX.H_VORLAGE_HTTP') ?></b></div>
+<div class="sm-hilfe"><b><?= aw_t('LOX.H_VORLAGE_HTTP') ?></b><?= (int) $aw_cfg['endpunkt_ein'] === 1 ? '' : ' ' . aw_t('LOX.EP_ERST') ?></div>
 <div class="sm-knopfreihe">
+<?php if ((int) $aw_cfg['endpunkt_ein'] === 1) { /* Gruppe 18 (1.4.26): die HTTP-Vorlagen nur mit Haken */ ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
@@ -1814,6 +1958,7 @@ $aw_bl = awm_bausteinseiten(); ?>
     <input data-role="none" type="hidden" name="vorlage_cal" value="<?= (int) $aw_bcal ?>">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= aw_t('KNOPF.VORLAGE_VO') ?></button>
   </form>
+<?php } ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
@@ -1884,6 +2029,17 @@ if ($aw_ph) { echo ' ' . aw_e(sprintf(awm_t('TEST.HINWEISE'), $aw_ph)); } ?>
 <div class="sm-hilfe"><?= aw_t('BEFEHL.PRUEFEN_ZU') ?></div>
 <?php } ?>
 
+<?php /* Gruppe 18 (1.4.26; Entwurf 2.4/2.7): Haus-Themen nach Regeln/07 Nr. 15 - Anbieter haus/abfuhr und
+   Anwesenheit fuer die Vorabend-Ansage; liest nur die Merker des Minutenlaufs (keine Sitzung im Webserver). */ ?>
+<h3><?= aw_t('TEST.H_HAUS') ?></h3>
+<table class="sm-tbl">
+<?php foreach (awm_haus_testzeilen($aw_cfg) as $aw_z) {
+    $aw_zk = $aw_z[0] === 'ok' ? 'sm-an' : ($aw_z[0] === 'fehl' ? 'sm-aus' : 'sm-grau');
+    $aw_zs = $aw_z[0] === 'ok' ? '&#10003;' : ($aw_z[0] === 'fehl' ? '&#10007;' : '&#9675;'); ?>
+<tr><td style="width:34px;" class="<?= $aw_zk ?>"><?= $aw_zs ?></td><td><?= aw_e($aw_z[1]) ?></td></tr>
+<?php } ?>
+</table>
+
 <h3><?= aw_t('TEST.H_DIAGNOSE') ?></h3>
 <p class="sm-hilfe"><?= aw_t('TEST.H_DIAGNOSE_TEXT') ?></p>
 <?php foreach ($aw_cals as $aw_n => $aw_c) { $aw_dg = awm_kalender_diagnose($aw_n); ?>
@@ -1922,29 +2078,40 @@ else { foreach ($aw_dg['luecken'] as $aw_l) {
 <span><i class="sm-punkt sm-b-technik"></i> <?= aw_t('LEGENDE.TECHNIK') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= aw_t('LEGENDE.AKTION') ?></span>
 </div>
+<?php /* Gruppe 18 (1.4.26; N7, E11): die lesenden Ansichten ueber die Oberflaeche (index.php?ansicht=, awm_ansicht()) -
+   auch bei ausgeschaltetem HTTP-Weg; bis 1.4.25 Verweise auf awm.php. */ ?>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-lesen" href="<?= $aw_basis ?>" target="_blank"><?= aw_t('KNOPF.ZEILE') ?></a>
-<a class="sm-btn sm-b-lesen" href="<?= $aw_basis ?>?json=1" target="_blank"><?= aw_t('KNOPF.JSON') ?></a>
-<a class="sm-btn sm-b-lesen" href="<?= $aw_basis ?>?text=1" target="_blank"><?= aw_t('KNOPF.TEXT') ?></a>
-<a class="sm-btn sm-b-lesen" href="<?= $aw_basis ?>?ics=1" target="_blank"><?= aw_t('KNOPF.ICS') ?></a>
+<a class="sm-btn sm-b-lesen" href="index.php?ansicht=zeile" target="_blank"><?= aw_t('KNOPF.ZEILE') ?></a>
+<a class="sm-btn sm-b-lesen" href="index.php?ansicht=json" target="_blank"><?= aw_t('KNOPF.JSON') ?></a>
+<a class="sm-btn sm-b-lesen" href="index.php?ansicht=text" target="_blank"><?= aw_t('KNOPF.TEXT') ?></a>
+<a class="sm-btn sm-b-lesen" href="index.php?ansicht=ics" target="_blank"><?= aw_t('KNOPF.ICS') ?></a>
 </div>
 
 <h3><?= aw_t('TEST.H_TECHNIK') ?></h3>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-technik" href="<?= $aw_basis ?>?debug=1" target="_blank"><?= aw_t('KNOPF.DEBUG') ?></a>
+<a class="sm-btn sm-b-technik" href="index.php?ansicht=debug" target="_blank"><?= aw_t('KNOPF.DEBUG') ?></a>
 <?php if (count($aw_cals) > 1) { /* U12: nur, wenn es Kalender 2 gibt */ ?>
-<a class="sm-btn sm-b-technik" href="<?= $aw_basis ?>?debug=1&amp;cal=2" target="_blank"><?= aw_t('KNOPF.DEBUG2') ?></a>
+<a class="sm-btn sm-b-technik" href="index.php?ansicht=debug&amp;cal=2" target="_blank"><?= aw_t('KNOPF.DEBUG2') ?></a>
 <?php } ?>
+<?php if ((int) $aw_cfg['endpunkt_ein'] === 1) { /* der Selbsttest des Endpunkts nur, wenn der HTTP-Weg an ist */ ?>
 <a class="sm-btn sm-b-technik" href="<?= $aw_basis ?>?selftest=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.SELFTEST') ?></a>
+<?php } ?>
 </div>
+<?php if ((int) $aw_cfg['endpunkt_ein'] !== 1) { ?>
+<div class="sm-hilfe"><?= aw_t('TEST.EP_AUS_HILFE') ?></div>
+<?php } ?>
 
 <h3><?= aw_t('TEST.H_AKTION') ?></h3>
 <p class="sm-hilfe"><?= aw_t('TEST.H_AKTION_TEXT') ?></p>
 <div class="sm-knopfreihe">
-<a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?ptest=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.PTEST') ?></a>
-<a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?ack=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.ACK') ?></a>
-<a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?refresh=1&amp;debug=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.REFRESH') ?></a>
-<a class="sm-btn sm-b-aktion" href="<?= $aw_basis ?>?renew=1&amp;token=<?= $aw_tok ?>" target="_blank"><?= aw_t('KNOPF.RENEW') ?></a>
+<?php foreach (array('ptest' => 'KNOPF.PTEST', 'ack' => 'KNOPF.ACK', 'abrufen' => 'KNOPF.REFRESH', 'renew' => 'KNOPF.RENEW') as $aw_ak => $aw_ab) { ?>
+<form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="test_aktion" value="<?= aw_e($aw_ak) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= aw_t($aw_ab) ?></button>
+</form>
+<?php } ?>
 </div>
 <?php /* Nr. 36 b, Stufe 2: Testansage per POST mit Formularmerkmal (ein fester Satz mit den
    gespeicherten Einstellungen, jede Ausgabeart); das Ergebnis steht danach oben als Meldung.
@@ -2004,6 +2171,9 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
     // entscheidet ohnehin der Server: sm-active steht schon im HTML.
     tabs.forEach(function (t) {
         t.addEventListener('click', function (ev) {
+            /* Gruppe 18 (1.4.26; A7, Bauart Midea 4.5.19): der Reiter Test wird vom Server geoeffnet - nur dort laufen
+             * Endpunktprobe, Ansagepruefung Stufe 2 und Brueckenpruefung. Der Browser folgt dem Verweis. */
+            if (t.dataset.ziel === 'tab-test') { return; }
             ev.preventDefault();
             activate(t.dataset.ziel);
             if (window.history && window.history.replaceState) {

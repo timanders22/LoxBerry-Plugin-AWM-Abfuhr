@@ -160,6 +160,12 @@ if (!awm_cals()) {
     awm_mqtt_lebenszeichen(1, 0, $awm_zaehler, array('ok' => 0));
 }
 
+/* Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 3, Entwurf 2.3/2.4, E16): Anbieter haus/abfuhr/* nach Regeln/07
+ * Nr. 15 - nur mit dem Haken "Abholtage an andere Plugins geben" (ab Werk aus) und MQTT an. Eine kurze TCP-Sitzung zum
+ * Broker, ohne Lesefenster: die geaenderten retained Themen (voll ohne Merker, nach dem Einschalten und alle 30 Minuten)
+ * und der Zaehler dieses Laufs. Steht hinter der Kalenderschleife, damit die Werte des Laufs schon feststehen. */
+awm_haus_anbieter($awm_zaehler);
+
 /* Gruppe 1 / MQTT (1.4.25; Bauvorschrift Nachtrag 19.10.2026 "Waechter"; Entwurf gemeinsam E17): die
  * Befehlsbruecke im Minutentakt waechten - bb_waechter() startet sie bei Haken an, haelt sie bei Haken aus an,
  * startet sie neu, wenn zustand.json aelter als 180 s ist (hoechstens alle 600 s, nie waehrend eines Updates),
@@ -174,7 +180,8 @@ awm_renew_check();
 /* Merker-Aufraeumen. Die Liste steht hier, damit sie beim naechsten neuen
  * Merker nicht vergessen wird - eine Datei je Tag summiert sich sonst still
  * auf der Ramdisk. */
-foreach (array('announced_', 'announced2_', 'renew_', 'ack_', 'daytype_') as $awm_praefix) {
+/* Gruppe 18 (1.4.26): dazu die Merker der Vorabend-Ansage mit Anwesenheit (V2) - wartet_<n>_, ankunft_<n>_. */
+foreach (array('announced_', 'announced2_', 'renew_', 'ack_', 'daytype_', 'wartet_', 'ankunft_') as $awm_praefix) {
     foreach (glob(awm_tmpdir() . '/' . $awm_praefix . '*') ?: array() as $f) {
         // Alle diese Namen enden auf JJJJMMTT (daytype_ zusaetzlich auf .json).
         $name = basename($f);

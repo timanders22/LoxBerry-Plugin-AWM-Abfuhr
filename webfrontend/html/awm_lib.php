@@ -220,7 +220,10 @@ function awm_paths() {
             'icsbackup' => $home . '/config/plugins/' . $ordner . '.backup.ics',
             'log' => $home . '/log/plugins/' . $ordner . '/awm.log',
             'datadir' => $home . '/data/plugins/' . $ordner,
-            'tmp' => '/tmp/awmabfuhr',
+            /* Gruppe 18 (1.4.26; A11, Entwurf 3.6): der Zwischenordner traegt den Ordnernamen - bis 1.4.25 fest
+             * /tmp/awmabfuhr, und eine Zweitinstallation awmabfuhr_01 teilte Sperre, state_*.json, fetch_*.json und
+             * MQTT-Merker mit der ersten (Regeln/03). Am Geraet heisst der Ordner awmabfuhr - der Pfad bleibt dort. */
+            'tmp' => '/tmp/' . $ordner,
             'lbhome' => $home,
             'plugin' => $ordner,
             'general' => $home . '/config/system/general.json',
@@ -282,6 +285,13 @@ function awm_config_vorgaben()
         /* Gruppe 1 / MQTT (1.4.25): Haken "Befehle ueber MQTT annehmen" der Befehlsbruecke, ab Werk aus
          * (Entwurf gemeinsam 2.3/2.11, E13). Ohne ihn startet bin/befehlsbruecke.php nicht. */
         'befehle_mqtt_ein' => 0,
+        /* Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 2-4, Entwurf 2.9): alle drei ab Werk aus.
+         * endpunkt_ein: awm.php antwortet nur bei 1 (Bestand beim Update 1 ueber die Lese-Regel in awm_config() und
+         * postupgrade.sh, Neuinstallation 0). haus_abfuhr_ein: Anbieter haus/abfuhr/* (Regeln/07 Nr. 15, Reiter
+         * MQTT). anwesenheit_ein: die Vorabend-Ansage wartet auf haus/anwesenheit/jemand (Reiter Einstellungen). */
+        'endpunkt_ein' => 0,
+        'haus_abfuhr_ein' => 0,
+        'anwesenheit_ein' => 0,
     );
 }
 
@@ -476,6 +486,9 @@ function awm_wert_pruefen($schluessel, $wert)
         case 'autorenew':
         case 'mqtt_enabled':
         case 'befehle_mqtt_ein':                       // Gruppe 1 / MQTT (1.4.25)
+        case 'endpunkt_ein':                           // Gruppe 18 (1.4.26): ohne diese Zeilen fiele ein
+        case 'haus_abfuhr_ein':                        // unbekannter Schluessel in "return ''" und wuerde
+        case 'anwesenheit_ein':                        // ungeprueft angenommen, auch "x"
         case 'melden':
             return awm_ist_schalter($wert) ? '' : awm_t_oder('PRUEF.G_SCHALTER', 'muss 0 oder 1 sein');
         case 'hinweis_woerter':
@@ -648,12 +661,15 @@ function awm_config($anlegen = false) {
             if (!is_dir(dirname($p['config']))) {
                 @mkdir(dirname($p['config']), 0775, true);
             }
-            @copy($p['backup'], $p['config']);
             /* C7: copy() uebernimmt die Rechte der Quelle nicht - bis 1.4.14
              * stand die wiederhergestellte awm.json danach auf 644 (in WSL
-             * gemessen, umask 022), mit Aktionstoken und Kalenderadresse. */
-            @chmod($p['config'], 0600);
-            $roh = trim((string) @file_get_contents($p['config']));
+             * gemessen, umask 022), mit Aktionstoken und Kalenderadresse.
+             * Gruppe 18 (1.4.26; A13): unteilbar ueber awm_datei_kopieren() (Rechte vor dem Inhalt, Nebendatei und
+             * Umbenennen) - bis 1.4.25 @copy an Ort und Stelle: ein Abbruch hinterliess eine halbe HAUPTdatei.
+             * Scheitert es, wird wie im Lesefall die Zweitschrift unmittelbar verwendet. */
+            $roh = awm_datei_kopieren($p['backup'], $p['config'], 0600)
+                ? trim((string) @file_get_contents($p['config']))
+                : trim((string) @file_get_contents($p['backup']));
         } else {
             // Nur lesen: die Sicherung unmittelbar verwenden, ohne zu schreiben.
             $roh = trim((string) @file_get_contents($p['backup']));
@@ -699,6 +715,13 @@ function awm_config($anlegen = false) {
      * Konfiguration (keine Datei, "{}", ohne Zweitschrift). Gespeichert wird der Wert beim naechsten Speichern. */
     if ($cfg && !array_key_exists('mqtt_enabled', $cfg)) {
         $cfg['mqtt_enabled'] = 0;
+    }
+    /* Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 2, Entwurf 3.3): dieselbe Bauart fuer endpunkt_ein - eine
+     * bestehende Konfiguration ohne den Schluessel (Update von 1.4.25) behaelt den HTTP-Weg (1), eine leere (keine
+     * Datei, "{}") bekommt die Vorgabe 0. Jedes Speichern schreibt den Wert in die Datei; postupgrade.sh traegt ihn
+     * beim Update ausdruecklich nach. */
+    if ($cfg && !array_key_exists('endpunkt_ein', $cfg)) {
+        $cfg['endpunkt_ein'] = 1;
     }
     $cfg += awm_config_vorgaben();
     if (!is_array($cfg['cals'])) { $cfg['cals'] = array(); }
@@ -944,6 +967,19 @@ function awm_datei_schreiben($pfad, $inhalt, $rechte = 0664)
 }
 
 /**
+ * Gruppe 18 (1.4.26; A4 + A13, Entwurf 3.6): eine Datei unteilbar kopieren - ueber awm_datei_schreiben()
+ * (Nebendatei mit den Rechten VOR dem Inhalt, dann Umbenennen). Ersetzt die vier Paare @copy/@chmod (Zweitschrift
+ * beim Speichern, Heilen der Hauptdatei, Jahres-Erneuerung, awm_config_speichern()): copy() schrieb an Ort und Stelle
+ * (gleiche Inode), und eine neu entstehende Datei stand bis zum chmod auf den Rechten der umask (gemessen 0644).
+ * Rueckgabe true nur, wenn gelesen UND geschrieben wurde.
+ */
+function awm_datei_kopieren($von, $nach, $rechte = 0600)
+{
+    $roh = @file_get_contents($von);
+    return ($roh === false) ? false : awm_datei_schreiben($nach, $roh, $rechte);
+}
+
+/**
  * JSON unteilbar schreiben.
  *
  * json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
@@ -979,11 +1015,13 @@ function awm_log($msg) {
         @mkdir($dir, 0775, true);
     }
     clearstatcache(true, $f);
+    /* Gruppe 18 (1.4.26; A14, E14): Kuerzen und Anhaengen mit LOCK_EX - zwei Laeufe, die zugleich schreiben,
+     * verlieren beim Kuerzen keine Zeile mehr. Im Normalfall kein Unterschied. */
     if (is_file($f) && filesize($f) > 512000) { // Rotation: letzte 200 Zeilen behalten
         $tail = array_slice(file($f, FILE_IGNORE_NEW_LINES) ?: array(), -200);
-        @file_put_contents($f, implode("\n", $tail) . "\n");
+        @file_put_contents($f, implode("\n", $tail) . "\n", LOCK_EX);
     }
-    @file_put_contents($f, '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND);
+    @file_put_contents($f, '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND | LOCK_EX);
 }
 
 function awm_log_if_changed($key, $line) {
@@ -1480,6 +1518,45 @@ function awm_ics_tzid($param)
     return preg_match('/;TZID=("?)([^";:]+)\1/i', (string) $param, $m) ? trim($m[2]) : '';
 }
 
+/**
+ * Gruppe 18 (1.4.26; A12, Entwurf 3.6, Probe probe_a12 24/24): UNTIL nach RFC 5545 3.3.10 je DTSTART-Form.
+ * Bis 1.4.25 wurde ein UNTIL ...Z auf das ORTSdatum umgerechnet und gegen das Datum verglichen - die Uhrzeit von
+ * DTSTART ging verloren. Vier von sechs Faellen falsch (Pruefbericht A12 F1, F2, F3, F5): ein Termin am 01.01. galt
+ * noch, obwohl die Serie am 31.12. endete.
+ *   (a) DTSTART als DATE: der UTC-Datumsteil von UNTIL (UNTIL ...T235959Z am 31.12. heisst "bis 31.12.").
+ *   (b) DTSTART mit Zeit (...Z oder TZID, sonst die eigene Zone): UNTIL in die DTSTART-Zone, Tag D, Uhrzeit t; letzter
+ *       Tag D, wenn t >= DTSTART-Uhrzeit, sonst D - 1; dieser Termin in die eigene Zone umgerechnet (wie C11).
+ *   (c) UNTIL als DATE oder ohne Z: unveraendert ($bisher).
+ */
+function awm_until_nach_dtstart($until_roh, $dt_param, $dt_wert, $bisher)
+{
+    if (!preg_match('/^(\d{8})T(\d{6})Z$/i', trim((string) $until_roh), $u)) { return $bisher; }
+    $dt = trim((string) $dt_wert);
+    if (preg_match('/^\d{8}$/', $dt)) { return $u[1]; }
+    if (preg_match('/^\d{8}T(\d{6})Z$/i', $dt, $m)) {
+        $zone = 'UTC';
+    } elseif (preg_match('/^\d{8}T(\d{6})$/', $dt, $m)) {
+        $zone = awm_ics_tzid($dt_param);
+        if ($zone === '') { $zone = date_default_timezone_get(); }
+    } else {
+        return $bisher;
+    }
+    $zeit = $m[1];
+    try {
+        $tz = new DateTimeZone($zone);
+    } catch (Exception $e) {
+        $tz = new DateTimeZone(date_default_timezone_get());
+    }
+    $ui = new DateTime($u[1] . 'T' . $u[2], new DateTimeZone('UTC'));
+    $ui->setTimezone($tz);
+    $tag = clone $ui;
+    if ($ui->format('His') < $zeit) { $tag->modify('-1 day'); }
+    $o = DateTime::createFromFormat('YmdHis', $tag->format('Ymd') . $zeit, $tz);
+    if ($o === false) { return $bisher; }
+    $o->setTimezone(new DateTimeZone(date_default_timezone_get()));
+    return $o->format('Ymd');
+}
+
 /** Alle Datumsangaben einer Eigenschaft (EXDATE/RDATE koennen Listen sein). */
 function awm_ics_datumsliste($ev, $name)
 {
@@ -1593,6 +1670,10 @@ function awm_series($cal = 1) {
             // monatlichen Kalendern fiel dadurch fast das ganze Jahr weg.
             $s['rrule'] = trim($mr[1]);
             $s = array_merge($s, awm_rrule_lesen($mr[1]));
+            /* Gruppe 18 (1.4.26; A12): UNTIL nach der Form von DTSTART (awm_until_nach_dtstart()). */
+            if (preg_match('/(?:^|;)UNTIL=([^;]+)/i', $mr[1], $mu)) {
+                $s['until'] = awm_until_nach_dtstart(trim($mu[1]), $md[1], $md[2], $s['until']);
+            }
         }
         $s['exdates'] = awm_ics_datumsliste($ev, 'EXDATE');
         $s['rdates'] = awm_ics_datumsliste($ev, 'RDATE');
@@ -1983,9 +2064,14 @@ function awm_webport() {
     return ansage_webport($p['lbhome'] !== '' ? $p['lbhome'] . '/config/system/general.json' : '');
 }
 
-/** Die Ausgabearten, die dieses Plugin anbietet: wie bis 1.4.20 und dazu "aus" (ohne Sonos4Lox). */
+/** Die Ausgabearten, die dieses Plugin anbietet: wie bis 1.4.20, dazu "aus" - und seit 1.4.26 (Gruppe 18,
+ *  Pflegewelle 22, Entscheidung Abfuhrkalender 2) mit Sonos4Lox und, ab Modul 1.1.4, SonoX (ungemessen, kein Sonos im
+ *  Haus; das Modul prueft Installation und Zone). Die Fassungspruefung schuetzt vor einer zuerst geladenen aelteren
+ *  Abschrift (awm_daytype() bindet ferien_lib.php mit eigener Abschrift ein); in dieser Linie gilt die eigene. */
 function awm_ansage_modi() {
-    return array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox');
+    $m = array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox', 'sonos4lox');
+    if (version_compare(ANSAGE_FASSUNG, '1.1.4', '>=')) { $m[] = 'sonox'; }
+    return $m;
 }
 
 /** Die POST-Namen der Sprachausgabe, die vom Modul abweichen: Alexa-NG und Google ohne tts_ (wie bis 1.4.20). */
@@ -2006,7 +2092,9 @@ function awm_ansage_namen() {
  * die Umlenkung O_AUS ist seit 1.4.23 gestrichen (X-10).
  */
 function awm_ansage_k() {
+    /* Gruppe 18 (1.4.26; N4, E12): dazu der https-Port des LoxBerry (ansage_sslport(); ohne Wurzel 0 wie bisher). */
     return array('port' => awm_webport(), 'kopf' => array('User-Agent: LoxBerry Abfuhrkalender'),
+                 'sslport' => ansage_sslport(awm_paths()['general']),
                  'ordner' => awm_tmpdir(),
                  't' => function ($s) { return awm_t($s); },
                  'werk' => 'musicserver',
@@ -2938,6 +3026,12 @@ function awm_mqtt_leeren($runden = 3, $pause = 1.0)
         echo "<INFO> MQTT: frueher eingestelltes Praefix " . $alt . "/:\n";
         $rc = max($rc, awm_mqtt_leeren_praefix($alt, $runden, $pause));
     }
+    /* Gruppe 18 (1.4.26; Entwurf 2.4, E16): die sechs retained Themen haus/abfuhr/* - nur, wenn DIESE Installation
+     * Anbieter ist oder war (haus_abfuhr_ein = 1 oder Merker _haus_frueher). So raeumt eine zweite Installation, die nie
+     * Anbieter war, die Themen der ersten nicht ab (Regeln/07 Nr. 15: fremde nie). */
+    if (!empty($cfg['haus_abfuhr_ein']) || !empty($cfg['_haus_frueher'])) {
+        $rc = max($rc, awm_haus_leeren_ausgabe($runden, $pause));
+    }
     return $rc;
 }
 
@@ -3630,6 +3724,8 @@ function awm_announce_check() {
     $grund = '';
     if (awm_ruhe_aktiv($grund)) {
         awm_log_if_changed('ruhe', 'Ansage ausgesetzt: ' . $grund);
+        /* Gruppe 18 (1.4.26; E15): die Ruhezeit beendet das Warten einer Vorabend-Ansage (V2) - sie entfaellt. */
+        awm_v2_beenden('Ruhezeit (' . $grund . ')');
         return;
     }
     $imFenster = function ($zeit) {
@@ -3648,12 +3744,27 @@ function awm_announce_check() {
         // 1. Vorabend
         $when = preg_match('/^\d{1,2}:\d{2}$/', (string) $cfg['notify']['time']) ? $cfg['notify']['time'] : '18:00';
         $flag = awm_tmpdir() . '/announced_' . $n . '_' . date('Ymd');
-        if ($imFenster($when) && !is_file($flag) && awm_ansage_merker($flag)) {
+        /* Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 4, Entwurf 2.7, E15): mit "Vorabend-Ansage erst, wenn jemand
+         * zu Hause ist" (anwesenheit_ein, ab Werk aus) entscheidet awm_v2_vorabend() vor dem Tagesmerker: sprechen,
+         * warten (Merker wartet_<n>_<Datum>, auch nach dem 10-Minuten-Fenster, laengstens bis 21:30) oder entfallen.
+         * Nur die VORABEND-Ansage wartet - nie die Push-Nachricht (Loxone, unveraendert), nie die zweite Ansage am
+         * Abholmorgen, nie "Ansage jetzt". Ohne Haken ist der Ablauf wortgleich wie bis 1.4.25 (ein liegender
+         * wartet-Merker spricht dann sofort). Morgen nichts faellig: wie bisher, ohne Broker-Sitzung. */
+        $wart = awm_v2_datei('wartet', $n);
+        if (($imFenster($when) || is_file($wart)) && !is_file($flag)) {
             $text = awm_announce_text($st, $n);
-            if ($text === '') {
-                awm_log('Ansage-Zeitpunkt ' . $when . ' (' . $c['name'] . '): morgen keine Abholung - keine Ansage');
-            } else {
-                awm_say($text, $c['zonen']);
+            $los = true;
+            if ($text !== '' && !empty($cfg['anwesenheit_ein'])) {
+                $los = awm_v2_vorabend($n, $c, $when);
+            }
+            if ($los && awm_ansage_merker($flag)) {
+                @unlink($wart);
+                @unlink(awm_v2_datei('ankunft', $n));
+                if ($text === '') {
+                    awm_log('Ansage-Zeitpunkt ' . $when . ' (' . $c['name'] . '): morgen keine Abholung - keine Ansage');
+                } else {
+                    awm_say($text, $c['zonen']);
+                }
             }
         }
 
@@ -4011,8 +4122,7 @@ function awm_renew($cal = 1) {
     }
     /* C7: die Zweitschrift mit 0600 - copy() uebernimmt die Rechte nicht,
      * eine neu entstehende Zweitschrift bekaeme sonst die umask. */
-    @copy($p['config'], $p['backup']);
-    @chmod($p['backup'], 0600);
+    awm_datei_kopieren($p['config'], $p['backup'], 0600);       // Gruppe 18 (1.4.26; A13)
     awm_datei_schreiben(awm_icsfile($cal), awm_utf8(awm_ics_entfalten($ics)));   // C1
     @unlink(awm_tmpdir() . '/state_' . (int) $cal . '.json');
     /* C3: der Abrufstand gilt jetzt fuer die neue Adresse - sonst hielte der
@@ -4021,7 +4131,11 @@ function awm_renew($cal = 1) {
     awm_json_schreiben(awm_fetchstand_datei($cal),
         array('ok' => 1, 'zeit' => time(), 'grund' => '', 'fehler' => 0,
               'naechster' => time() + max(1, (int) $cfg_neu['fetch_days']) * 86400,
-              'adresse' => awm_adresse_kennung($neu), 'versuch' => time()));
+              /* Gruppe 18 (1.4.26; A10, Probe probe_a10): mit daten_adresse - ohne den Merker hielt
+               * awm_daten_fremde_adresse() nach einer Erneuerung jede Adresse fuer die eigene, und scheiterte danach
+               * der Abruf einer neu eingetragenen Adresse, galten die Termine der alten Strasse weiter mit OK=1. */
+              'adresse' => awm_adresse_kennung($neu), 'daten_adresse' => awm_adresse_kennung($neu),
+              'versuch' => time()));
     awm_sperre_frei($sperre);
     awm_log('Jahres-Erneuerung: neuer Link fuer Kalender ' . $cal . ' gespeichert');
     awm_notify(6, sprintf(awm_t_oder('MELDUNG.RENEW_OK',
@@ -4439,6 +4553,27 @@ function awm_selbstpruefung_robust()
     $p($vm && !$vm_ohne, sprintf(awm_t('SELBST.B58'), count($vm))
                       . ($vm_ohne ? awm_t('SELBST.B58_FALSCH') . implode(', ', $vm_ohne) : ''));
 
+    /* Gruppe 18 (1.4.26; Entwurf 2.2): Noncached genau fuer ok. */
+    $nc = array();
+    foreach (awm_mqtt_hakenliste(1) as $hz) {
+        if (isset($hz[4]) && $hz[4] === 'N') { $nc[] = $hz[1]; }
+    }
+    $p($nc === array(awm_mqtt_gateway_name(1, 'ok')), sprintf(awm_t('SELBST.B59'), implode(', ', $nc)));
+    /* Gruppe 18 (1.4.26; Entwurf 2.4, Regeln/07 :907): die Themenliste haus/abfuhr gegen die Sendeliste von
+     * awm_haus_werte_aus() in beide Richtungen - fuer "ohne Aussage" und fuer einen Fall mit Werten - und kein Wert ''. */
+    $hw_leer = awm_haus_werte_aus(array(), 0);
+    $hw_voll = awm_haus_werte_aus(array(1 => array('ok' => 1, 'heute' => array('rest' => 1), 'morgen' => array(),
+                                                   'next' => array('tage' => 0))), 1);
+    $hw_ok = true;
+    $hw_leerwert = false;
+    foreach (array($hw_leer, $hw_voll) as $hw) {
+        if (array_diff(array_keys($hw), awm_haus_themen()) || array_diff(awm_haus_themen(), array_keys($hw))) { $hw_ok = false; }
+        foreach ($hw as $hv) { if ((string) $hv === '') { $hw_leerwert = true; } }
+    }
+    $p($hw_ok, sprintf(awm_t('SELBST.B60'), count(awm_haus_themen())));
+    $p(!$hw_leerwert && $hw_leer['haus/abfuhr/heute'] === '-' && $hw_voll['haus/abfuhr/heute'] === 'rest',
+       awm_t('SELBST.B61'));
+
     $p(count($werte) === count($felder),
        awm_t('SELBST.B37'));
     $p(awm_zaehler(false) >= -1 && awm_zaehler(false) <= 999,
@@ -4749,7 +4884,8 @@ function awm_mqtt_gateway_autostart() {
      * Plugin. (Er wird hier bewusst nicht wiederholt: harte_pfade.py sucht
      * die Zeichenfolge, und ein Kommentar, der sie nennt, ist ein
      * Fehlalarm bei jedem Lauf.) */
-    $home = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln();
+    /* Gruppe 18 (1.4.26; A16): die Wurzel aus awm_paths() (EINE Stelle fuer die Wurzelregel), der Rueckfall bleibt. */
+    $home = awm_paths()['lbhome'] ?: lb_wurzel_ermitteln();
     if ($home === '') { return null; }
     $gj = $home . '/config/system/general.json';
     if (!is_file($gj)) { return null; }
@@ -4861,7 +4997,9 @@ function awm_bausteinseiten()
 /** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
 function awm_vorlage($cal = 1) {
     $host = awm_host();
-    $ordner = getenv('LBPPLUGINDIR') ?: 'awmabfuhr';
+    /* Gruppe 18 (1.4.26; A16): der Ordnername aus awm_paths() - bis 1.4.25 getenv('LBPPLUGINDIR') ?: 'awmabfuhr': ein
+     * voller Pfad landete woertlich in der Adresse, und eine Zweitinstallation bekam unter Apache den falschen Namen. */
+    $ordner = awm_paths()['plugin'];
     $cal = max(1, (int) $cal);
     $cmds = array();
     foreach (awm_felder($cal) as $name => $f) {
@@ -4897,7 +5035,7 @@ function awm_vorlage($cal = 1) {
  */
 function awm_vorlage_vo($cal = 1) {
     $host = awm_host();
-    $ordner = getenv('LBPPLUGINDIR') ?: 'awmabfuhr';
+    $ordner = awm_paths()['plugin'];                // Gruppe 18 (1.4.26; A16)
     $cfg = awm_config();
     $tok = (string) $cfg['aktionstoken'];
     $basis = '/plugins/' . $ordner . '/awm.php';
@@ -4978,16 +5116,721 @@ function awm_mqtt_namen($cal = 1)
 /**
  * Die Hakenliste fuer Gateway V2 (Entwurf ab 2.6, E7): alle Namen der Namenstabelle - Vollausstattung 48 Zahlen + 4
  * Texte = 52, mit den vier klassischen Tonnen 32 + 4 = 36. Rueckgabe: je Zeile array(thema voll, Name in Loxone,
- * Bedeutung, 'zahl'|'text').
+ * Bedeutung, 'zahl'|'text', Kennzeichen).
+ * Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 2, Entwurf 2.2): das fuenfte Feld ist 'N' fuer Noncached - nur ok
+ * (Hausform G15-G17: ok-Themen). ok traegt fast immer 1; ohne Noncached kaeme unter Gateway V2 nach einem Neustart des
+ * Miniservers keine neue 1 an (Dedup). status/zaehler aendert sich ohnehin. Kein Resetaftersend.
  */
 function awm_mqtt_hakenliste($cal = 1)
 {
     $praefix = awm_mqtt_praefix($cal);
     $aus = array();
     foreach (awm_mqtt_namen($cal) as $b) {
-        $aus[] = array($praefix . '/' . $b[0], $b[1], $b[2], $b[3]);
+        $aus[] = array($praefix . '/' . $b[0], $b[1], $b[2], $b[3], $b[0] === 'ok' ? 'N' : '');
     }
     return $aus;
+}
+
+/* ==================================================================
+ * Gruppe 18 (1.4.26; Entscheidungen Abfuhrkalender 3 und 4, Entwurf gruppe18 2.3, 2.4, 2.7, E3, E5, E6, E15, E16):
+ * Haus-Themen nach Regeln/07 Nr. 15 - ohne Dauerdienst.
+ *
+ * Je Minutenlauf hoechstens eine kurze TCP-Sitzung zum Broker (awm_haus_sitzung(), Abschrift von
+ * awm_mqtt_behalten_liste() mit Sende- und Fensterteil; der gemessene Leser bleibt unveraendert, E6). Anbieter
+ * haus/abfuhr/* (ab Werk aus, Haken haus_abfuhr_ein im Reiter MQTT), Abnehmer haus/anwesenheit/jemand nur fuer die
+ * Vorabend-Ansage (ab Werk aus, Haken anwesenheit_ein). Eigene haus-Themen gehen per TCP direkt an den Broker, nicht
+ * ueber den UDP-Eingang des Gateways (E5): ein verlorenes Datagramm liesse einen retained Tageswert einen ganzen Tag
+ * falsch stehen; ueber TCP ist ein PUBLISH angekommen oder die Sitzung gescheitert (dann bleibt der Merker alt, der
+ * naechste Lauf sendet erneut). Kein mosquitto_sub (kein Kennwort auf einer Befehlszeile), die gemeinsame Befehlsbruecke
+ * bleibt unveraendert. Fremde haus-Themen fasst diese Linie nie an.
+ * ================================================================== */
+define('AWM_HAUS_FRIST', 120);           // Regeln/07 Nr. 15: Werte nur, solange der Zaehler sich binnen 120 s aendert
+
+/** Die sechs retained Anbieter-Themen (ohne den Zaehler) - EINE Liste fuer Senden, Abraeumen und Selbstpruefung. */
+function awm_haus_themen()
+{
+    return array('haus/abfuhr/heute', 'haus/abfuhr/morgen', 'haus/abfuhr/heute_satz', 'haus/abfuhr/morgen_satz',
+                 'haus/abfuhr/quittiert', 'haus/abfuhr/tage');
+}
+
+/**
+ * Die Werte der sechs Themen - rein, ohne Datei (Probe probe_haus Teil A). $staende: Kalendernummer => awm_state(),
+ * $ack: Quittierung (awm_ack_active()). Vereinigung ueber alle Kalender mit OK=1, jede Kennung einmal, in der festen
+ * Reihenfolge von awm_tonnenarten(); die Saetze aus awm_text_heute()/awm_text_morgen() der vereinigten Liste (keine
+ * neue Satzbildung). Ohne Kalender mit OK=1 "ohne Aussage": Texte "-", Zahlen -1. "Nichts faellig" ist eine Aussage
+ * ("keine"). Nie '' (eine leere Nutzlast ginge nie retained hinaus).
+ */
+function awm_haus_werte_aus(array $staende, $ack)
+{
+    $gut = array();
+    foreach ($staende as $n => $st) {
+        if (is_array($st) && !empty($st['ok'])) { $gut[$n] = $st; }
+    }
+    if (!$gut) {
+        return array('haus/abfuhr/heute' => '-', 'haus/abfuhr/morgen' => '-', 'haus/abfuhr/heute_satz' => '-',
+                     'haus/abfuhr/morgen_satz' => '-', 'haus/abfuhr/quittiert' => -1, 'haus/abfuhr/tage' => -1);
+    }
+    $aus = array();
+    foreach (array('heute', 'morgen') as $tag) {
+        $bins = array();
+        $ken = array();
+        foreach (array_keys(awm_tonnenarten()) as $k) {
+            foreach ($gut as $st) {
+                if (!empty($st[$tag][$k])) { $bins[$k] = 1; $ken[] = $k; break; }
+            }
+        }
+        $aus['haus/abfuhr/' . $tag] = $ken ? implode(',', $ken) : 'keine';
+        $satz = ($tag === 'heute') ? awm_text_heute(array('heute' => $bins)) : awm_text_morgen(array('morgen' => $bins));
+        $aus['haus/abfuhr/' . $tag . '_satz'] = ($satz !== '') ? $satz : '-';
+    }
+    $t = -1;
+    foreach ($gut as $st) {
+        $x = isset($st['next']['tage']) ? (int) $st['next']['tage'] : -1;
+        if ($x >= 0 && ($t < 0 || $x < $t)) { $t = $x; }
+    }
+    return array('haus/abfuhr/heute' => $aus['haus/abfuhr/heute'], 'haus/abfuhr/morgen' => $aus['haus/abfuhr/morgen'],
+                 'haus/abfuhr/heute_satz' => $aus['haus/abfuhr/heute_satz'],
+                 'haus/abfuhr/morgen_satz' => $aus['haus/abfuhr/morgen_satz'],
+                 'haus/abfuhr/quittiert' => $ack ? 1 : 0, 'haus/abfuhr/tage' => $t);
+}
+
+/** Die Werte der sechs Themen aus den eingerichteten Kalendern - EINE Stelle fuer Senden, Reiter Test und Probe. */
+function awm_haus_werte()
+{
+    $st = array();
+    foreach (array_keys(awm_cals()) as $n) { $st[$n] = awm_state(false, $n); }
+    return awm_haus_werte_aus($st, awm_ack_active());
+}
+
+/**
+ * Eine kurze Sitzung am Broker: CONNECT, PUBLISH der eigenen Haus-Themen, SUBSCRIBE der gelesenen, Lesefenster, bis die
+ * Themen aus $warten LIVE gesehen sind (laengstens $fenster Sekunden; ohne $warten 1 s nach dem SUBACK fuer die
+ * zurueckbehaltenen Werte), DISCONNECT.
+ *   $senden  Thema => array(Wert, retain) - eine leere Nutzlast geht nie hinaus, ein Thema mit # oder + nie
+ *   $lesen   genaue Themen (kein # und kein +)
+ *   $warten  Themen aus $lesen, die live (ohne Retain-Bit) gesehen werden muessen
+ * Rueckgabe array('lage' => ok | kein_broker | abgelehnt | zeit, 'werte' => Thema => Wert, 'live' => Thema => true,
+ * 'gesendet' => n). Live = PUBLISH ohne Retain-Bit (Kopfbyte & 1 = 0); der Broker setzt es nur bei der Zustellung
+ * zurueckbehaltener Werte. MQTT 3.1.1 von Hand, QoS 0, Client-Kennung 'awmhaus<pid>', Keepalive 60 s (laenger als das
+ * Fenster), Verbindungsaufbau 2 s, CONNACK und SUBACK je 3 s. Zugang aus general.json wie awm_mqtt_behalten_liste();
+ * das Kennwort steht nur im CONNECT-Paket, nie in einem Protokoll und nie auf einer Kommandozeile.
+ */
+function awm_haus_sitzung(array $senden, array $lesen, array $warten, $fenster = 0)
+{
+    $aus = array('lage' => 'kein_broker', 'werte' => array(), 'live' => array(), 'gesendet' => 0);
+    $p = awm_paths();
+    if ($p['lbhome'] === '' || !is_file($p['general'])) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($p['general']), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross])) { return (string) $m[$gross]; }
+        return isset($m[$klein]) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 2);
+    $aus['lage'] = 'zeit';
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    /* Wartet, bis etwas zu lesen da ist - hoechstens bis $bis (microtime). Erst dann wird ein Paket gelesen: ein
+     * Zeitablauf mitten in einem Paket brachte den Leser sonst aus dem Tritt. */
+    $bereit = function ($bis) use ($s) {
+        $rest = $bis - microtime(true);
+        if ($rest <= 0) { return false; }
+        $r = array($s); $w = null; $x = null;
+        $n = @stream_select($r, $w, $x, (int) floor($rest), (int) (($rest - floor($rest)) * 1000000));
+        return $n !== false && $n > 0;
+    };
+    $ende_sitzung = function ($lage) use ($s, &$aus) {
+        $aus['lage'] = $lage;
+        @fwrite($s, chr(0xE0) . chr(0));
+        fclose($s);
+        return $aus;
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('awmhaus' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 60);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) === false) {
+        fclose($s);
+        return $aus;
+    }
+    $ack = $bereit(microtime(true) + 3.0) ? $paket() : null;
+    if ($ack === null || ($ack[0] >> 4) !== 2 || strlen($ack[1]) < 2) { return $ende_sitzung('zeit'); }
+    if (ord($ack[1][1]) !== 0) { return $ende_sitzung('abgelehnt'); }
+
+    foreach ($senden as $t => $e) {
+        $e = array_values((array) $e);
+        $t = (string) $t;
+        $w = isset($e[0]) ? (string) $e[0] : '';
+        $r = !empty($e[1]);
+        if ($t === '' || $w === '' || strpbrk($t, '#+') !== false) { continue; }
+        $rumpf = $zk($t) . $w;
+        if (@fwrite($s, chr(0x30 | ($r ? 1 : 0)) . $laenge(strlen($rumpf)) . $rumpf) === false) {
+            return $ende_sitzung('zeit');
+        }
+        $aus['gesendet']++;
+    }
+
+    $soll = array();
+    foreach ($lesen as $t) {
+        $t = (string) $t;
+        if ($t !== '' && strpbrk($t, '#+') === false) { $soll[$t] = true; }
+    }
+    if ($soll) {
+        $verarbeiten = function ($pk) use (&$aus, $soll) {
+            if (strlen($pk[1]) < 2) { return; }
+            $tl = unpack('n', substr($pk[1], 0, 2));
+            $t = substr($pk[1], 2, $tl[1]);
+            if (!isset($soll[$t])) { return; }
+            $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+            $aus['werte'][$t] = (string) substr($pk[1], $versatz);
+            if (!($pk[0] & 1)) { $aus['live'][$t] = true; }
+        };
+        $sub = pack('n', 1);
+        foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
+        if (@fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub) === false) { return $ende_sitzung('zeit'); }
+        $bestaetigt = false;
+        $bis = microtime(true) + 3.0;
+        while (!$bestaetigt && $bereit($bis)) {
+            $pk = $paket();
+            if ($pk === null) { break; }
+            $art = $pk[0] >> 4;
+            if ($art === 9) {
+                /* Je Filter ein Rueckgabebyte; ab 0x80 abgelehnt (etwa durch eine ACL). */
+                $rc = (string) substr($pk[1], 2);
+                $nr = (strlen($pk[1]) >= 2) ? (int) unpack('n', substr($pk[1], 0, 2))[1] : 0;
+                if ($nr !== 1 || strlen($rc) !== count($soll)) { return $ende_sitzung('abgelehnt'); }
+                for ($i = 0; $i < strlen($rc); $i++) {
+                    if (ord($rc[$i]) >= 0x80) { return $ende_sitzung('abgelehnt'); }
+                }
+                $bestaetigt = true;
+            } elseif ($art === 3) {
+                $verarbeiten($pk);
+            }
+        }
+        if (!$bestaetigt) { return $ende_sitzung('zeit'); }
+        $wart = array();
+        foreach ($warten as $t) {
+            if (isset($soll[(string) $t])) { $wart[(string) $t] = true; }
+        }
+        $bis = microtime(true) + ($wart ? max(1.0, min(50.0, (float) $fenster)) : 1.0);
+        while ($bereit($bis)) {
+            $pk = $paket();
+            if ($pk === null) { break; }
+            if (($pk[0] >> 4) === 3) { $verarbeiten($pk); }
+            if ($wart && !array_diff_key($wart, $aus['live'])) { break; }
+        }
+    }
+    return $ende_sitzung('ok');
+}
+
+/** Merker des Anbieters (Thema => zuletzt gesendeter Wert, Zeitpunkt des letzten Vollversands) und der letzten Sitzung. */
+function awm_haus_merker_datei()
+{
+    return awm_tmpdir() . '/haus_letzte.json';
+}
+
+function awm_haus_sitzung_datei()
+{
+    return awm_tmpdir() . '/haus_sitzung.json';
+}
+
+/**
+ * Anbieter haus/abfuhr/* im Minutenlauf (cron.php, nach der Kalenderschleife, vor dem Waechter der Bruecke). Nur mit
+ * haus_abfuhr_ein = 1 UND mqtt_enabled = 1; sonst wird nur der Merker verworfen (das Einschalten schickt dann den vollen
+ * Satz). Gesendet werden die geaenderten der sechs retained Themen, der volle Satz ohne Merker (erster Lauf, Neustart,
+ * Update - postupgrade.sh raeumt haus_letzte.json mit -, nach dem Einschalten) und alle 30 Minuten (heilt einen Broker
+ * ohne Persistenz nach dessen Neustart, E16), dazu in JEDER Sitzung haus/abfuhr/zaehler (nicht retained, derselbe Zaehler
+ * wie status/zaehler). Der Merker wird NUR nach einer Sitzung mit lage 'ok' fortgeschrieben. Rueckgabe: Ergebnis der
+ * Sitzung oder null (aus).
+ */
+function awm_haus_anbieter($zaehler)
+{
+    $cfg = awm_config();
+    $m = awm_haus_merker_datei();
+    if (empty($cfg['haus_abfuhr_ein']) || empty($cfg['mqtt_enabled'])) {
+        if (is_file($m)) { @unlink($m); }
+        return null;
+    }
+    $werte = awm_haus_werte();
+    $vorher = array();
+    $voll_zeit = 0;
+    if (is_file($m)) {
+        $d = json_decode((string) @file_get_contents($m), true);
+        if (is_array($d) && isset($d['werte']) && is_array($d['werte']) && isset($d['voll'])) {
+            $vorher = $d['werte'];
+            $voll_zeit = (int) $d['voll'];
+        }
+    }
+    $voll = ($voll_zeit <= 0 || $voll_zeit > time() || time() - $voll_zeit > 1800);
+    $neu = $voll ? $werte : awm_mqtt_diff($werte, $vorher);
+    $senden = array();
+    foreach ($neu as $t => $w) { $senden[$t] = array((string) $w, true); }
+    $senden['haus/abfuhr/zaehler'] = array((string) (int) $zaehler, false);
+    $r = awm_haus_sitzung($senden, array(), array(), 0);
+    if ($r['lage'] === 'ok') {
+        awm_json_schreiben($m, array('werte' => $werte, 'voll' => $voll ? time() : $voll_zeit, 'zeit' => time()));
+    }
+    awm_json_schreiben(awm_haus_sitzung_datei(), array('zeit' => time(), 'lage' => $r['lage'],
+                                                       'gesendet' => (int) $r['gesendet'], 'voll' => $voll ? 1 : 0));
+    awm_log_if_changed('haus_anbieter', 'Haus-Themen haus/abfuhr: letzte Sitzung ' . $r['lage']
+        . ($r['lage'] === 'ok' ? '' : ' - der Merker bleibt, der naechste Lauf sendet erneut'));
+    return $r;
+}
+
+/**
+ * Abraeumen der sechs retained Themen (E16) - beim Ausschalten des Hakens, beim Ausschalten von MQTT und beim
+ * Zurueckspielen einer Sicherung mit Haken aus. Ueber die vorhandene Maschine awm_mqtt_themen_leeren() (Broker fragen,
+ * nur belegte leeren, bis drei Runden, nachlesen) - nur die eigenen sechs Namen, nie haus/#. Bedingung: diese
+ * Installation war Anbieter (Haken und MQTT an) oder traegt den Merker _haus_frueher. Rueckgabe array('meldung' =>
+ * Satz oder '', 'frueher' => neuer Wert des Merkers _haus_frueher (1 = Raeumen nicht bestaetigt, die Deinstallation
+ * raeumt noch einmal)).
+ */
+function awm_haus_folgen($alt, $neu, $runden = 3, $pause = 1.0)
+{
+    $war = !empty($alt['haus_abfuhr_ein']) && !empty($alt['mqtt_enabled']);
+    $frueher = !empty($alt['_haus_frueher']);
+    $ist = !empty($neu['haus_abfuhr_ein']) && !empty($neu['mqtt_enabled']);
+    $aus = array('meldung' => '', 'frueher' => $frueher ? 1 : 0);
+    if ($ist) {
+        if (!$war) { @unlink(awm_haus_merker_datei()); }      // der naechste Minutenlauf schickt den vollen Satz
+        $aus['frueher'] = 0;
+        return $aus;
+    }
+    if (!$war && !$frueher) { return $aus; }
+    @unlink(awm_haus_merker_datei());
+    $th = awm_haus_themen();
+    $e = awm_mqtt_themen_leeren($th, $th, $runden, $pause);
+    if ($e['lage'] === 'geleert') {
+        $aus['meldung'] = sprintf(awm_t('HAUS.M_GELEERT'), (int) $e['zu_leeren']);
+    } elseif ($e['lage'] === 'nichts') {
+        $aus['meldung'] = awm_t('HAUS.M_NICHTS');
+    } else {
+        $aus['meldung'] = sprintf(awm_t('HAUS.M_OFFEN'), $e['lage']);
+    }
+    $aus['frueher'] = in_array($e['lage'], array('nichts', 'geleert'), true) ? 0 : 1;
+    awm_log('Haus-Themen haus/abfuhr: Abraeumen ' . $e['lage'] . ' (' . (int) $e['zu_leeren'] . ' von 6).');
+    return $aus;
+}
+
+/** Deinstallation (cron.php --mqtt-leeren): die sechs Themen leeren, Ausgabe im Format von awm_mqtt_leeren_praefix(). */
+function awm_haus_leeren_ausgabe($runden = 3, $pause = 1.0)
+{
+    $th = awm_haus_themen();
+    $e = awm_mqtt_themen_leeren($th, $th, $runden, $pause);
+    $n = count($th);
+    if ($e['lage'] === 'kein_port') {
+        echo "<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - "
+           . "die zurueckbehaltenen Themen haus/abfuhr/... wurden nicht geleert.\n";
+        return 2;
+    }
+    if ($e['lage'] === 'nichts') {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen haus/abfuhr/... steht zurueckbehalten - "
+           . "nichts zu leeren.\n";
+        return 0;
+    }
+    if ($e['lage'] === 'kein_eingang') {
+        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "die zurueckbehaltenen Themen haus/abfuhr/... wurden nicht geleert.\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: " . $e['zu_leeren'] . " von " . $n . " Themen haus/abfuhr/... mit leerer Nutzlast an den "
+       . "UDP-Eingang " . (int) $e['udpport'] . " des Gateways gesendet (" . $e['datagramme'] . " Datagramme).\n";
+    if ($e['lage'] === 'geleert') {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $n . " Themen haus/abfuhr/... steht mehr zurueckbehalten.\n";
+        return 0;
+    }
+    if ($e['lage'] === 'rest') {
+        echo "<WARNING> MQTT: " . count($e['offen']) . " Themen haus/abfuhr/... stehen noch zurueckbehalten im Broker ("
+           . implode(', ', $e['offen']) . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: der Broker liess sich nicht befragen - die Themen haus/abfuhr/... sind nicht nachgelesen.\n";
+    return 0;
+}
+
+/* ---------- Abnehmer haus/anwesenheit (V2) ---------- */
+
+/** Was zuletzt gesehen wurde (0600, Zwischenordner): je Quelle Werte, Zaehlerstand, Zeitpunkt der letzten Aenderung. */
+function awm_haus_quellen_datei()
+{
+    return awm_tmpdir() . '/haus_quellen.json';
+}
+
+function awm_haus_quellen_lesen()
+{
+    $f = awm_haus_quellen_datei();
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    return is_array($d) ? $d : array();
+}
+
+/**
+ * Ein Lesefenster in den Merker uebernehmen (rein). $gelesen = Thema => Wert (retained und live), $live = Themen, die
+ * ohne Retain-Bit kamen. Nur ein LIVE gesehener, GEAENDERTER Zaehler setzt "seit" - ein unveraenderter verlaengert nichts
+ * (Anbieter klemmt), ein zurueckbehaltener zaehlt nicht.
+ */
+function awm_haus_merken(array $alt, array $gelesen, array $live, $jetzt)
+{
+    $neu = $alt;
+    foreach (array('anwesenheit' => 'haus/anwesenheit/') as $q => $vor) {
+        $e = (isset($alt[$q]) && is_array($alt[$q])) ? $alt[$q] : array();
+        $e += array('werte' => array(), 'zaehler' => null, 'seit' => 0);
+        foreach ($gelesen as $t => $w) {
+            if (strpos((string) $t, $vor) !== 0) { continue; }
+            $k = substr((string) $t, strlen($vor));
+            if ($k === 'zaehler') {
+                if (isset($live[$t]) && (string) $w !== (string) $e['zaehler']) {
+                    $e['zaehler'] = (string) $w;
+                    $e['seit'] = (int) $jetzt;
+                }
+            } else {
+                $e['werte'][$k] = (string) $w;
+            }
+        }
+        $neu[$q] = $e;
+    }
+    return $neu;
+}
+
+/** Frisch: 0 <= jetzt - seit <= 120 und seit <= jetzt (Uhr zurueck = nicht frisch). */
+function awm_haus_frisch(array $c, $q, $jetzt)
+{
+    $seit = isset($c[$q]['seit']) ? (int) $c[$q]['seit'] : 0;
+    return $seit > 0 && $seit <= $jetzt && $jetzt - $seit <= AWM_HAUS_FRIST;
+}
+
+/** Lage der Anwesenheit: 'da', 'weg' oder 'schweigt' (Zaehler nicht frisch, nie gesehen, Uhr zurueck, jemand "-" oder kein 0/1). */
+function awm_haus_anwesenheit_lage(array $c, $jetzt)
+{
+    if (!awm_haus_frisch($c, 'anwesenheit', $jetzt)) { return 'schweigt'; }
+    $w = isset($c['anwesenheit']['werte']['jemand']) ? (string) $c['anwesenheit']['werte']['jemand'] : '';
+    return $w === '1' ? 'da' : ($w === '0' ? 'weg' : 'schweigt');
+}
+
+/**
+ * Die Anwesenheit am Broker lesen (Haus-Sitzung mit Fenster, laengstens 32 s - deckt den 30-s-Takt des BLE-Scanners).
+ * Gewartet wird auf den Zaehler nur, wenn die Quelle nicht mehr mindestens 45 s frisch ist; sonst endet das Fenster
+ * 1 s nach dem SUBACK. Nur aus dem Minutenlauf (V2), nie im Webserver. Rueckgabe: 'da' | 'weg' | 'schweigt'.
+ */
+function awm_haus_anwesenheit_lesen()
+{
+    $c = awm_haus_quellen_lesen();
+    $jetzt = time();
+    $seit = isset($c['anwesenheit']['seit']) ? (int) $c['anwesenheit']['seit'] : 0;
+    $warten = ($seit > 0 && $seit <= $jetzt && $jetzt - $seit <= AWM_HAUS_FRIST - 45)
+        ? array() : array('haus/anwesenheit/zaehler');
+    $r = awm_haus_sitzung(array(), array('haus/anwesenheit/jemand', 'haus/anwesenheit/zaehler'), $warten, 32);
+    if ($r['lage'] === 'ok') {
+        $c = awm_haus_merken($c, $r['werte'], $r['live'], time());
+    }
+    $c['sitzung'] = array('zeit' => time(), 'lage' => $r['lage']);
+    awm_json_schreiben(awm_haus_quellen_datei(), $c, 0600);
+    $lage = awm_haus_anwesenheit_lage($c, time());
+    awm_log_if_changed('haus_anwesenheit', 'Anwesenheit (haus/anwesenheit) fuer die Vorabend-Ansage: ' . $lage
+        . ($r['lage'] === 'ok' ? '' : ' (Sitzung am Broker: ' . $r['lage'] . ')'));
+    return $lage;
+}
+
+/** Merker der V2 je Kalender und Tag: wartet_<n>_<JJJJMMTT> (Inhalt Startzeit), ankunft_<n>_<JJJJMMTT> (erstes "da"). */
+function awm_v2_datei($art, $n)
+{
+    return awm_tmpdir() . '/' . ($art === 'ankunft' ? 'ankunft_' : 'wartet_') . (int) $n . '_' . date('Ymd');
+}
+
+/** Wann endet das Warten heute? 21:30, oder das Ende des eigenen 10-Minuten-Fensters, wenn es spaeter liegt. */
+function awm_v2_grenze($when)
+{
+    $grenze = mktime(21, 30, 0);
+    if (preg_match('/^(\d{1,2}):(\d{2})$/', (string) $when, $m)) {
+        $grenze = max($grenze, mktime((int) $m[1], (int) $m[2], 0) + 600);
+    }
+    return $grenze;
+}
+
+/**
+ * V2 (Entscheidung Abfuhrkalender 4, Entwurf 2.7, E15): darf die Vorabend-Ansage von Kalender $n JETZT sprechen?
+ * true = sprechen (wie bisher: Merker setzen, sprechen). false = warten oder entfallen (dann setzt diese Funktion den
+ * Tagesmerker selbst). Ablauf: Lage "da" ohne Warten -> sprechen; "schweigt" -> sprechen (Rueckfall auf das bisherige
+ * Verhalten, die Quelle schweigt); "weg" -> Merker wartet_ (Startzeit), kein Tagesmerker. Solange er liegt (auch nach
+ * dem Fenster): quittiert -> entfaellt ("Tonne steht schon draussen"); Grenze 21:30 erreicht -> entfaellt; "da" -> beim
+ * ersten "da" Merker ankunft_, gesprochen wird, sobald jetzt >= Ankunft + 180 s und die Lage noch "da" ist; wieder
+ * "weg" -> die Ankunft verfaellt. Die Ruhezeit beendet das Warten in awm_announce_check() (awm_v2_beenden()).
+ */
+function awm_v2_vorabend($n, $c, $when)
+{
+    $wart = awm_v2_datei('wartet', $n);
+    $ank = awm_v2_datei('ankunft', $n);
+    $flag = awm_tmpdir() . '/announced_' . (int) $n . '_' . date('Ymd');
+    $name = is_array($c) && isset($c['name']) ? (string) $c['name'] : (string) $n;
+    $wartet = is_file($wart);
+    if ($wartet) {
+        if (awm_ack_active()) {
+            awm_v2_entfaellt($n, $flag, 'Vorabend-Ansage entfallen (' . $name . '): die Tonne steht schon draussen (quittiert).');
+            return false;
+        }
+        if (time() >= awm_v2_grenze($when)) {
+            awm_v2_entfaellt($n, $flag, 'Vorabend-Ansage entfallen (' . $name . '): bis ' . date('H:i', awm_v2_grenze($when))
+                . ' niemand zu Hause (haus/anwesenheit).');
+            return false;
+        }
+    }
+    $lage = awm_haus_anwesenheit_lesen();
+    if ($lage === 'schweigt') {
+        if ($wartet) {
+            awm_log('Vorabend-Ansage (' . $name . '): die Quelle haus/anwesenheit schweigt - es gilt das bisherige Verhalten, '
+                  . 'die Ansage kommt jetzt.');
+        }
+        return true;
+    }
+    if ($lage === 'da') {
+        if (!$wartet) { return true; }
+        $an = is_file($ank) ? (int) @file_get_contents($ank) : 0;
+        if ($an <= 0 || $an > time()) {
+            @file_put_contents($ank, (string) time());
+            awm_log('Vorabend-Ansage (' . $name . '): jemand ist angekommen - die Ansage kommt in drei Minuten.');
+            return false;
+        }
+        return time() >= $an + 180;
+    }
+    // weg
+    if (is_file($ank)) { @unlink($ank); }
+    if (!$wartet) {
+        if (@file_put_contents($wart, (string) time()) === false) {
+            /* fail open: laesst sich der Merker nicht schreiben, spricht die Ansage wie bisher - sonst entfiele sie still. */
+            awm_log_if_changed('v2_merker', 'Vorabend-Ansage: der Merker ' . $wart . ' liess sich nicht schreiben - '
+                . 'die Ansage kommt wie ohne Anwesenheit (' . date('Y-m-d H') . ' Uhr).');
+            return true;
+        }
+        awm_log('Vorabend-Ansage wartet (' . $name . '): niemand zu Hause (haus/anwesenheit) - laengstens bis '
+              . date('H:i', awm_v2_grenze($when)) . '.');
+    }
+    return false;
+}
+
+/** Eine wartende Vorabend-Ansage entfaellt: Merker weg, Tagesmerker gesetzt (keine Ansage mehr an diesem Abend). */
+function awm_v2_entfaellt($n, $flag, $zeile)
+{
+    @unlink(awm_v2_datei('wartet', $n));
+    @unlink(awm_v2_datei('ankunft', $n));
+    @file_put_contents($flag, '1');
+    awm_log($zeile);
+}
+
+/** Alle wartenden Vorabend-Ansagen von heute beenden (Ruhezeit). */
+function awm_v2_beenden($grund)
+{
+    foreach (glob(awm_tmpdir() . '/wartet_*_' . date('Ymd')) ?: array() as $f) {
+        if (!preg_match('/wartet_(\d+)_\d{8}$/', $f, $m)) { continue; }
+        awm_v2_entfaellt((int) $m[1], awm_tmpdir() . '/announced_' . (int) $m[1] . '_' . date('Ymd'),
+            'Vorabend-Ansage entfallen (Kalender ' . (int) $m[1] . '): ' . $grund . '.');
+    }
+}
+
+/**
+ * Zeilen "Haus-Themen" im Reiter Test (Entwurf 2.4/2.7): Anbieter und Anwesenheit, je array(lage, Text) mit lage 'ok'
+ * (gruen), 'fehl' (rot) oder 'hinweis' (grau: aus, oder die Quelle schweigt). Liest nur die Merker - keine Sitzung im
+ * Webserver, keine Wartezeit in einer HTTP-Antwort.
+ */
+function awm_haus_testzeilen(array $cfg)
+{
+    $z = array();
+    $uhr = function ($t) { return $t > 0 ? date('d.m.Y H:i', (int) $t) : '-'; };
+    if (empty($cfg['haus_abfuhr_ein'])) {
+        $z[] = array('hinweis', awm_t('HAUS.T_ANB_AUS'));
+    } elseif (empty($cfg['mqtt_enabled'])) {
+        $z[] = array('hinweis', awm_t('HAUS.T_ANB_MQTT_AUS'));
+    } else {
+        $si = is_file(awm_haus_sitzung_datei()) ? json_decode((string) @file_get_contents(awm_haus_sitzung_datei()), true) : null;
+        $me = is_file(awm_haus_merker_datei()) ? json_decode((string) @file_get_contents(awm_haus_merker_datei()), true) : null;
+        $w = (is_array($me) && isset($me['werte']) && is_array($me['werte'])) ? $me['werte'] : array();
+        $werte = sprintf(awm_t('HAUS.T_WERTE'),
+            isset($w['haus/abfuhr/heute']) ? $w['haus/abfuhr/heute'] : '-',
+            isset($w['haus/abfuhr/morgen']) ? $w['haus/abfuhr/morgen'] : '-',
+            isset($w['haus/abfuhr/quittiert']) ? $w['haus/abfuhr/quittiert'] : '-',
+            isset($w['haus/abfuhr/tage']) ? $w['haus/abfuhr/tage'] : '-');
+        if (!is_array($si)) {
+            $z[] = array('hinweis', awm_t('HAUS.T_ANB_NOCH_NICHT'));
+        } elseif ((string) $si['lage'] === 'ok') {
+            $z[] = array('ok', sprintf(awm_t('HAUS.T_ANB_OK'), $uhr(isset($me['zeit']) ? $me['zeit'] : 0), $werte));
+        } else {
+            $z[] = array('fehl', sprintf(awm_t('HAUS.T_ANB_FEHL'), (string) $si['lage'], $uhr(isset($si['zeit']) ? $si['zeit'] : 0)));
+        }
+    }
+    if (empty($cfg['anwesenheit_ein'])) {
+        $z[] = array('hinweis', awm_t('HAUS.T_ANW_AUS'));
+    } else {
+        $c = awm_haus_quellen_lesen();
+        $lage = awm_haus_anwesenheit_lage($c, time());
+        $seit = isset($c['anwesenheit']['seit']) ? (int) $c['anwesenheit']['seit'] : 0;
+        if ($lage === 'da') {
+            $z[] = array('ok', awm_t('HAUS.T_ANW_DA'));
+        } elseif ($lage === 'weg') {
+            $z[] = array('ok', awm_t('HAUS.T_ANW_WEG'));
+        } elseif ($seit > 0) {
+            $z[] = array('hinweis', sprintf(awm_t('HAUS.T_ANW_SCHWEIGT'), max(0, time() - $seit)));
+        } else {
+            $z[] = array('hinweis', awm_t('HAUS.T_ANW_NIE'));
+        }
+    }
+    foreach (glob(awm_tmpdir() . '/wartet_*_' . date('Ymd')) ?: array() as $f) {
+        if (!preg_match('/wartet_(\d+)_\d{8}$/', $f, $m)) { continue; }
+        $z[] = array('hinweis', sprintf(awm_t('HAUS.T_WARTET'), (int) $m[1], date('H:i', (int) @file_get_contents($f))));
+    }
+    return $z;
+}
+
+/**
+ * Gruppe 18 (1.4.26; N7, E11): die LESENDEN Ansichten des Endpunkts an EINER Stelle - awm.php ruft sie nach der Sperre
+ * (endpunkt_ein) und dem Tokenteil, die Oberflaeche (index.php ?ansicht=, hinter der LoxBerry-Anmeldung, unabhaengig vom
+ * Schalter) ebenso. Ausgabe byte-gleich wie bis 1.4.25 in awm.php. $art: zeile | debug | json | text | ics.
+ * $refresh: der erzwungene Abruf (nur awm.php mit Token), $refresh_gewuenscht: ?refresh stand in der Anfrage.
+ */
+function awm_ansicht($art, $cal, $refresh = false, $refresh_gewuenscht = false)
+{
+    $cal = max(1, min(AWM_MAX_KALENDER, (int) $cal));
+    if ($art === 'ics') {
+        $f = awm_icsfile($cal);
+        if (!is_file($f)) {
+            http_response_code(404);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo "Kein Kalender gespeichert.\n";
+            return;
+        }
+        header('Content-Type: text/calendar; charset=utf-8');
+        header('Content-Disposition: inline; filename="abfuhrkalender_' . (int) $cal . '.ics"');
+        readfile($f);
+        return;
+    }
+    if ($art === 'json') {
+        header('Content-Type: application/json; charset=utf-8');
+        list($fok, $fq) = awm_fetch($refresh, $cal);
+        $st = awm_state($refresh, $cal);
+        $st = array_merge($st, awm_meldeflags($st, $cal));
+        if ($fq === 'gebremst') {
+            $st['refresh'] = 'GEBREMST';
+            $st['refresh_warte'] = awm_sofortabruf_warte($cal);
+        }
+        $st['werte'] = awm_werte($st, $cal);
+        $st['text'] = array(
+            'morgen' => awm_text_morgen($st),
+            'heute' => awm_text_heute($st),
+            'naechste' => awm_text_naechste($st),
+        );
+        $js = json_encode($st, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+        if ($js === false) {
+            http_response_code(500);
+            echo json_encode(array('ok' => 0, 'fehler' => json_last_error_msg()));
+            awm_log('JSON-Ausgabe fehlgeschlagen: ' . json_last_error_msg());
+            return;
+        }
+        echo $js;
+        return;
+    }
+    header('Content-Type: text/plain; charset=utf-8');
+    if ($art === 'text') {
+        awm_fetch(false, $cal);
+        $st = awm_state(false, $cal);
+        echo awm_text_morgen($st) . "\n";
+        echo awm_text_heute($st) . "\n";
+        echo awm_text_naechste($st) . "\n";
+        echo ($st['hinweis'] !== '' ? $st['hinweis'] : '-') . "\n";
+        return;
+    }
+    list($ok, $quelle) = awm_fetch($refresh, $cal);
+    $st = awm_state($refresh, $cal);
+    $bremse = ($quelle === 'gebremst')
+        ? 'HINWEIS: ?refresh=1 gebremst - hoechstens ein Sofortabruf je ' . AWM_SOFORT_ABSTAND
+          . ' s und Kalender, naechster in ' . awm_sofortabruf_warte($cal) . ' s. Es gilt der gespeicherte Stand.'
+        : '';
+    if ($art === 'debug') {
+        $c = awm_cal($cal);
+        $icst = is_file(awm_icsfile($cal)) ? date('Y-m-d H:i', filemtime(awm_icsfile($cal))) . ', ' . filesize(awm_icsfile($cal)) . ' B' : 'keiner';
+        echo 'DEBUG  Kalender ' . $cal . ' (' . ($c ? $c['name'] : '-') . ')  Quelle: ' . $quelle . '  Ereignisse: ' . $st['ereignisse'] . '  Datei: ' . $icst . "\n";
+        if ($refresh_gewuenscht && !$refresh) {
+            echo "HINWEIS: ?refresh=1 verlangt das Aktionstoken - es wurde der gespeicherte Stand benutzt.\n";
+        }
+        if ($bremse !== '') { echo $bremse . "\n"; $bremse = ''; }
+        if (!$st['abruf_ok'] && $st['abruf_grund'] !== '') {
+            echo 'ABRUF-FEHLER: ' . $st['abruf_grund'] . "\n";
+        }
+        if ($st['hinweis'] !== '') {
+            echo 'HINWEIS: ' . $st['hinweis'] . "\n";
+        }
+        if ($st['warnung']) {
+            echo "WARNUNG: Kalender liefert in weniger als 30 Tagen keine Termine mehr - Jahres-Erneuerung laeuft automatisch, sonst neuen iCal-Link eintragen!\n";
+        }
+        if (!empty($st['luecken'])) {
+            echo "ERSATZLOS GESTRICHENE TERMINE (der Entsorger nennt keinen Ersatz):\n";
+            foreach ($st['luecken'] as $l) {
+                echo '  ' . substr($l['datum'], 6, 2) . '.' . substr($l['datum'], 4, 2) . '.' . substr($l['datum'], 0, 4)
+                   . '  ' . implode('+', $l['tonnen']) . '  (' . $l['titel'] . ")\n";
+            }
+        }
+        echo "Abholtermine im Vorschau-Fenster:\n";
+        foreach ($st['termine'] as $t) {
+            echo $t[0] . '  ' . $t[1] . "\n";
+        }
+        echo "\n";
+    }
+    echo awm_zeile(awm_werte($st, $cal)) . "\n";
+    if ($bremse !== '') { echo $bremse . "\n"; }
 }
 
 /** Ergebnis einer Aktion: ok, Grund (ASCII, fuer die Quittung der Befehlsbruecke), HTTP-Status und Antwort. */
@@ -5252,7 +6095,7 @@ function awm_bruecke_pruefzeilen()
  */
 function awm_gateway_fassung()
 {
-    $home = getenv('LBHOMEDIR');
+    $home = awm_paths()['lbhome'];                 // Gruppe 18 (1.4.26; A16): leer = keine Wurzel
     if (!$home && defined('LBHOMEDIR')) {
         $home = LBHOMEDIR;
     }
@@ -5346,8 +6189,7 @@ function awm_config_speichern($cfg)
     }
     $ok = awm_json_schreiben($p['config'], $cfg, 0600, true);
     if ($ok) {
-        @copy($p['config'], $p['backup']);
-        @chmod($p['backup'], 0600);
+        awm_datei_kopieren($p['config'], $p['backup'], 0600);       // Gruppe 18 (1.4.26; A13)
     }
     awm_sperre_frei($sperre);
     return $ok;
@@ -5538,10 +6380,15 @@ function awm_eingabe_felder($formular)
             // Ansage-3: dieselbe Behandlung fuer das Google-Sprechtoken.
             'google_geraet' => $t, 'google_laut' => $t, 'google_token_loeschen' => $h,
             'google_token' => array('geheim', 0),
-            // Nr. 36 b, Stufe 2: die Sonos-Felder des Formularblocks (dort ohne Wirkung).
+            // Nr. 36 b, Stufe 2: die Sonos-Felder des Formularblocks (seit 1.4.26 mit Wirkung: sonos4lox).
             'tts_sonos_zone' => $t, 'tts_sonos_laut' => $t,
+            // Gruppe 18 (1.4.26; Pflegewelle 22): die SonoX-Felder des Moduls 1.1.4 und der Haken der V2.
+            'tts_sonox_raum' => $t, 'tts_sonox_laut' => $t, 'tts_sonox_sprache' => $t,
+            'anwesenheit_ein' => $h,
             'ansage_vorlage' => $t, 'ansage_vorlage2' => $t),
-        'mqtt' => array('mqtt_enabled' => $h, 'mqtt_topic' => $t),
+        'mqtt' => array('mqtt_enabled' => $h, 'mqtt_topic' => $t,
+                        'haus_abfuhr_ein' => $h),                 // Gruppe 18 (1.4.26): Anbieter haus/abfuhr
+        'endpunkt' => array('endpunkt_ein' => $h),               // Gruppe 18 (1.4.26): HTTP-Weg
         'befehle' => array('befehle_mqtt_ein' => $h),            // Gruppe 1 / MQTT (1.4.25)
         'bins' => array('bins_cal' => $t, 'bins_modus' => $t, 'bin_titel' => array('text', $z),
                         'bin_tonne' => array('text', $z), 'bin_art' => array('text', $z)),
@@ -5718,6 +6565,11 @@ function awm_http_roh($url, $tmo = 3)
 function awm_pruef_endpunkt($token)
 {
     $p = awm_paths();
+    /* Gruppe 18 (1.4.26; Entwurf 3.3): bei ausgeschaltetem HTTP-Weg kein Aufruf - eine graue Zeile. */
+    $ep_cfg = awm_config();
+    if ((int) $ep_cfg['endpunkt_ein'] !== 1) {
+        return array('hinweis', awm_t_oder('TEST.P_EP_AUS', 'HTTP-Weg aus (gewollt) - awm.php antwortet 403'));
+    }
     if ($p['lbhome'] === '') {
         return array('hinweis', awm_t_oder('TEST.P_EP_OHNE', 'Kein installierter Aufbau - der eigene Endpunkt ist nicht feststellbar'));
     }
@@ -5821,7 +6673,29 @@ function awm_pruef_cron()
  *  sie nicht (awm_sicherung_lesen()). */
 function awm_spaet_schluessel()
 {
-    return array('befehle_mqtt_ein');
+    /* Gruppe 18 (1.4.26; N2, Pflicht): ohne die drei neuen Namen liesse sich keine 1.4.25-Sicherung mehr
+     * zurueckspielen. Was eine Sicherung davon NICHT traegt, behaelt beim Zurueckspielen den aktuellen Wert (N3,
+     * index.php) - eine 1.4.25-Sicherung schaltete sonst endpunkt_ein einer Bestandsanlage still auf 0. */
+    return array('befehle_mqtt_ein', 'endpunkt_ein', 'haus_abfuhr_ein', 'anwesenheit_ein');
+}
+
+/**
+ * Gruppe 18 (1.4.26; N3, Pflicht; Bauart G17 N2): beim Zurueckspielen behaelt jeder Spaetschluessel, den die Datei $roh
+ * NICHT traegt, den aktuellen Wert aus $vorher - awm_sicherung_lesen() beginnt bei den Vorgaben, und eine
+ * 1.4.25-Sicherung schaltete sonst endpunkt_ein einer Bestandsanlage still auf 0. Rueckgabe array($neu, behaltene
+ * Schluessel) fuer den Hinweis "nicht in der Sicherung, unveraendert". EINE Stelle fuer index.php und die Probe.
+ */
+function awm_sicherung_spaet_behalten(array $neu, $roh, array $vorher)
+{
+    $d = json_decode((string) $roh, true);
+    $liste = array();
+    foreach (awm_spaet_schluessel() as $k) {
+        if (is_array($d) && !array_key_exists($k, $d) && array_key_exists($k, $vorher)) {
+            $neu[$k] = $vorher[$k];
+            $liste[] = $k;
+        }
+    }
+    return array($neu, $liste);
 }
 
 /** Schluessel frueherer Fassungen, die es nicht mehr gibt. */

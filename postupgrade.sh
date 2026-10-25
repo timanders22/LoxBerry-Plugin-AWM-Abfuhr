@@ -9,6 +9,11 @@ ARGV3=$3
 ARGV5=$5
 ARGV6=$6
 PFOLDER="${ARGV3:-awmabfuhr}"
+# Gruppe 18 (1.4.26; A2): der Ordnername darf keinen Pfadtrenner tragen, sonst griffen cp/rm daneben - dieselbe
+# Schranke wie preinstall.sh.
+case "$PFOLDER" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - nichts angefasst."; exit 0 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 # Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
 # und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
@@ -102,7 +107,9 @@ AWM_GESICHERT=0; awm_eingerichtet "$TMPF/awm.json" && AWM_GESICHERT=1
 # stehen, und es wird gewarnt.
 if [ -f "$TMPF/awm.json" ]; then
     if awm_json_objekt "$TMPF/awm.json"; then
-        cp -p "$TMPF/awm.json" "$CFGDIR/awm.json"
+        # Gruppe 18 (1.4.26; A2): ein gescheitertes cp meldet sich (die Schlussmeldung unten prueft das Ergebnis).
+        cp -p "$TMPF/awm.json" "$CFGDIR/awm.json" 2>/dev/null \
+            || echo "<WARNING> Die gesicherte Konfiguration liess sich nicht zurueckkopieren: $CFGDIR/awm.json"
     else
         echo "<WARNING> Die gesicherte Konfiguration aus der Aktualisierung ist kein lesbares JSON-Objekt -"
         echo "<WARNING> sie wurde nicht zurueckgespielt; es bleibt die von postinstall.sh eingespielte Fassung."
@@ -113,7 +120,8 @@ fi
 # Kalender zurueckspielen - alle, die gesichert wurden.
 for f in "$TMPF"/kalender_*.ics; do
     [ -f "$f" ] || continue
-    cp -p "$f" "$DATDIR/$(basename "$f")"
+    cp -p "$f" "$DATDIR/$(basename "$f")" 2>/dev/null \
+        || echo "<WARNING> Kalender $(basename "$f") liess sich nicht zurueckkopieren."
 done
 
 # Rueckfallebene Konfiguration: die dauerhafte Sicherung.
@@ -146,7 +154,8 @@ CF="$CFGDIR/awm.json"
 if [ -f "$BK" ]; then
     if [ ! -s "$CF" ] || ! grep -q '"' "$CF" 2>/dev/null; then
         if awm_hat_inhalt "$BK"; then
-            cp -p "$BK" "$CF"
+            cp -p "$BK" "$CF" 2>/dev/null \
+                || echo "<WARNING> Die Konfiguration aus der Sicherung liess sich nicht kopieren: $BK"
         else
             echo "<WARNING> Die Sicherung $PFOLDER.backup.json traegt keinen Inhalt - nicht uebernommen."
         fi
@@ -159,7 +168,8 @@ BKDIR="$BASE/config/plugins/$PFOLDER.backup.ics"
 if [ -d "$BKDIR" ] && [ -z "$(ls -A "$DATDIR"/kalender_*.ics 2>/dev/null)" ]; then
     for f in "$BKDIR"/kalender_*.ics; do
         [ -f "$f" ] && [ -s "$f" ] || continue
-        cp -p "$f" "$DATDIR/$(basename "$f")"
+        cp -p "$f" "$DATDIR/$(basename "$f")" 2>/dev/null \
+            || echo "<WARNING> Kalender $(basename "$f") liess sich aus der Sicherung nicht kopieren."
     done
 fi
 
@@ -175,8 +185,11 @@ fi
 # Minutenlauf nach dem Update den VOLLEN Satz. Regeln/07: wer auf Retain
 # umstellt oder die Themenmenge aendert, braucht danach einen Vollversand,
 # sonst steht der halbe Zustand nicht im Broker.
-rm -f /tmp/awmabfuhr/state_*.json /tmp/awmabfuhr/mqtt_sig_*.txt \
-      /tmp/awmabfuhr/mqtt_letzte_*.json 2>/dev/null
+# Gruppe 18 (1.4.26; A3, A11): der Zwischenordner traegt den Ordnernamen (bis 1.4.25 fest /tmp/awmabfuhr - bei einer
+# Zweitinstallation der Ordner der ersten). Dazu haus_letzte.json, der Merker des Anbieters haus/abfuhr/*: der erste
+# Minutenlauf nach dem Update schickt dann den vollen Satz.
+rm -f "/tmp/$PFOLDER"/state_*.json "/tmp/$PFOLDER"/mqtt_sig_*.txt \
+      "/tmp/$PFOLDER"/mqtt_letzte_*.json "/tmp/$PFOLDER"/haus_letzte.json 2>/dev/null
 
 # Die Konfiguration traegt das Aktionstoken und die iCal-Adresse mit Strasse
 # und Hausnummer - uninstall/uninstall sagt das selbst. Sie gehoert deshalb
@@ -196,6 +209,40 @@ fi
 
 chmod 600 "$CFGDIR/awm.json" 2>/dev/null
 [ -f "$BK" ] && chmod 600 "$BK" 2>/dev/null
+
+# ---------- Gruppe 18 (1.4.26): endpunkt_ein=1 fuer bestehende Anlagen (Entscheidung Abfuhrkalender 2, Entwurf 3.3) ----------
+# Bis 1.4.25 antwortete awm.php ohne Schalter. Eine bestehende Anlage behaelt den HTTP-Weg: in awm.json und in der
+# Zweitschrift wird endpunkt_ein=1 nachgetragen, wenn die Datei Inhalt traegt (awm_hat_inhalt) und den Schluessel noch
+# nicht kennt. Ueber eine Nebendatei (.neu, umask 077) mit Gegenprobe (gleich bis auf den Schluessel), dann mv, 0600.
+# Scheitert es, gilt die Lese-Regel in awm_config() (Datei mit Inhalt ohne Schluessel -> 1) - kein Unterschied.
+# Ein zweiter Lauf aendert nichts (Schluessel vorhanden). Eine Neuinstallation laeuft hier nicht durch.
+awm_endpunkt_nachtragen() {
+    [ -f "$1" ] || return 0
+    awm_hat_inhalt "$1" || return 0
+    php -r 'umask(077); $f = $argv[1]; $roh = (string) @file_get_contents($f); $d = json_decode($roh, true);
+        if (!is_array($d) || array_key_exists("endpunkt_ein", $d)) { exit(3); }
+        $d["endpunkt_ein"] = 1;
+        $js = json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($js === false) { exit(1); }
+        $neu = $f . ".neu";
+        if (@file_put_contents($neu, $js) !== strlen($js)) { @unlink($neu); exit(1); }
+        $g = json_decode((string) @file_get_contents($neu), true);
+        if (!is_array($g) || !isset($g["endpunkt_ein"]) || $g["endpunkt_ein"] !== 1) { @unlink($neu); exit(1); }
+        unset($g["endpunkt_ein"]);
+        if ($g !== json_decode($roh, true)) { @unlink($neu); exit(1); }
+        if (!@rename($neu, $f)) { @unlink($neu); exit(1); }
+        exit(0);' "$1" 2>/dev/null
+    awm_e=$?
+    if [ "$awm_e" = 0 ]; then
+        chmod 600 "$1" 2>/dev/null
+        echo "<INFO> Konfiguration ergaenzt ($(basename "$1")): endpunkt_ein=1 (bestehende Anlage - awm.php bleibt erreichbar; abschalten im Reiter Einbindung)."
+    elif [ "$awm_e" != 3 ]; then
+        echo "<WARNING> endpunkt_ein liess sich in $(basename "$1") nicht nachtragen - es gilt die Lese-Regel (awm.php bleibt erreichbar)."
+    fi
+    return 0
+}
+awm_endpunkt_nachtragen "$CF"
+awm_endpunkt_nachtragen "$BK"
 
 # ---------- Gruppe 1 / MQTT (1.4.25): die Befehlsbruecke wieder starten ----------
 # Erst die Upgrade-Marke weg (sonst lehnt befehlsbruecke.sh den Start ab; die trap raeumt sie sonst erst am

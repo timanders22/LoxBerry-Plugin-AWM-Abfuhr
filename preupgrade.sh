@@ -26,6 +26,11 @@ ARGV3=$3
 ARGV5=$5
 ARGV6=$6
 PFOLDER="${ARGV3:-awmabfuhr}"
+# Gruppe 18 (1.4.26; A2): der Ordnername darf keinen Pfadtrenner tragen, sonst griffen cp/rm daneben - dieselbe
+# Schranke wie preinstall.sh.
+case "$PFOLDER" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - nichts angefasst."; exit 0 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 # Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
 # und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis

@@ -8,13 +8,20 @@
 # Ausgabe ("OK" oder "BUSY") bleibt draussen, sonst schriebe der Cron jede
 # Minute eine Zeile.
 #
-# Kein fester Systempfad als Rueckfall: ist LBHOMEDIR nicht gesetzt oder der
-# Protokollordner nicht da, bleibt es beim alten Weg. Ein Cron, der an seiner
-# eigenen Umleitung scheitert, waere schlimmer als einer, der schweigt.
-AWMLOGDIR=""
-[ -n "$LBHOMEDIR" ] && AWMLOGDIR="$LBHOMEDIR/log/plugins/awmabfuhr"
-if [ -n "$AWMLOGDIR" ] && [ -d "$AWMLOGDIR" ]; then
-    php "REPLACELBPHTMLDIR/cron.php" >/dev/null 2>>"$AWMLOGDIR/cron_fehler.log"
+# Gruppe 18 (1.4.26; A15): den Protokollordner setzt der Installer ein (REPLACELBPLOGDIR) - bis 1.4.25 stand hier
+# fest $LBHOMEDIR/log/plugins/awmabfuhr, bei einer Zweitinstallation der Ordner der ersten. Die Datei wird vor dem
+# Anhaengen gekappt: ueber 256 kB bleiben die letzten 300 Zeilen (Regeln/06; sie liegt im zram-Protokoll, und die
+# Protokollwartung kuerzt nur nach Dateizahl). Laesst sie sich nicht anlegen, laeuft cron.php trotzdem - ein Cron, der
+# an seiner eigenen Umleitung scheitert, waere schlimmer als einer, der schweigt.
+AWMLOGDIR="REPLACELBPLOGDIR"
+mkdir -p "$AWMLOGDIR" 2>/dev/null
+AWMERR="$AWMLOGDIR/cron_fehler.log"
+if touch "$AWMERR" 2>/dev/null; then
+    if [ "$(stat -c %s "$AWMERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
+        tail -n 300 "$AWMERR" > "$AWMERR.neu" 2>/dev/null && mv -f "$AWMERR.neu" "$AWMERR"
+    fi
+    php "REPLACELBPHTMLDIR/cron.php" >/dev/null 2>>"$AWMERR"
 else
     php "REPLACELBPHTMLDIR/cron.php" >/dev/null 2>&1
 fi
+exit 0

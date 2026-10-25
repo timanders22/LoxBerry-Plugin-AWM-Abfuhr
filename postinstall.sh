@@ -4,6 +4,11 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-awmabfuhr}"
+# Gruppe 18 (1.4.26; A2): der Ordnername darf keinen Pfadtrenner tragen, sonst griffen cp/rm daneben - dieselbe
+# Schranke wie preinstall.sh.
+case "$PFOLDER" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - nichts angefasst."; exit 0 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 # Die Wurzel: $5 (vom Installer) oder $LBHOMEDIR, wenn dort config/plugins
 # und data/plugins liegen - sonst vom eigenen Ablageort AUFWAERTS SUCHEN, bis
@@ -105,8 +110,13 @@ if [ -f "$MARKE" ]; then
     if [ -f "$BK" ]; then
         if [ ! -s "$CF" ] || ! grep -q '"' "$CF" 2>/dev/null; then
             if awm_hat_inhalt "$BK"; then
-                cp -p "$BK" "$CF"
-                echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+                # Gruppe 18 (1.4.26; A2, eigener Fund): <OK> erst nach geprueftem cp - bis 1.4.25 auch bei einem
+                # gescheiterten.
+                if cp -p "$BK" "$CF" 2>/dev/null; then
+                    echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+                else
+                    echo "<WARNING> Konfiguration aus der Sicherung liess sich nicht zurueckspielen: $BK"
+                fi
             else
                 echo "<WARNING> Die Sicherung $PFOLDER.backup.json traegt keinen Inhalt (kein lesbares"
                 echo "<WARNING> Objekt mit Aktionstoken oder Kalender) - sie wurde nicht uebernommen."
@@ -118,8 +128,11 @@ if [ -f "$MARKE" ]; then
     if [ -d "$BKDIR" ] && [ -z "$(ls -A "$DATDIR"/kalender_*.ics 2>/dev/null)" ]; then
         for f in "$BKDIR"/kalender_*.ics; do
             [ -f "$f" ] && [ -s "$f" ] || continue
-            cp -p "$f" "$DATDIR/$(basename "$f")"
-            echo "<OK> Kalender $(basename "$f") aus Sicherung wiederhergestellt."
+            if cp -p "$f" "$DATDIR/$(basename "$f")" 2>/dev/null; then
+                echo "<OK> Kalender $(basename "$f") aus Sicherung wiederhergestellt."
+            else
+                echo "<WARNING> Kalender $(basename "$f") liess sich aus der Sicherung nicht zurueckspielen."
+            fi
         done
     fi
 else

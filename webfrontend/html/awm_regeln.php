@@ -1150,6 +1150,26 @@ function awm_selbstpruefung_regeln()
     $p($w('FREQ=WEEKLY;INTERVAL=2', '20260105', '20260119'), awm_t('SELBST.R20'));
     $p(!$w('FREQ=WEEKLY;INTERVAL=2', '20260105', '20260112'), awm_t('SELBST.R21'));
     $p(!$w('FREQ=WEEKLY;UNTIL=20260201', '20260105', '20260209'), awm_t('SELBST.R22'));
+    /* Gruppe 18 (1.4.26; A12, Pruefbericht F1-F6): UNTIL ...Z je DTSTART-Form (awm_until_nach_dtstart()). Die Form von
+     * DTSTART ist der Parameter des Hilfsaufrufs: Wert und Eigenschaftsparameter wie in der Kalenderdatei. */
+    $wu = function ($rrule, $start, $dt_param, $dt_wert, $ymd) {
+        $r = awm_rrule_lesen($rrule);
+        $s = array('start' => $start, 'exdates' => array(), 'rdates' => array()) + $r;
+        if (preg_match('/(?:^|;)UNTIL=([^;]+)/i', $rrule, $mu)) {
+            $s['until'] = awm_until_nach_dtstart($mu[1], $dt_param, $dt_wert, $s['until']);
+        }
+        return awm_trifft($s, $ymd);
+    };
+    $p(!$wu('FREQ=WEEKLY;UNTIL=20261231T235959Z', '20260102', ';VALUE=DATE', '20260102', '20270101'), awm_t('SELBST.R22B'));
+    $p(!$wu('FREQ=WEEKLY;UNTIL=20261231T230000Z', '20260102', ';VALUE=DATE', '20260102', '20270101'), awm_t('SELBST.R22C'));
+    $p(!$wu('FREQ=WEEKLY;UNTIL=20261231T235959Z', '20260102', ';TZID=Europe/Berlin', '20260102T060000', '20270101'),
+       awm_t('SELBST.R22D'));
+    $p($wu('FREQ=WEEKLY;UNTIL=20261231T230000Z', '20260102', ';TZID=Europe/Berlin', '20260102T000000', '20270101'),
+       awm_t('SELBST.R22E'));
+    $p(!$wu('FREQ=WEEKLY;UNTIL=20261231T120000Z', '20260101', ';TZID=Europe/Berlin', '20260101T180000', '20261231'),
+       awm_t('SELBST.R22F'));
+    $p($wu('FREQ=WEEKLY;UNTIL=20270101T050000Z', '20260102', ';TZID=Europe/Berlin', '20260102T060000', '20270101'),
+       awm_t('SELBST.R22G'));
 
     // WEEKLY mit BYDAY - das konnte 1.0.2 nicht
     $p($w('FREQ=WEEKLY;BYDAY=MO,TH', '20260105', '20260108'), awm_t('SELBST.R23'));

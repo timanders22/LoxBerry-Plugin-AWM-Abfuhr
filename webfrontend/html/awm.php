@@ -46,6 +46,13 @@
  * an (<praefix>/befehl/ansage|testpush|tonne_draussen|erneuern, Haken "Befehle ueber MQTT
  * annehmen"); beide Wege rufen awm_aktion() in awm_lib.php.
  *
+ * Seit 1.4.26 (Gruppe 18; Entscheidung Abfuhrkalender 2) antwortet diese Datei nur, wenn im Reiter "Einbindung in
+ * Loxone" der Haken "HTTP-Weg fuer Loxone annehmen" (endpunkt_ein) gesetzt ist - sonst fuer JEDE Art HTTP 403
+ * "MUELL;OK=0;ERR=ENDPUNKT_AUS" (bzw. SELFTEST;...). Bestehende Anlagen behalten den Weg beim Update (Lese-Regel in
+ * awm_config() und postupgrade.sh), eine Neuinstallation hat ihn aus - der Weg des Musterprojekts ist MQTT. Die
+ * lesenden Ansichten (Zeile, JSON, Text, ICS, Debug) stehen in awm_ansicht() (awm_lib.php); die Oberflaeche zeigt sie
+ * hinter der LoxBerry-Anmeldung auch bei ausgeschaltetem Weg (N7).
+ *
  * Zugangsdaten stehen ausschliesslich in der Plugin-Konfiguration - diese URL
  * enthaelt kein Passwort.
  *
@@ -56,6 +63,17 @@
  */
 
 require_once __DIR__ . '/awm_lib.php';
+
+/* Gruppe 18 (1.4.26; Entscheidung Abfuhrkalender 2, Entwurf 3.3): der HTTP-Weg nur mit endpunkt_ein = 1 - vor jeder
+ * Art, auch ?ics (die gespeicherte Kalenderdatei), ?json, ?text und den Aktionen. Kein Protokoll je Aufruf (Loxone
+ * fragt zyklisch), kein Zugriff auf den Stand. */
+$awm_ep = awm_config();
+if ((int) $awm_ep['endpunkt_ein'] !== 1) {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo (isset($_GET['selftest']) ? 'SELFTEST' : 'MUELL') . ";OK=0;ERR=ENDPUNKT_AUS\n";
+    exit;
+}
 
 /* Auf AWM_MAX_KALENDER geklemmt, nicht auf 9. Bis 1.4.6 standen drei
  * verschiedene Obergrenzen in einem Plugin: die Konfiguration kennt vier
@@ -101,50 +119,14 @@ if (isset($_GET['refresh']) && (string) $_GET['refresh'] !== '0') {
  * Entsorgers wird weiterhin nur alle 14 Tage gefragt, und die Adresse mit
  * Strasse und Hausnummer bleibt im Haus. */
 if (isset($_GET['ics'])) {
-    $awm_f = awm_icsfile($cal);
-    if (!is_file($awm_f)) {
-        http_response_code(404);
-        header('Content-Type: text/plain; charset=utf-8');
-        echo "Kein Kalender gespeichert.\n";
-        exit;
-    }
-    header('Content-Type: text/calendar; charset=utf-8');
-    header('Content-Disposition: inline; filename="abfuhrkalender_' . (int) $cal . '.ics"');
-    readfile($awm_f);
+    awm_ansicht('ics', $cal);               // Gruppe 18 (1.4.26; N7): EINE Stelle fuer Endpunkt und Oberflaeche
     exit;
 }
 
 /* ---------- JSON ---------- */
 if (isset($_GET['json'])) {
-    header('Content-Type: application/json; charset=utf-8');
     // Dieselbe Entscheidung wie im Klartext-Zweig - siehe oben.
-    list($awm_fok, $awm_fq) = awm_fetch($awm_refresh, $cal);
-    $st = awm_state($awm_refresh, $cal);
-    // Die Meldeflags und die fertigen Saetze gehoeren mit hinein - sonst
-    // muesste Drittsoftware sie nachbauen.
-    $st = array_merge($st, awm_meldeflags($st, $cal));
-    /* C5: eine gebremste Anforderung sagt es ausdruecklich (Regeln/03). */
-    if ($awm_fq === 'gebremst') {
-        $st['refresh'] = 'GEBREMST';
-        $st['refresh_warte'] = awm_sofortabruf_warte($cal);
-    }
-    $st['werte'] = awm_werte($st, $cal);
-    $st['text'] = array(
-        'morgen' => awm_text_morgen($st),
-        'heute' => awm_text_heute($st),
-        'naechste' => awm_text_naechste($st),
-    );
-    $js = json_encode($st, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-    if ($js === false) {
-        // Passiert nur bei ungueltigem UTF-8 aus dem Kalender. Ein leerer
-        // Rumpf mit Status 200 waere das Schlimmste: die Gegenstelle haelt
-        // ihn fuer eine gueltige Antwort.
-        http_response_code(500);
-        echo json_encode(array('ok' => 0, 'fehler' => json_last_error_msg()));
-        awm_log('JSON-Ausgabe fehlgeschlagen: ' . json_last_error_msg());
-        exit;
-    }
-    echo $js;
+    awm_ansicht('json', $cal, $awm_refresh);
     exit;
 }
 
@@ -154,12 +136,7 @@ header('Content-Type: text/plain; charset=utf-8');
  * Fuer den Statustext-Baustein in Loxone und fuer die Visualisierung. Bis
  * 1.3.8 musste der Anwender den Satz aus vier Flags selbst bauen. */
 if (isset($_GET['text'])) {
-    awm_fetch(false, $cal);
-    $st = awm_state(false, $cal);
-    echo awm_text_morgen($st) . "\n";
-    echo awm_text_heute($st) . "\n";
-    echo awm_text_naechste($st) . "\n";
-    echo ($st['hinweis'] !== '' ? $st['hinweis'] : '-') . "\n";
+    awm_ansicht('text', $cal);
     exit;
 }
 
@@ -246,49 +223,10 @@ foreach (array('say' => 'SAY', 'ptest' => 'PTEST', 'ack' => 'ACK', 'renew' => 'R
  * $awm_refresh steht oben - EINE Entscheidung fuer alle Zweige dieser Datei.
  * Die Oberflaeche und der Reiter Test schicken das Token mit.
  */
-list($ok, $quelle) = awm_fetch($awm_refresh, $cal);
-$st = awm_state($awm_refresh, $cal);
-/* C5: ein gebremster Sofortabruf wird ausdruecklich gemeldet - mit dem
- * Debug-Kopf davor, sonst als eigene Zeile HINTER der Zeile fuer Loxone
- * (die Suchtexte treffen so weiter zuerst die Zeile MUELL;...). */
-$awm_bremse = ($quelle === 'gebremst')
-    ? 'HINWEIS: ?refresh=1 gebremst - hoechstens ein Sofortabruf je ' . AWM_SOFORT_ABSTAND
-      . ' s und Kalender, naechster in ' . awm_sofortabruf_warte($cal) . ' s. Es gilt der gespeicherte Stand.'
-    : '';
-
-if (isset($_GET['debug'])) {
-    $c = awm_cal($cal);
-    $icst = is_file(awm_icsfile($cal)) ? date('Y-m-d H:i', filemtime(awm_icsfile($cal))) . ', ' . filesize(awm_icsfile($cal)) . ' B' : 'keiner';
-    echo 'DEBUG  Kalender ' . $cal . ' (' . ($c ? $c['name'] : '-') . ')  Quelle: ' . $quelle . '  Ereignisse: ' . $st['ereignisse'] . '  Datei: ' . $icst . "\n";
-    if (isset($_GET['refresh']) && !$awm_refresh) {
-        echo "HINWEIS: ?refresh=1 verlangt das Aktionstoken - es wurde der gespeicherte Stand benutzt.\n";
-    }
-    if ($awm_bremse !== '') { echo $awm_bremse . "\n"; $awm_bremse = ''; }
-    if (!$st['abruf_ok'] && $st['abruf_grund'] !== '') {
-        echo 'ABRUF-FEHLER: ' . $st['abruf_grund'] . "\n";
-    }
-    if ($st['hinweis'] !== '') {
-        echo 'HINWEIS: ' . $st['hinweis'] . "\n";
-    }
-    if ($st['warnung']) {
-        echo "WARNUNG: Kalender liefert in weniger als 30 Tagen keine Termine mehr - Jahres-Erneuerung laeuft automatisch, sonst neuen iCal-Link eintragen!\n";
-    }
-    if (!empty($st['luecken'])) {
-        echo "ERSATZLOS GESTRICHENE TERMINE (der Entsorger nennt keinen Ersatz):\n";
-        foreach ($st['luecken'] as $l) {
-            echo '  ' . substr($l['datum'], 6, 2) . '.' . substr($l['datum'], 4, 2) . '.' . substr($l['datum'], 0, 4)
-               . '  ' . implode('+', $l['tonnen']) . '  (' . $l['titel'] . ")\n";
-        }
-    }
-    echo "Abholtermine im Vorschau-Fenster:\n";
-    foreach ($st['termine'] as $t) {
-        echo $t[0] . '  ' . $t[1] . "\n";
-    }
-    echo "\n";
-}
-
+/* Gruppe 18 (1.4.26; N7): Zeile und Debug-Ansicht aus awm_ansicht() - byte-gleich wie bis 1.4.25; ein gebremster
+ * Sofortabruf wird dort ausdruecklich gemeldet (C5), mit dem Debug-Kopf davor, sonst als eigene Zeile HINTER der
+ * Zeile fuer Loxone. */
+awm_ansicht(isset($_GET['debug']) ? 'debug' : 'zeile', $cal, $awm_refresh, isset($_GET['refresh']));
 /* Die Zeile entsteht aus awm_werte() - derselben Quelle wie die
  * MQTT-Meldung. Zur Reihenfolge der Felder siehe awm_feldliste(): die
  * ersten neunzehn duerfen sich nicht aendern, neue kommen hinten dazu. */
-echo awm_zeile(awm_werte($st, $cal)) . "\n";
-if ($awm_bremse !== '') { echo $awm_bremse . "\n"; }

@@ -23,6 +23,30 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.26
+
+Haus-Themen für andere Plugins, Anwesenheit für die Vorabend-Ansage, Sonos, HTTP-Weg nur noch mit Haken – und
+Korrekturen. Alles Neue ist ab Werk aus; im Haus ändert das Update nichts, bis jemand einen Haken setzt.
+
+* **Abholtage an andere Plugins** (Reiter MQTT, ab Werk aus): `haus/abfuhr/heute`, `…/morgen` (Kennungen wie
+  `rest,papier`, `keine`, ohne Aussage `-`), `…/heute_satz`, `…/morgen_satz`, `…/quittiert`, `…/tage`, zurückbehalten,
+  dazu das Lebenszeichen `haus/abfuhr/zaehler` – direkt am Broker, nicht über das Gateway. Abnehmer: der
+  Abfahrts-Assistent ab 1.6.31 (Satz am Abholtag). Ausschalten und Deinstallation räumen mit Rückfrage beim Broker ab.
+* **Vorabend-Ansage erst, wenn jemand zu Hause ist** (Reiter Einstellungen, ab Werk aus; Quelle
+  `haus/anwesenheit/jemand` des BLE-Scanners NG): ist niemand da, wartet nur die Vorabend-Ansage bis zur Ankunft plus
+  drei Minuten, längstens bis 21:30 – nie die Pushnachricht. Schweigt die Quelle, gilt das bisherige Verhalten.
+* **Verhalten geändert: `awm.php` nur noch mit dem Haken „HTTP-Weg für Loxone annehmen“** (Reiter Einbindung,
+  „Bestehende Anlagen“). Bestehende Anlagen behalten ihn beim Update, neue Anlagen nehmen MQTT (sonst HTTP 403
+  `ERR=ENDPUNKT_AUS`). Die Ansichten im Reiter Test gehen auch ohne ihn; Test-Push, Quittieren, Abrufen und Erneuern
+  sind dort jetzt Knöpfe der Oberfläche statt Adressen mit Token.
+* **Sonos4Lox und SonoX** als Ausgabeart (gemeinsames Sprachmodul 1.1.4, ungemessen); Befehlsbrücke 1.0.1.
+* **Gateway V2:** in der Hakenliste ist `awm_ok` als „Noncached“ markiert.
+* **Korrekturen:** UNTIL einer Terminserie nach RFC 5545 je Form des Beginns (ein Termin nach dem Serienende galt
+  noch), Schutz vor Terminen einer alten Adresse auch nach der Jahres-Erneuerung, Zwischenordner und Protokollpfad je
+  Installation (Zweitinstallation), Zweitschrift und Heilen der Konfiguration unteilbar, der Reiter Test öffnet mit
+  allen Prüfungen, eigene Wiki-Seite als Hilfelink, gekapptes `cron_fehler.log`, klarere Meldungen bei eigenen Terminen
+  und beim Zurückspielen nach einem Update.
+
 ## Neu in 1.4.25
 
 Werte und Befehle über MQTT – der Weg des Musterprojekts. Der Weg über HTTP bleibt für bestehende Anlagen.
