@@ -78,7 +78,8 @@ define('AWM_HINWEIS_STANDARD', 'achtung, verschiebung, verschoben, feiertag, ers
 require_once __DIR__ . '/awm_regeln.php';
 /* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b).
  * Seit 1.4.21 Stufe 2: Sprechen, Formular, Wertpruefung, Zeile im Reiter Test und
- * Testansage kommen aus dem Modul (Fassung 1.1.1). Liegt neben dieser Datei. Bindet diese
+ * Testansage kommen aus dem Modul (Fassung 1.1.1; seit 1.4.27 Stamm 1.2.1 mit weiteren Ausgabezielen,
+ * awm_mit_zielen(), Welle Mehrfach-Ziele). Liegt neben dieser Datei. Bindet diese
  * Bibliothek spaeter ferien_lib.php des Plugins Ferien und Feiertage ein und traegt jenes
  * eine eigene Abschrift, gilt die hier zuerst geladene; die Datei schuetzt sich selbst
  * gegen doppeltes Laden. */
@@ -534,7 +535,7 @@ function awm_wert_pruefen($schluessel, $wert)
              * Buchstaben). Altschluessel frueherer Fassungen im Block (enabled, time,
              * system) bleiben wie bisher ungeprueft. */
             $tg = '';
-            $teil = ansage_sicherung_bereinigen(array_intersect_key($wert, ansage_vorgaben()));
+            $teil = ansage_sicherung_bereinigen(array_intersect_key($wert, array_flip(awm_ansage_schluessel())));     // + ziele (1.4.27)
             if (ansage_wert_pruefen($teil, $tg, awm_ansage_modi()) === null) {
                 return ansage_kennung_text($tg, awm_ansage_k());
             }
@@ -2072,6 +2073,35 @@ function awm_ansage_modi() {
     $m = array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox', 'sonos4lox');
     if (version_compare(ANSAGE_FASSUNG, '1.1.4', '>=')) { $m[] = 'sonox'; }
     return $m;
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function awm_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Schluessel des Ansageblocks, die diese Linie prueft und aus einer
+ *  Sicherung annimmt - die des Moduls und, wenn die geladene Abschrift sie kann, die Liste der weiteren Ziele. */
+function awm_ansage_schluessel() {
+    $s = array_keys(ansage_vorgaben());
+    if (awm_mit_zielen()) { $s[] = 'ziele'; }
+    return $s;
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1), X-2 mit flachen Schluesseln (name.N): die Felder der Tabelle heissen im
+ *  Formular name[N] (N = 2..6, ansage_ziel_feldnamen()). awm_ziele_x2_name() macht daraus name.N (Beanstandung und
+ *  Markierung), awm_ziele_x2_post() aus den gesammelten Eingaben wieder das POST der Tabelle (ziele_post). */
+function awm_ziele_x2_name($n) {
+    return is_string($n) ? (string) preg_replace('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', '$1.$2', $n) : $n;
+}
+function awm_ziele_x2_post(array $werte) {
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\.([2-9])\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
 }
 
 /** Die POST-Namen der Sprachausgabe, die vom Modul abweichen: Alexa-NG und Google ohne tts_ (wie bis 1.4.20). */
@@ -5131,6 +5161,111 @@ function awm_mqtt_hakenliste($cal = 1)
     return $aus;
 }
 
+/**
+ * Nachtwelle N5 (1.4.27): die angehakten Datenpunkte aus config/system/subscriptions.json des MQTT-Gateways V2
+ * (Subscriptions[].Id je Thema, Noncached; Form wie Govee gv_mqtt_v2_haken_lage(), MGiSmart mg_v2_abos()). Rein.
+ * Rueckgabe array(Thema => Noncached bool), null = keine JSON-Daten; ohne Liste in der Datei: leer (nichts angehakt).
+ */
+function awm_mqtt_v2_abos($daten)
+{
+    if (!is_array($daten)) { return null; }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) { $liste = $daten[$s]; break; }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) { continue; }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) { $id = trim($e[$k]); break; }
+        }
+        if ($id === '') { continue; }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k]) && is_scalar($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+                break;
+            }
+        }
+        $abo[$id] = !empty($abo[$id]) || $nc;
+    }
+    return $abo;
+}
+
+/** Nachtwelle N5 (1.4.27): eine Themenliste fuer die Pruefzeile kuerzen - hoechstens $n Eintraege, dann "... (+k)";
+ *  leer "-". */
+function awm_mqtt_v2_kurz(array $l, $n = 8)
+{
+    if (!$l) { return '-'; }
+    return implode(', ', array_slice($l, 0, $n)) . (count($l) > $n ? ' … (+' . (count($l) - $n) . ')' : '');
+}
+
+/**
+ * Nachtwelle N5 (1.4.27): Soll gegen Ist (Rein). Soll ist die Hakenliste awm_mqtt_hakenliste(1) - dieselbe Liste, die der Reiter "Einbindung in Loxone", Schritt 2 zeigt,
+ * mit den Textthemen, die dort stehen (sie haben einen Texteingang; ohne Haken kaemen sie unter V2 nie an). Fehlt ein
+ * Thema in den Abos, steht es in fehlt[]; braucht es "Noncached" und hat es nicht, steht es in ohne_nc[].
+ * Traegt ein Datenpunkt ohne Noncached-Bedarf "Noncached", steht er in nc_zuviel[] und ist ein Fehler
+ * (Hausform wie MGiSmart 1.1.28 mg_v2_haken_abgleich(), Vereinheitlichung 29.10.2026). Je Eintrag $soll:
+ * array(thema voll, noncached bool).
+ * Rueckgabe array(ok bool, fehlt[], ohne_nc[], angehakt, soll, davon Noncached, nc_zuviel[]).
+ */
+function awm_mqtt_v2_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $ohne = array();
+    $zuviel = array();
+    $da = 0;
+    $n = 0;
+    $nc = 0;
+    foreach ($soll as $e) {
+        $n++;
+        if ($e[1]) { $nc++; }
+        if (!array_key_exists($e[0], $abo)) { $fehlt[] = $e[0]; continue; }
+        $da++;
+        if ($e[1] && !$abo[$e[0]]) { $ohne[] = $e[0]; }
+        elseif (!$e[1] && $abo[$e[0]]) { $zuviel[] = $e[0]; }
+    }
+    return array(!$fehlt && !$ohne && !$zuviel, $fehlt, $ohne, $da, $n, $nc, $zuviel);
+}
+
+/** Nachtwelle N5 (1.4.27): die Hakenliste (awm_mqtt_hakenliste(1), EINE Quelle mit dem Reiter Einbindung) als Soll-
+ *  Liste des V2-Abgleichs: array(thema voll, noncached). */
+function awm_mqtt_v2_soll()
+{
+    $aus = array();
+    foreach (awm_mqtt_hakenliste(1) as $h) {
+        $aus[] = array($h[0], $h[4] === 'N');
+    }
+    return $aus;
+}
+
+/**
+ * Nachtwelle N5 (1.4.27): Pflichtzeile "MQTT-Gateway V2: Datenpunkte angehakt" im Reiter Test. Liest nur
+ * config/system/general.json (awm_gateway_fassung()) und config/system/subscriptions.json. Rueckgabe
+ * array('ok'|'fehl'|'hinweis', Text) wie awm_pruef_bruecke(): 'hinweis' = trifft nicht zu (Gateway V1, MQTT im Plugin
+ * aus) oder nicht feststellbar (Fassung oder Datei nicht lesbar).
+ */
+function awm_pruef_v2_haken($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = awm_config(); }
+    $f = awm_gateway_fassung();
+    $home = awm_paths()['lbhome'];
+    if ($f === 0 || $home === '') { return array('hinweis', awm_t('TEST.V2_UNKLAR')); }
+    if ($f < 2) { return array('hinweis', awm_t('TEST.V2_V1')); }
+    if (empty($cfg['mqtt_enabled'])) { return array('hinweis', awm_t('TEST.V2_MQTT_AUS')); }
+    $roh = @file_get_contents($home . '/config/system/subscriptions.json');
+    $abo = is_string($roh) ? awm_mqtt_v2_abos(json_decode($roh, true)) : null;
+    if ($abo === null) {
+        return array('hinweis', sprintf(awm_t('TEST.V2_UNKLAR_DATEI'), 'config/system/subscriptions.json'));
+    }
+    list($ok, $fehlt, $ohne, $da, $soll, $nc, $zuviel) = awm_mqtt_v2_abgleich(awm_mqtt_v2_soll(), $abo);
+    if ($soll === 0) { return array('hinweis', awm_t('TEST.V2_LEER')); }   // leere Hakenliste: kein Urteil
+    if ($ok) { return array('ok', sprintf(awm_t('TEST.V2_OK'), $soll, $nc)); }
+    return array('fehl', sprintf(awm_t('TEST.V2_FEHLT'), $da, $soll, awm_mqtt_v2_kurz($fehlt), awm_mqtt_v2_kurz($ohne))
+        . ($zuviel ? ' ' . sprintf(awm_t('TEST.V2_NC_ZUVIEL'), awm_mqtt_v2_kurz($zuviel)) : ''));
+}
+
 /* ==================================================================
  * Gruppe 18 (1.4.26; Entscheidungen Abfuhrkalender 3 und 4, Entwurf gruppe18 2.3, 2.4, 2.7, E3, E5, E6, E15, E16):
  * Haus-Themen nach Regeln/07 Nr. 15 - ohne Dauerdienst.
@@ -6384,6 +6519,10 @@ function awm_eingabe_felder($formular)
             'tts_sonos_zone' => $t, 'tts_sonos_laut' => $t,
             // Gruppe 18 (1.4.26; Pflegewelle 22): die SonoX-Felder des Moduls 1.1.4 und der Haken der V2.
             'tts_sonox_raum' => $t, 'tts_sonox_laut' => $t, 'tts_sonox_sprache' => $t,
+            // Welle Mehrfach-Ziele (1.4.27): die Tabelle der weiteren Ziele - im Formular name[2..6], hier name.N
+            // (awm_ziele_x2_name()/awm_ziele_x2_post()); 7 Zeilen, damit die Nummern 2..6 der Tabelle gelten.
+            'tts_ziel_art' => array('text', 7), 'tts_ziel_wo' => array('text', 7), 'tts_ziel_laut' => array('text', 7),
+            'tts_ziel_sprache' => array('text', 7), 'tts_ziel_ein' => array('haken', 7), 'tts_ziel_loeschen' => array('haken', 7),
             'anwesenheit_ein' => $h,
             'ansage_vorlage' => $t, 'ansage_vorlage2' => $t),
         'mqtt' => array('mqtt_enabled' => $h, 'mqtt_topic' => $t,
@@ -6695,6 +6834,15 @@ function awm_sicherung_spaet_behalten(array $neu, $roh, array $vorher)
             $liste[] = $k;
         }
     }
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+     * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+     * heisst "keine weiteren Ziele" und wird so uebernommen. */
+    $aw_spaete = array();
+    if (is_array($d) && array_key_exists('tts', $d) && isset($neu['tts']) && is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
+        list($neu['tts'], $aw_spaete) = ansage_sicherung_spaet($neu['tts'],
+            (isset($vorher['tts']) && is_array($vorher['tts'])) ? $vorher['tts'] : null);
+    }
+    foreach ($aw_spaete as $aw_sn) { $liste[] = $aw_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
     return array($neu, $liste);
 }
 

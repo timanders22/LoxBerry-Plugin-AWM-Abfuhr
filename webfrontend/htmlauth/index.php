@@ -833,10 +833,11 @@ if ($aw_post && isset($_POST['save'])) {
      * wird markiert, die Eingabe reist zurueck (X-2), gespeichert wird nichts (Nr. 16). */
     $aw_tmangel = array();
     $aw_tbean = array();
+    $aw_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $aw_new['tts'] = ansage_formular_lesen($_POST, $aw_new['tts'], $aw_tmangel, $aw_tbean,
-        array('modi' => awm_ansage_modi(), 'namen' => awm_ansage_namen()), awm_ansage_k());
+        array('modi' => awm_ansage_modi(), 'namen' => awm_ansage_namen(), 'ziele' => awm_mit_zielen()), awm_ansage_k(), $aw_thinw);
     foreach ($aw_tmangel as $aw_tm) { $aw_fehler[] = $aw_tm['text']; }
-    foreach ($aw_tbean as $aw_tb) { $aw_bean[] = $aw_tb; }
+    foreach ($aw_tbean as $aw_tb) { $aw_bean[] = awm_ziele_x2_name($aw_tb); }     // 1.4.27: name[N] der Tabelle -> name.N
     /* Ein Feld, das keine Zeichenkette ist (name[]), ist eine Beanstandung; Rand-Leerraum
      * faellt still weg (fuer die Ansagetexte unten). */
     $aw_al_roh = function ($feld) {
@@ -867,6 +868,7 @@ if ($aw_post && isset($_POST['save'])) {
         // nichts schreiben; die Meldungen stehen oben auf der Seite
     } elseif (aw_speichern($aw_new, $aw_fehler)) {
         $aw_saved = true;
+        foreach ($aw_thinw as $aw_th) { $aw_hinweise[] = $aw_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
         foreach (array_keys(awm_cals()) as $aw_n) { awm_state(true, $aw_n); }
         aw_mqtt_folgen($aw_vorher, $aw_new, $aw_hinweise, $aw_fehler);    // M4: entfernte Kalender
         if (!empty($aw_vorher['anwesenheit_ein']) && empty($aw_new['anwesenheit_ein'])) {
@@ -972,11 +974,20 @@ if ($aw_sperre) { awm_sperre_frei($aw_sperre); }     // C9: nach den Handlern
  * eigener Knopf nur fuer Google. Bewusst NACH der Freigabe der Sperre: der Aufruf liest
  * die Konfiguration nur und kann bis 10 s dauern. Ergebnis als Einmalmeldung, nie Token
  * oder Text; die Umleitung (U1) unten sorgt dafuer, dass Neuladen nichts ausloest. */
-if ($aw_post && isset($_POST['ansage_test'])) {
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($aw_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $aw_tcfg = awm_config();
     $aw_tk = awm_ansage_k();
-    $aw_tr = ansage_testansage($aw_tcfg['tts'], $aw_tk);
-    awm_log('Testansage: ' . ansage_kurz($aw_tr));
+    $aw_tnur = (isset($_POST['ansage_test_ziel']) && awm_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $aw_tnur === 0) {
+        $aw_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($aw_tnur >= 1) {
+        $aw_tr = ansage_testansage($aw_tcfg['tts'], $aw_tk, $aw_tnur);
+    } else {
+        $aw_tr = ansage_testansage($aw_tcfg['tts'], $aw_tk);
+    }
+    awm_log('Testansage' . ($aw_tnur >= 1 ? ' an Ziel ' . $aw_tnur : '') . ': ' . ansage_kurz($aw_tr));
     if ($aw_tr['stand'] === 1) {
         $aw_hinweise[] = awm_t('TTS.M_TEST_OK');
     } elseif ($aw_tr['kennung'] === 'AUS') {
@@ -1417,9 +1428,12 @@ if ($aw_frame) {
    Laenge). */
 echo ansage_formular_html($aw_tts, array(
     'w' => function ($n, $g) { return aw_ew('save', $n, $g); },
-    'm' => function ($n) { return aw_em('save', $n); },
+    'm' => function ($n) { return aw_em('save', awm_ziele_x2_name($n)); },     // 1.4.27: name[N] der Tabelle -> name.N
     'c' => function ($n, $g) { return aw_eh('save', $n, $g); },
-    'modi' => awm_ansage_modi(), 'namen' => awm_ansage_namen()), awm_ansage_k()); ?>
+    'modi' => awm_ansage_modi(), 'namen' => awm_ansage_namen(),
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+    'ziele' => awm_mit_zielen(),
+    'ziele_post' => aw_ein_aktiv('save') ? awm_ziele_x2_post($GLOBALS['aw_ein']['werte']) : null), awm_ansage_k()); ?>
 <div class="sm-hilfe"><?= aw_e(awm_t('TTS.H_TESTANSAGE')) ?></div>
 
 <div class="sm-row">
@@ -1993,6 +2007,7 @@ if ($aw_az !== null) { $aw_pflicht[] = $aw_az; }
 $aw_pflicht[] = awm_pruef_vorlagen(count($aw_cals));
 $aw_pflicht = array_merge($aw_pflicht, awm_pruef_cron());
 $aw_pflicht[] = awm_pruef_bruecke();       // Gruppe 1 / MQTT (1.4.25): Befehlsbruecke
+$aw_pflicht[] = awm_pruef_v2_haken($aw_cfg);   // Nachtwelle N5 (1.4.27): Gateway V2 gegen subscriptions.json
 $aw_ph = 0;
 foreach ($aw_pflicht as $aw_z) {
     if ($aw_z[0] === 'hinweis') { $aw_ph++; continue; }
@@ -2124,6 +2139,9 @@ else { foreach ($aw_dg['luecken'] as $aw_l) {
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= aw_t('KNOPF.SAY') ?></button>
+<?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+   ohne weitere Ziele nichts. */
+if (awm_mit_zielen()) { echo ansage_testknoepfe_html($aw_tts, awm_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 </form>
 </div>
 </div>
