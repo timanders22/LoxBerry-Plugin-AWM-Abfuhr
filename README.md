@@ -23,6 +23,16 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.28
+
+**Ab dieser Fassung sind die Sprachansagen ab Werk an, auch nach einem Update, wenn Sie die Ausgabeart nie gespeichert haben.** Eine gespeicherte Einstellung bleibt, wie sie ist, auch „aus“. **Ausschalten:** Reiter *Einstellungen*, Abschnitt Sprachausgabe, Ausgabeart **„aus“** wählen und speichern; das bleibt auch nach jedem weiteren Update aus.
+
+* **Was angesagt wird:** Vorabend-Ansage und zweite Ansage am Abholmorgen. Ihre eigene Ruhe (nachts, Urlaub, bis Datum) bleibt, wie sie ist; dazu gilt der Schalter „Ansagen aus“.
+* **Wohin:** ab Werk zugleich Loxone Music Server (braucht seine Adresse), Google-Lautsprecher über Chromecast4lox (braucht dort ein Standardgerät oder hier den Namen) und Amazon Echo über Alexa-NG. Ein Ziel, das nicht bereitsteht, wird ohne Fehler übergangen; der Reiter *Test* sagt, was ihm fehlt. Das Sprechtoken der beiden Plugins müssen Sie nicht abschreiben: Es wird übernommen, in der Konfiguration gespeichert und nachgezogen; ein von Hand eingetragenes bleibt.
+* **Wann nicht:** zu Ihrer Ruhe im Reiter *Einstellungen* und solange Loxone das retained MQTT-Thema `haus/ansage/ruhe` auf 1 setzt (das gilt immer). Die Testansage im Reiter *Test* spricht immer.
+* **Berichtigt:** Der Leser der Haus-Themen hat jetzt auch beim Lesen eines Pakets eine feste Frist. Meldungen im LoxBerry-Benachrichtigungszentrum gingen aus dem regelmäßigen Lauf verloren, das ist behoben.
+
+
 ## Neu in 1.4.27
 
 Pflegefassung der Nachtwelle (29.10.2026) mit der Welle Mehrfach-Ziele, ohne Änderung an Abholtagen und MQTT-Werten:

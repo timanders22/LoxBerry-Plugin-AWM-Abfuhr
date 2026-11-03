@@ -71,7 +71,9 @@ $awm_ep = awm_config();
 if ((int) $awm_ep['endpunkt_ein'] !== 1) {
     http_response_code(403);
     header('Content-Type: text/plain; charset=utf-8');
-    echo (isset($_GET['selftest']) ? 'SELFTEST' : 'MUELL') . ";OK=0;ERR=ENDPUNKT_AUS\n";
+    /* 1.4.28 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 1.4.27 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+     * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+    echo (!empty($_GET['selftest']) ? 'SELFTEST' : 'MUELL') . ";OK=0;ERR=ENDPUNKT_AUS\n";
     exit;
 }
 
@@ -186,7 +188,7 @@ function awm_token_abweisen($praefix) {
  * dass etwas passiert. Sonst laesst sich nicht feststellen, ob die Adresse im
  * Miniserver noch stimmt, ohne wirklich etwas auszuloesen.
  */
-if (isset($_GET['selftest'])) {
+if (!empty($_GET['selftest'])) {
     if (!awm_token_ok()) {
         awm_token_abweisen('SELFTEST');
     }

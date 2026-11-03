@@ -835,7 +835,7 @@ if ($aw_post && isset($_POST['save'])) {
     $aw_tbean = array();
     $aw_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $aw_new['tts'] = ansage_formular_lesen($_POST, $aw_new['tts'], $aw_tmangel, $aw_tbean,
-        array('modi' => awm_ansage_modi(), 'namen' => awm_ansage_namen(), 'ziele' => awm_mit_zielen()), awm_ansage_k(), $aw_thinw);
+        array('modi' => awm_ansage_modi(), 'namen' => awm_ansage_namen(), 'ziele' => awm_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), awm_ansage_k(), $aw_thinw);
     foreach ($aw_tmangel as $aw_tm) { $aw_fehler[] = $aw_tm['text']; }
     foreach ($aw_tbean as $aw_tb) { $aw_bean[] = awm_ziele_x2_name($aw_tb); }     // 1.4.27: name[N] der Tabelle -> name.N
     /* Ein Feld, das keine Zeichenkette ist (name[]), ist eine Beanstandung; Rand-Leerraum
@@ -2143,6 +2143,7 @@ else { foreach ($aw_dg['luecken'] as $aw_l) {
    ohne weitere Ziele nichts. */
 if (awm_mit_zielen()) { echo ansage_testknoepfe_html($aw_tts, awm_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 </form>
+<?= awm_ansage_lage_html() ?>
 </div>
 </div>
 

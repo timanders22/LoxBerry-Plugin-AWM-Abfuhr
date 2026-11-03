@@ -730,6 +730,8 @@ function awm_config($anlegen = false) {
     if (empty($cfg['cals']) && !empty($cfg['ical_url'])) {
         $cfg['cals'] = array(array('name' => 'Zuhause', 'url' => (string) $cfg['ical_url']));
     }
+    /* 1.4.28: nie gesetzt = ab Werk EIN. Ein gespeicherter Block bekommt die Werk-Ziele nicht (die Teilvorgaben unten ergaenzen nur seine Einzelwerte). */
+    if (!isset($cfg['tts']) || !is_array($cfg['tts']) || !$cfg['tts']) { $cfg['tts'] = ansage_werk_block(); }
     foreach (awm_config_teilvorgaben() as $ab => $werte) {
         if (!is_array($cfg[$ab])) { $cfg[$ab] = array(); }
     }
@@ -1074,6 +1076,9 @@ function awm_notify($schwere, $text, $schluessel = '')
         awm_log('Meldung nicht moeglich: notify_ext() gibt es in dieser LoxBerry-Fassung nicht');
         return false;
     }
+    /* bis 1.4.27: das erste Laden des SDK laeuft hier im Bereich dieser Funktion, loxberry_system.php setzt dabei $p (Zeile 18). Danach war $p['plugin'] leer,
+     * notify_ext() verwarf die Meldung ("Notification: Missing parameters" auf stderr), und im Cron war es immer das erste Laden. */
+    $p = awm_paths();
     notify_ext(array(
         'PACKAGE'  => $p['plugin'],
         'NAME'     => 'Abfuhrkalender',
@@ -2848,7 +2853,10 @@ function awm_mqtt_behalten_liste(array $themen)
     /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 1.4.27 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -3645,13 +3653,193 @@ function awm_t_oder($schluessel, $ersatz)
  * Ergebnis des Moduls (stand 1 = gesendet, 0 = gescheitert, -1 = nichts gesendet ohne
  * Fehler: aus, Original-Audioserver).
  */
+/* ---------------- Sprachansagen: Regeln aus dem Stamm (1.4.28, Welle S2, Stamm sprachausgabe.php 1.3.2) ----------------
+ *
+ * Nachtruhe, Sperre und Schalter "Ansagen aus" stehen im Stamm. Ab Werk EIN: ansage_werk_block() in den Vorgaben, also nur fuer einen
+ * nie gespeicherten Block; ein gespeicherter bleibt, auch 'aus'. Ein Minutenlauf und ein Dienst sprechen nie selbst: Sie legen den Anlass
+ * in <Daten>/ansage_warte.json, ein abgekoppelter Sender (php -r, eigene Sperre) spricht und wartet auf die Lautsprecher.
+ */
+
+/** So alt darf ein wartender Anlass werden (nach einem Update oder Hang wird nichts Aufgestautes angesagt). */
+if (!defined('AWM_ANSAGE_HOECHSTALTER')) { define('AWM_ANSAGE_HOECHSTALTER', 600); }
+
+/** Die Regeln: gespeichert und gueltig, sonst aus einer alten Einstellung dieser Linie, sonst die Vorgabe (mit Nachtruhe). */
+function awm_ansage_regeln($cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    $g = '';
+    if (isset($cfg['ansage_regeln'])) {
+        $r = ansage_regeln_wert($cfg['ansage_regeln'], $g);
+        return $r === null ? ansage_regeln_vorgaben() : $r;
+    }
+    $r = ansage_regeln_vorgaben();
+    /* Die eigene Ruhe (nachts, Urlaub, bis Datum: awm_ruhe_aktiv()) bleibt die geltende; die Nachtruhe des Stamms gilt hier nicht. */
+    $r['nachtruhe'] = 0;
+    $p = ansage_regeln_wert($r, $g);
+    return $p === null ? ansage_regeln_vorgaben() : $p;
+}
+
+/** Die Warteliste unter einer Dateisperre aendern: $fn(Liste) -> array(neue Liste, Ergebnis). */
+function awm_ansage_warte($fn)
+{
+    $d = awm_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $f = $d . '/ansage_warte.json';
+    $h = @fopen($f, 'c+');
+    if ($h === false) { return null; }
+    if (!flock($h, LOCK_EX)) { fclose($h); return null; }
+    $alt = json_decode((string) stream_get_contents($h), true);
+    list($neu, $erg) = call_user_func($fn, is_array($alt) ? $alt : array());
+    rewind($h);
+    ftruncate($h, 0);
+    fwrite($h, (string) json_encode($neu));
+    fflush($h);
+    flock($h, LOCK_UN);
+    fclose($h);
+    @chmod($f, 0600);
+    return $erg;
+}
+
+/**
+ * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
+ * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
+ */
+function awm_ansage_legen(array $l, $jetzt = null)
+{
+    if (!$l) { return 'nichts'; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    awm_ansage_warte(function ($alt) use ($l, $jetzt) {
+        foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
+        return array(array_slice($alt, -50), null);
+    });
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; awm_ansage_senden();') . ' -- ' . escapeshellarg(__FILE__);
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
+function awm_ansage_token_pflegen($cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    list($neu, $her2, $g) = ansage_token_abgleich(awm_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), awm_ansage_k());
+    if (!$g) { return false; }
+    $cfg = awm_config();
+    $cfg['tts'] = $neu;
+    $cfg['ansage_token_herkunft'] = $her2;
+    if (!awm_config_speichern($cfg)) { return false; }
+    awm_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
+    return true;
+}
+
+/** Der Block fuer Testansage und Pruefzeile: uebernommene Token aufgeloest. Nur im Speicher. */
+function awm_ansage_vor_ort($cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    return ansage_token_fuer_lauf(awm_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), awm_ansage_k());
+}
+
+/** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
+function awm_ansage_pruefblock($cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    $t = awm_tts($cfg);
+    if ($t['mode'] === 'aus') { return $t; }
+    list($b) = ansage_ziele_bereit(awm_ansage_vor_ort($cfg), awm_ansage_k());
+    if ($b === null) { $t['mode'] = 'aus'; return $t; }
+    return $b;
+}
+
+/** Die Lage im Reiter Test: Ziele, Nachtruhe, Schalter. Nur im geoeffneten Reiter (der Schalter fragt den Broker). */
+function awm_ansage_lage_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    $k = awm_ansage_k();
+    $o = array();
+    foreach (ansage_regel_lage(awm_tts($cfg), awm_ansage_regeln($cfg), $k, true) as $z) {
+        $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Felder der Regeln fuer die Einmalmeldung (X-2). */
+function awm_ansage_regel_felder(array $anlaesse = array())
+{
+    return ansage_regeln_x2_felder($anlaesse);
+}
+
+/**
+ * Im Vorgang sprechen, wo der Rufer das Ergebnis braucht (Antwort an Loxone, Befehl): Regeln aus dem Stamm mit "dringend, ohne Sperre" - es zaehlt nur der Schalter.
+ * Schalter gesetzt: stand -1, Kennung SCHALTER. Nichts bereit oder Original-Audioserver: wie bisher ansage_sprechen(), damit die Antwort sagt, was fehlt.
+ */
+function awm_ansage_direkt($text, array $e = array(), $tts = null)
+{
+    $conf = awm_config();
+    $k = awm_ansage_k();
+    $t = $tts === null ? awm_tts($conf) : $tts;
+    $a = ansage_regel_sprechen(array($e + array('schluessel' => 'direkt', 'text' => (string) $text, 'dringend' => true, 'sperre_min' => 0)), $t, awm_ansage_regeln($conf), $k);
+    if ($a['r'] !== null) { return $a['r']; }
+    if ($a['regel'] === 'SCHALTER') {
+        return array('stand' => -1, 'kennung' => 'SCHALTER', 'art' => isset($t['mode']) ? (string) $t['mode'] : '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    }
+    return ansage_sprechen((string) $text, $t, $k);
+}
+
+/**
+ * Der Sender: eigene Sperre, nimmt die Warteliste und spricht nach den Regeln. "aus" und "kein Ziel eingerichtet" hinterlassen keine Zeile;
+ * ein gescheitertes Ziel genau eine je Aenderung (ab Werk EIN darf kein Protokoll vollaufen). Text und Token stehen nie im Protokoll.
+ */
+function awm_ansage_senden($jetzt = null)
+{
+    $d = awm_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($d . '/ansage_senden.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = 'nichts';
+    $l = awm_ansage_warte(function ($alt) { return array(array(), $alt); });
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $frisch = array();
+    foreach (is_array($l) ? $l : array() as $e) {
+        if (is_array($e) && isset($e['zeit']) && $jetzt - (int) $e['zeit'] <= AWM_ANSAGE_HOECHSTALTER) { $frisch[] = $e; }
+    }
+    if ($frisch) {
+        $conf = awm_config();
+        awm_ansage_token_pflegen($conf);
+        $conf = awm_config();
+        $a = ansage_regel_sprechen($frisch, awm_tts($conf), awm_ansage_regeln($conf), awm_ansage_k());
+        $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
+        if ($a['r'] !== null) {
+            $merk = $d . '/ansage_lage.txt';
+            $lage = $a['r']['stand'] === 1 ? 'gesprochen' : ansage_kurz($a['r']);
+            if ($a['r']['stand'] === 1 || (string) @file_get_contents($merk) !== $lage) { awm_log('Ansage: ' . ansage_regel_kurz($a)); }
+            @file_put_contents($merk, $lage);
+        } elseif ($a['regel'] !== 'AUS' && $a['regel'] !== 'KEIN_ZIEL') {
+            awm_log('Ansage entfaellt: ' . ansage_regel_kurz($a));
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg;
+}
+
+/** Der Block tts (1.4.28: fuer die Bausteine aus dem Stamm). */
+function awm_tts($c = null)
+{
+    if ($c === null) { $c = awm_config(); }
+    return $c['tts'];
+}
+
 function awm_say($text, $zonen = '') {
     $cfg = awm_config();
+    awm_ansage_token_pflegen($cfg);
     $tts = $cfg['tts'];
     if (trim((string) $zonen) !== '') {
         $tts['zones'] = trim((string) $zonen);
     }
-    $r = ansage_sprechen($text, $tts, awm_ansage_k());
+    $r = awm_ansage_direkt($text, array('schluessel' => 'abfuhr'), $tts);     // 1.4.28: Schalter und Ziele aus dem Stamm
     awm_log('Ansage: ' . ansage_kurz($r));
     return $r;
 }
@@ -5390,7 +5578,10 @@ function awm_haus_sitzung(array $senden, array $lesen, array $warten, $fenster =
     };
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 1.4.27 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -6374,6 +6565,7 @@ function awm_sicherung_lesen($roh, &$namen = null)
          * ausgerechnet beim Umzug auf einen zweiten LoxBerry, dem Zweck des
          * Knopfes. */
         if (in_array($k, awm_altschluessel(), true)) { $uebergangen++; continue; }
+        if ($k === 'ansage_token_herkunft') { continue; }     // 1.4.28: nie aus einer Datei
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(awm_t('EINST.SICH_FREMD'), (string) $k);
             continue;
@@ -6889,6 +7081,7 @@ function awm_sicherung_daten(array $voll)
     // geht NICHT mit; das Zurueckspielen behaelt das geltende.
     if (isset($cfg['tts']) && is_array($cfg['tts'])) {
         $cfg['tts'] = ansage_sicherung_bereinigen($cfg['tts']);    // Ansage-2/3, Nr. 36 b: eine Quelle
+        unset($cfg['ansage_token_herkunft']);     // 1.4.28
     }
     $kopf = array(
         '_hinweis' => 'Sicherung des LoxBerry-Plugins Abfuhrkalender (AWM & iCal). '

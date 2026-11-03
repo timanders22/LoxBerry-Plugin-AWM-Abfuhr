@@ -16,7 +16,10 @@
 AWMLOGDIR="REPLACELBPLOGDIR"
 mkdir -p "$AWMLOGDIR" 2>/dev/null
 AWMERR="$AWMLOGDIR/cron_fehler.log"
-if touch "$AWMERR" 2>/dev/null; then
+# 1.4.28 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): touch allein genuegt nicht - es gelingt auch auf einem
+# Verzeichnis und, beim Eigentuemer, auf einer schreibgeschuetzten Datei. Bis 1.4.27 brach dann die Umlenkung
+# den Befehl ab, BEVOR er startete.
+if touch "$AWMERR" 2>/dev/null && [ -f "$AWMERR" ] && [ -w "$AWMERR" ]; then
     if [ "$(stat -c %s "$AWMERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
         tail -n 300 "$AWMERR" > "$AWMERR.neu" 2>/dev/null && mv -f "$AWMERR.neu" "$AWMERR"
     fi
