@@ -6113,6 +6113,7 @@ function awm_ansicht($art, $cal, $refresh = false, $refresh_gewuenscht = false)
             echo "Kein Kalender gespeichert.\n";
             return;
         }
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: text/calendar; charset=utf-8');
         header('Content-Disposition: inline; filename="abfuhrkalender_' . (int) $cal . '.ics"');
         readfile($f);

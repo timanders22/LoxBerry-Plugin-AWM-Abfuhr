@@ -351,6 +351,7 @@ if ($aw_post && isset($_POST['vorlage'])) {
     }
     if ($aw_v !== null) {
         list($aw_vname, $aw_vinhalt) = $aw_v;
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/x-download');
         header('Content-Disposition: attachment; filename="' . $aw_vname . '"');
         echo $aw_vinhalt;
@@ -897,6 +898,7 @@ if ($aw_post && isset($_POST['awm_sichern'])) {
      * Altschluessel, die das Zurueckspielen sonst ablehnt. */
     $awm_js = awm_sicherung_bauen();
     if ($awm_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="awm_einstellungen_'
                . date('Ymd_His') . '.json"');

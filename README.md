@@ -23,6 +23,10 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.30
+
+- Vor einem Download wird jeder offene Ausgabepuffer geleert: PHP-Warnungen oder Reste landen nicht mehr in der heruntergeladenen Datei.
+
 ## Neu in 1.4.29
 
 * **Ansagen auch auf den offenen Dashboard-Tafeln, ab Werk an.** Mit Dashboard ab 0.9.40 und einer offenen Tafel kommt jede Ansage dieses Plugins auch dort an: Gong, Sprache und der Text groß. Ohne Dashboard oder ohne offene Tafel wird das Ziel ohne Fehler übergangen. **Eigener Haken im Abschnitt Sprachausgabe:** „Auch auf offenen Dashboard-Tafeln ansagen“, dazu „Nur diese Tafeln“ (leer: alle offenen). Nie gesetzt heißt an, ein bewusstes Aus bleibt auch nach jedem Update. Es gelten dieselben Regeln wie für die Lautsprecher.
