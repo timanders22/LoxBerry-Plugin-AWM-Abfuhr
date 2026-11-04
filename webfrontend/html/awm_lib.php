@@ -293,6 +293,9 @@ function awm_config_vorgaben()
         'endpunkt_ein' => 0,
         'haus_abfuhr_ein' => 0,
         'anwesenheit_ein' => 0,
+        /* Die Tafel des Plugins Dashboard: 1 = auch dort ansagen (nie gesetzt = an), leer = alle offenen Tafeln. */
+        'ansage_tafel_ein' => 1,
+        'ansage_tafel_namen' => '',
     );
 }
 
@@ -490,8 +493,11 @@ function awm_wert_pruefen($schluessel, $wert)
         case 'endpunkt_ein':                           // Gruppe 18 (1.4.26): ohne diese Zeilen fiele ein
         case 'haus_abfuhr_ein':                        // unbekannter Schluessel in "return ''" und wuerde
         case 'anwesenheit_ein':                        // ungeprueft angenommen, auch "x"
+        case 'ansage_tafel_ein':
         case 'melden':
             return awm_ist_schalter($wert) ? '' : awm_t_oder('PRUEF.G_SCHALTER', 'muss 0 oder 1 sein');
+        case 'ansage_tafel_namen':
+            return ansage_tafel_namen_ok($wert) ? '' : awm_t_oder('PRUEF.G_TAUGT', 'unzulaessiger Wert (Steuerzeichen, zu lang oder falscher Typ)');
         case 'hinweis_woerter':
             /* Nr. 19: leer ist keine Liste. Bis 1.4.16 wurde eine leere Liste im
              * Formular still zur Standardliste; jetzt beanstanden Formular,
@@ -3675,6 +3681,8 @@ function awm_ansage_regeln($cfg = null)
     $r = ansage_regeln_vorgaben();
     /* Die eigene Ruhe (nachts, Urlaub, bis Datum: awm_ruhe_aktiv()) bleibt die geltende; die Nachtruhe des Stamms gilt hier nicht. */
     $r['nachtruhe'] = 0;
+    if (isset($cfg['ansage_tafel_ein']) && empty($cfg['ansage_tafel_ein'])) { $r['tafel'] = 0; }
+    if (isset($cfg['ansage_tafel_namen']) && ansage_tafel_namen_ok($cfg['ansage_tafel_namen'])) { $r['tafel_namen'] = $cfg['ansage_tafel_namen']; }
     $p = ansage_regeln_wert($r, $g);
     return $p === null ? ansage_regeln_vorgaben() : $p;
 }
@@ -3739,7 +3747,7 @@ function awm_ansage_token_pflegen($cfg = null)
 function awm_ansage_vor_ort($cfg = null)
 {
     if ($cfg === null) { $cfg = awm_config(); }
-    return ansage_token_fuer_lauf(awm_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), awm_ansage_k());
+    return ansage_tafel_einreihen(ansage_token_fuer_lauf(awm_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), awm_ansage_k()), awm_ansage_regeln($cfg), awm_ansage_k(), true);     // Stamm 1.4.0: die Tafel, wenn sie bereitsteht
 }
 
 /** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
@@ -3762,6 +3770,32 @@ function awm_ansage_lage_html($cfg = null)
     foreach (ansage_regel_lage(awm_tts($cfg), awm_ansage_regeln($cfg), $k, true) as $z) {
         $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
     }
+    return implode("\n", $o) . "\n";
+}
+
+/**
+ * Die Tafel im Formular der Linie: Haken und Tafelnamen, dieselben Felder wie ansage_regeln_html() im Stamm. Dessen uebrige Regeln bleiben hier draussen,
+ * die Linie hat ihre eigene Ruhezeit. Nach einer Beanstandung steht hier der gespeicherte Stand wie im Stamm.
+ */
+function awm_ansage_tafel_html(array $cfg, $mark = null)
+{
+    $k = awm_ansage_k();
+    $e = ansage_e_fn($k);
+    $r = awm_ansage_regeln($cfg);
+    $mk = is_callable($mark) ? $mark : function ($n) { return ''; };
+    $o = array();
+    $o[] = '<div class="sm-feld" id="ansage_tafel_regel">';
+    $o[] = '    <input data-role="none" type="hidden" name="ansage_tafel_da" value="1">';
+    $o[] = '    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;"><input data-role="none" type="checkbox" name="ansage_tafel_ein" value="1"'
+         . (!empty($r['tafel']) ? ' checked' : '') . call_user_func($mk, 'ansage_tafel_ein') . '> ' . $e(ansage_t('L_R_TAFEL', $k)) . '</label>';
+    $o[] = '    <div class="sm-hilfe">' . $e(ansage_t('R_TAFEL_HINWEIS', $k)) . '</div>';
+    $o[] = '</div>';
+    $o[] = '<div class="sm-feld">';
+    $o[] = '    <label for="ansage_tafel_namen">' . $e(ansage_t('L_R_TAFEL_NAMEN', $k)) . '</label>';
+    $o[] = '    <input data-role="none" type="text" maxlength="200" id="ansage_tafel_namen" name="ansage_tafel_namen" value="' . $e((string) $r['tafel_namen']) . '"'
+         . call_user_func($mk, 'ansage_tafel_namen') . '>';
+    $o[] = '    <div class="sm-hilfe">' . $e(ansage_t('R_TAFEL_NAMEN_HINWEIS', $k)) . '</div>';
+    $o[] = '</div>';
     return implode("\n", $o) . "\n";
 }
 
@@ -6716,6 +6750,7 @@ function awm_eingabe_felder($formular)
             'tts_ziel_art' => array('text', 7), 'tts_ziel_wo' => array('text', 7), 'tts_ziel_laut' => array('text', 7),
             'tts_ziel_sprache' => array('text', 7), 'tts_ziel_ein' => array('haken', 7), 'tts_ziel_loeschen' => array('haken', 7),
             'anwesenheit_ein' => $h,
+            'ansage_tafel_namen' => $t,
             'ansage_vorlage' => $t, 'ansage_vorlage2' => $t),
         'mqtt' => array('mqtt_enabled' => $h, 'mqtt_topic' => $t,
                         'haus_abfuhr_ein' => $h),                 // Gruppe 18 (1.4.26): Anbieter haus/abfuhr
@@ -7007,7 +7042,7 @@ function awm_spaet_schluessel()
     /* Gruppe 18 (1.4.26; N2, Pflicht): ohne die drei neuen Namen liesse sich keine 1.4.25-Sicherung mehr
      * zurueckspielen. Was eine Sicherung davon NICHT traegt, behaelt beim Zurueckspielen den aktuellen Wert (N3,
      * index.php) - eine 1.4.25-Sicherung schaltete sonst endpunkt_ein einer Bestandsanlage still auf 0. */
-    return array('befehle_mqtt_ein', 'endpunkt_ein', 'haus_abfuhr_ein', 'anwesenheit_ein');
+    return array('befehle_mqtt_ein', 'endpunkt_ein', 'haus_abfuhr_ein', 'anwesenheit_ein', 'ansage_tafel_ein', 'ansage_tafel_namen');
 }
 
 /**

@@ -838,6 +838,14 @@ if ($aw_post && isset($_POST['save'])) {
         array('modi' => awm_ansage_modi(), 'namen' => awm_ansage_namen(), 'ziele' => awm_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), awm_ansage_k(), $aw_thinw);
     foreach ($aw_tmangel as $aw_tm) { $aw_fehler[] = $aw_tm['text']; }
     foreach ($aw_tbean as $aw_tb) { $aw_bean[] = awm_ziele_x2_name($aw_tb); }     // 1.4.27: name[N] der Tabelle -> name.N
+    /* Die Tafel: Der Stamm liest Haken und Namen. Fehlt das Merkmal ansage_tafel_da, bleibt der alte Wert; die uebrigen Regeln gelten hier nicht. */
+    $aw_tm2 = array();
+    $aw_tb2 = array();
+    list($aw_tr) = ansage_regeln_formular($_POST, awm_ansage_regeln($aw_new), array(), $aw_tm2, $aw_tb2, awm_ansage_k());
+    foreach ($aw_tm2 as $aw_tm) { $aw_fehler[] = $aw_tm['text']; }
+    foreach ($aw_tb2 as $aw_tb) { $aw_bean[] = $aw_tb; }
+    $aw_new['ansage_tafel_ein'] = (int) $aw_tr['tafel'];
+    $aw_new['ansage_tafel_namen'] = (string) $aw_tr['tafel_namen'];
     /* Ein Feld, das keine Zeichenkette ist (name[]), ist eine Beanstandung; Rand-Leerraum
      * faellt still weg (fuer die Ansagetexte unten). */
     $aw_al_roh = function ($feld) {
@@ -1433,7 +1441,8 @@ echo ansage_formular_html($aw_tts, array(
     'modi' => awm_ansage_modi(), 'namen' => awm_ansage_namen(),
     /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
     'ziele' => awm_mit_zielen(),
-    'ziele_post' => aw_ein_aktiv('save') ? awm_ziele_x2_post($GLOBALS['aw_ein']['werte']) : null), awm_ansage_k()); ?>
+    'ziele_post' => aw_ein_aktiv('save') ? awm_ziele_x2_post($GLOBALS['aw_ein']['werte']) : null), awm_ansage_k());
+echo awm_ansage_tafel_html($aw_cfg, function ($n) { return aw_em('save', $n); }); ?>
 <div class="sm-hilfe"><?= aw_e(awm_t('TTS.H_TESTANSAGE')) ?></div>
 
 <div class="sm-row">
