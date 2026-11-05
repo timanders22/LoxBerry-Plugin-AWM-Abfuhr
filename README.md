@@ -23,6 +23,15 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.31
+
+- **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Jahreswechsel:** Die Erneuerung des Kalender-Links löscht die restlichen Termine des laufenden Jahres nicht mehr; der neue Kalender wird erst nach dem letzten offenen Termin übernommen, das Plugin meldet das einmal.
+- **Abgesagte Termine:** Eine einzeln abgesagte Abholung (`STATUS:CANCELLED` mit `RECURRENCE-ID`) wird nicht mehr angesagt.
+- **Serien mit Anzahl:** `COUNT` zählt jetzt auch bei Regeln mit `BYDAY` oder `BYMONTH` nur die echten Termine; solche Serien liefen vorher endlos weiter.
+- **Formular:** Ein beanstandeter Tafelname bleibt zur Korrektur im Feld stehen.
+
 ## Neu in 1.4.30
 
 - Vor einem Download wird jeder offene Ausgabepuffer geleert: PHP-Warnungen oder Reste landen nicht mehr in der heruntergeladenen Datei.

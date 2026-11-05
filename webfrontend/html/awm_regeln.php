@@ -938,14 +938,17 @@ function awm_serie_ende($s)
      * unbekanntes nicht.
      */
     $interval = max(1, (int) (isset($s['interval']) ? $s['interval'] : 1));
-    $schritte = $count * $interval + 24;
-    if ($schritte > 20000) { $schritte = 20000; }
+    /* 1.4.31 (AW-3): die Grenze zaehlt Zeitraeume, BYDAY/BYMONTH verbrauchen aber Zeitraeume ohne
+     * Treffer. Mit "$count * $interval + 24" endete FREQ=DAILY;BYDAY=MO;COUNT=10 als "Ende unbekannt"
+     * und lief endlos. Jetzt 100 Jahre ab Beginn, hoechstens 20000 Zeitraeume. */
+    $schritte = 20000;
+    $grenze_n = awm_tagnummer(sprintf('%04d0101', min(9998, (int) substr($start, 0, 4) + 100)));
 
     list($pv, $pb) = awm_periode($s, $freq, $na);
     $gefunden = $start;
     $treffer = 0;
     for ($i = 0; $i < $schritte; $i++) {
-        if (awm_datum_aus_tagnummer($pv) > $until) { break; }
+        if (awm_datum_aus_tagnummer($pv) > $until || $pv > $grenze_n) { break; }
         foreach (awm_kandidaten($s, $freq, $pv, $pb) as $n) {
             if ($n < $na) { continue; }
             $ymd = awm_datum_aus_tagnummer($n);
@@ -1361,6 +1364,9 @@ function awm_selbstpruefung_regeln()
     $p(!$fehlt, awm_t('SELBST.R80')
                 . ($fehlt ? awm_t('SELBST.R80_FEHLT') . implode(', ', $fehlt) : ''));
     $p(count($arten) === 8, awm_t('SELBST.R81'));
+    /* 1.4.31 (AW-3): COUNT zaehlt Treffer, nicht Zeitraeume. */
+    $s = array('start' => '20260105', 'exdates' => array()) + awm_rrule_lesen('FREQ=DAILY;BYDAY=MO;COUNT=10');
+    $p(awm_serie_ende($s) === '20260309', awm_t('SELBST.R82'));
 
     return $e;
 }

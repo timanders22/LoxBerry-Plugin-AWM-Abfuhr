@@ -1658,7 +1658,18 @@ function awm_series($cal = 1) {
         $ev = preg_replace('/BEGIN:VALARM.*?END:VALARM/s', '', $ev);
 
         // Abgesagte Termine sind keine Termine.
+        /* 1.4.31 (AW-2): eine abgesagte INSTANZ nimmt ihren Tag aus der Serie. Bis 1.4.30 stand das
+         * continue vor der Auswertung von RECURRENCE-ID, und die Serie traf den abgesagten Tag weiter
+         * (Ansage und Push fuer eine Abholung, die nicht kommt). */
         if (preg_match('/^STATUS:CANCELLED/mi', $ev)) {
+            if (preg_match('/^RECURRENCE-ID([^:\r\n]*):([^\r\n]+)/mi', $ev, $mrec)) {
+                $ersetzt = awm_ics_datum($mrec[2], awm_ics_tzid($mrec[1]));
+                $uid_ab = awm_ics_text($ev, 'UID');
+                if ($ersetzt !== '' && $uid_ab !== '') {
+                    if (!isset($ausnahmen[$uid_ab])) { $ausnahmen[$uid_ab] = array(); }
+                    $ausnahmen[$uid_ab][] = $ersetzt;
+                }
+            }
             continue;
         }
         if (!preg_match('/^DTSTART([^:\r\n]*):([^\r\n]+)/mi', $ev, $md)) {
@@ -3775,24 +3786,26 @@ function awm_ansage_lage_html($cfg = null)
 
 /**
  * Die Tafel im Formular der Linie: Haken und Tafelnamen, dieselben Felder wie ansage_regeln_html() im Stamm. Dessen uebrige Regeln bleiben hier draussen,
- * die Linie hat ihre eigene Ruhezeit. Nach einer Beanstandung steht hier der gespeicherte Stand wie im Stamm.
+ * die Linie hat ihre eigene Ruhezeit. Nach einer Beanstandung traegt es das Eingetippte wie der Stamm seit 1.4.1 ($wert, $haken: Rueckrufe der Einmalmeldung).
  */
-function awm_ansage_tafel_html(array $cfg, $mark = null)
+function awm_ansage_tafel_html(array $cfg, $mark = null, $wert = null, $haken = null)
 {
     $k = awm_ansage_k();
     $e = ansage_e_fn($k);
     $r = awm_ansage_regeln($cfg);
     $mk = is_callable($mark) ? $mark : function ($n) { return ''; };
+    $wt = is_callable($wert) ? $wert : function ($n, $g) { return $g; };
+    $hk = is_callable($haken) ? $haken : function ($n, $g) { return (bool) $g; };
     $o = array();
     $o[] = '<div class="sm-feld" id="ansage_tafel_regel">';
     $o[] = '    <input data-role="none" type="hidden" name="ansage_tafel_da" value="1">';
     $o[] = '    <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;"><input data-role="none" type="checkbox" name="ansage_tafel_ein" value="1"'
-         . (!empty($r['tafel']) ? ' checked' : '') . call_user_func($mk, 'ansage_tafel_ein') . '> ' . $e(ansage_t('L_R_TAFEL', $k)) . '</label>';
+         . (call_user_func($hk, 'ansage_tafel_ein', !empty($r['tafel'])) ? ' checked' : '') . call_user_func($mk, 'ansage_tafel_ein') . '> ' . $e(ansage_t('L_R_TAFEL', $k)) . '</label>';
     $o[] = '    <div class="sm-hilfe">' . $e(ansage_t('R_TAFEL_HINWEIS', $k)) . '</div>';
     $o[] = '</div>';
     $o[] = '<div class="sm-feld">';
     $o[] = '    <label for="ansage_tafel_namen">' . $e(ansage_t('L_R_TAFEL_NAMEN', $k)) . '</label>';
-    $o[] = '    <input data-role="none" type="text" maxlength="200" id="ansage_tafel_namen" name="ansage_tafel_namen" value="' . $e((string) $r['tafel_namen']) . '"'
+    $o[] = '    <input data-role="none" type="text" maxlength="200" id="ansage_tafel_namen" name="ansage_tafel_namen" value="' . $e((string) call_user_func($wt, 'ansage_tafel_namen', $r['tafel_namen'])) . '"'
          . call_user_func($mk, 'ansage_tafel_namen') . '>';
     $o[] = '    <div class="sm-hilfe">' . $e(ansage_t('R_TAFEL_NAMEN_HINWEIS', $k)) . '</div>';
     $o[] = '</div>';
@@ -4277,7 +4290,76 @@ function awm_renew_scrape_awm($url, $cal = 1) {
  * Formular, und der Tagesmerker verhinderte dann bis zum naechsten Tag
  * einen zweiten Versuch.
  */
-function awm_renew($cal = 1) {
+/**
+ * 1.4.31 (AW-1): Der frueheste Termin eines noch nicht uebernommenen Kalenders. Abgesagte zaehlen nicht.
+ * Rueckgabe Ymd oder ''.
+ */
+function awm_ics_erster_termin($ics)
+{
+    $erster = '';
+    foreach (explode('BEGIN:VEVENT', (string) $ics) as $i => $ev) {
+        if ($i === 0) {
+            continue;
+        }
+        $e = strpos($ev, 'END:VEVENT');
+        if ($e !== false) {
+            $ev = substr($ev, 0, $e);
+        }
+        if (preg_match('/^STATUS:CANCELLED/mi', $ev)
+            || !preg_match('/^DTSTART([^:\r\n]*):([^\r\n]+)/mi', $ev, $md)) {
+            continue;
+        }
+        $d = awm_ics_datum($md[2], awm_ics_tzid($md[1]));
+        if ($d !== '' && ($erster === '' || $d < $erster)) {
+            $erster = $d;
+        }
+    }
+    return $erster;
+}
+
+/**
+ * 1.4.31 (AW-1): Darf der neue Kalender die Datei schon ersetzen?
+ *
+ * Die Erneuerung laeuft 30 Tage vor dem letzten Termin an. Der Folgejahr-Kalender beginnt aber
+ * meist erst im Januar - bis 1.4.30 ueberschrieb er die Datei sofort, und der Dezember war fort:
+ * keine Ansage, Tage -1, und die Meldung sagte "wieder aktuell". Jetzt bleibt die alte Datei, bis
+ * ihr letzter offener Termin vorbei ist. Sofort getauscht wird, wenn sie nichts mehr offen hat, wenn
+ * der neue Kalender den naechsten offenen Termin mit abdeckt (Entsorger liefert das Altjahr mit),
+ * oder wenn die alte Datei endlos laeuft - dort gaebe es kein "danach".
+ *
+ * Rueckgabe: Ymd des letzten offenen Termins (warten) oder '' (tauschen). Ohne Netz, ohne Datei.
+ */
+function awm_renew_wartet_bis($serien, $ics, $heute)
+{
+    foreach ($serien as $s) {
+        if (awm_serie_ende($s) === '99991231') {
+            return '';
+        }
+    }
+    $naechster = '';
+    $letzter = '';
+    $n0 = awm_tagnummer($heute);
+    for ($i = 0; $n0 >= 0 && $i <= 400; $i++) {
+        $ymd = awm_datum_aus_tagnummer($n0 + $i);
+        foreach ($serien as $s) {
+            if (awm_pickup($s, $ymd)) {
+                if ($naechster === '') { $naechster = $ymd; }
+                $letzter = $ymd;
+                break;
+            }
+        }
+    }
+    if ($naechster === '') {
+        return '';
+    }
+    $erster = awm_ics_erster_termin($ics);
+    if ($erster !== '' && $erster <= $naechster) {
+        return '';
+    }
+    return $letzter;
+}
+
+function awm_renew($cal = 1, &$wartet = null) {
     $p = awm_paths();
     $c = awm_cal($cal);
     if ($c === null) {
@@ -4318,6 +4400,25 @@ function awm_renew($cal = 1) {
                     . 'fehlgeschlagen. Bitte einen frischen iCal-Link beim Entsorger holen '
                     . 'und in der Plugin-Oberflaeche eintragen.'),
                     $c['name']), 'renew' . $cal);
+        return false;
+    }
+
+    /* 1.4.31 (AW-1): Termine des laufenden Jahres bleiben, siehe awm_renew_wartet_bis(). Nichts
+     * wird geschrieben; der taegliche Versuch aus awm_renew_check() holt die Uebernahme nach. */
+    $bis = awm_renew_wartet_bis(awm_series($cal), $ics, date('Ymd'));
+    if ($bis !== '') {
+        $wartet = $bis;
+        awm_log('Jahres-Erneuerung Kalender ' . $cal . ': neuer Kalender gefunden, die alte Datei hat noch '
+              . 'Termine bis ' . $bis . ' - wird erst danach uebernommen.');
+        $merker = awm_tmpdir() . '/renew_wartet_' . (int) $cal . '_' . $bis;
+        if (!is_file($merker)) {
+            @file_put_contents($merker, '1');
+            awm_notify(6, sprintf(awm_t_oder('MELDUNG.RENEW_WARTET',
+                        'Der Folgejahr-Kalender fuer "%s" ist gefunden. Die Termine des laufenden Jahres bleiben '
+                        . 'gueltig; umgestellt wird nach dem letzten Termin am %s.'),
+                        $c['name'], substr($bis, 6, 2) . '.' . substr($bis, 4, 2) . '.' . substr($bis, 0, 4)),
+                        'renewwarte' . $cal);
+        }
         return false;
     }
 
@@ -4576,6 +4677,16 @@ function awm_selbstpruefung_erneuerung()
        awm_t('SELBST.E20'));
     $p(awm_renew_veraltet('https://x.de/ical?jahr=' . ($j - 1)),
        awm_t('SELBST.E21'));
+
+    /* --- 5. 1.4.31 (AW-1): Resttermine bleiben bis zum letzten --- */
+    $t_heute = '20261205';
+    $t_alt = array(array('start' => '20261207', 'exdates' => array())
+             + awm_rrule_lesen('FREQ=WEEKLY;UNTIL=20261221'));
+    $t_neu = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20270104\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    $t_mit = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261207\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    $p(awm_renew_wartet_bis($t_alt, $t_neu, $t_heute) === '20261221', awm_t('SELBST.E22'));
+    $p(awm_renew_wartet_bis($t_alt, $t_mit, $t_heute) === ''
+       && awm_renew_wartet_bis($t_alt, $t_neu, '20261222') === '', awm_t('SELBST.E23'));
 
     return $e;
 }
@@ -6288,7 +6399,13 @@ function awm_aktion($aktion, $cal = 1, $quelle = 'http')
         if (@file_put_contents($merk, (string) time()) === false) {
             return awm_aktion_ergebnis(false, 'SCHREIBEN', 500, "RENEW;OK=0;ERR=SCHREIBEN\n");
         }
-        $ok = awm_renew($cal);
+        $wartet = '';
+        $ok = awm_renew($cal, $wartet);
+        /* 1.4.31 (AW-1): "fehlgeschlagen" waere hier falsch - der Kalender ist da, er wartet nur. */
+        if (!$ok && $wartet !== '') {
+            return awm_aktion_ergebnis(false, 'WARTET', 200, 'RENEW;OK=0;ERR=WARTET;BIS=' . $wartet . "\n"
+                . 'Neuer Kalender gefunden; Termine bleiben, Uebernahme nach dem letzten Termin ' . $wartet . ".\n");
+        }
         return awm_aktion_ergebnis($ok, $ok ? '' : 'ERNEUERUNG_GESCHEITERT', 200, 'RENEW;OK=' . ($ok ? 1 : 0) . "\n"
             . ($ok ? 'Neuer Link gespeichert.' : 'Erneuerung fehlgeschlagen - Details im Protokoll.') . "\n");
     }
@@ -6751,7 +6868,7 @@ function awm_eingabe_felder($formular)
             'tts_ziel_art' => array('text', 7), 'tts_ziel_wo' => array('text', 7), 'tts_ziel_laut' => array('text', 7),
             'tts_ziel_sprache' => array('text', 7), 'tts_ziel_ein' => array('haken', 7), 'tts_ziel_loeschen' => array('haken', 7),
             'anwesenheit_ein' => $h,
-            'ansage_tafel_namen' => $t,
+            'ansage_tafel_ein' => $h, 'ansage_tafel_namen' => $t,     // 1.4.31: auch der Haken reist mit (Stamm 1.4.1)
             'ansage_vorlage' => $t, 'ansage_vorlage2' => $t),
         'mqtt' => array('mqtt_enabled' => $h, 'mqtt_topic' => $t,
                         'haus_abfuhr_ein' => $h),                 // Gruppe 18 (1.4.26): Anbieter haus/abfuhr
