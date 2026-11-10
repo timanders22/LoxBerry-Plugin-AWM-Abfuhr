@@ -23,6 +23,13 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.33
+
+- **AWB Birkenfeld ohne iCal-Datei:** Der Abfallwirtschaftsbetrieb Landkreis Birkenfeld bietet keinen Kalender zum Abonnieren an (Issue #2). Statt einer Adresse trägt man jetzt `awb-bir:Straße|Ortsgemeinde` in das Feld „iCal-Adresse“ ein, zum Beispiel `awb-bir:Falkenweg|Hahnweiler`. Das Plugin liest bei jedem Abruf die Abfuhrkalender-Seite des AWB (`https://www.awb-bir.de/Service/(0)Abfuhrkalender/`), sucht dort die Straße und baut daraus einen Kalender mit ganztägigen Terminen; danach geht er durch dieselbe Prüfung wie jeder abgerufene Kalender. Eine Jahres-Erneuerung ist dafür nicht nötig, die Seite trägt die Termine der kommenden Jahre selbst.
+- Die Ortsgemeinde ist nur nötig, wenn es die Straße in mehreren Gemeinden gibt. Fehlt sie dann, nennt die Meldung die Gemeinden; steht die Straße nicht im Kalender, nennt sie bis zu fünf ähnliche Namen; hat sich die Seite des AWB geändert, sagt sie das. In allen Fällen bleibt der zuletzt gespeicherte Kalender stehen.
+- Die Auswertung folgt dem Home-Assistant-Modul `awb_bir_de.py` aus [waste_collection_schedule](https://github.com/mampfes/hacs_waste_collection_schedule) (MIT-Lizenz).
+- Wer keine solche Angabe einträgt, merkt keinen Unterschied.
+
 ## Neu in 1.4.32
 
 - Gemeinsames Sprachmodul 1.4.2: Wird eine Ansage bewusst nicht gesprochen (gerade eben schon gesagt, gesperrt oder Ruhezeit), steht das im Protokoll jetzt so – und nicht mehr als Fehler.

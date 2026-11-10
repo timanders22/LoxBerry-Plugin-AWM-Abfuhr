@@ -454,7 +454,7 @@ function awm_wert_pruefen($schluessel, $wert)
                     }
                 }
                 $u = trim((string) (isset($c['url']) ? $c['url'] : ''));
-                if ($u !== '' && !preg_match('#^https?://#i', $u)) {
+                if ($u !== '' && !awm_kalenderadresse_ok($u)) {
                     return awm_t_oder('PRUEF.G_URL', 'Kalenderadresse ist keine http(s)-Adresse');
                 }
                 if (isset($c['zonen']) && !awm_ist_zonen($c['zonen'])) {
@@ -1210,6 +1210,340 @@ function awm_http_abruf($url, $ctx)
     return array($t, $code);
 }
 
+/* ==================================================================
+ * AWB Birkenfeld (1.4.33, Issue 2)
+ *
+ * Der Abfallwirtschaftsbetrieb Landkreis Birkenfeld bietet keine
+ * iCal-Datei an. Seine Abfuhrkalender-Seite traegt alle Daten als vier
+ * JavaScript-Tabellen (tblStrassen, tblStrassenGruppen, tblTermine,
+ * tblMuellarten). Statt einer Adresse steht im Kalenderfeld dann
+ *
+ *     awb-bir:<Strasse>|<Ortsgemeinde>
+ *
+ * die Ortsgemeinde nur, wenn es die Strasse in mehreren Gemeinden gibt.
+ * awm_fetch() holt die Seite ueber denselben HTTP-Weg, baut daraus einen
+ * ICS-Text und schickt ihn durch dieselbe Pruefung wie einen abgerufenen
+ * Kalender. Auswertung nach dem Home-Assistant-Modul awb_bir_de.py
+ * (waste_collection_schedule, MIT-Lizenz).
+ *
+ * Gemessen am 10.11.2026: die Seite ist gueltiges UTF-8 (meta charset
+ * UTF-8), und die Umlaute in den Tabellen stehen als JSON-Escapes; nach
+ * json_decode() ist alles UTF-8, eine Umwandlung ist nicht noetig.
+ * Was nicht ins Muster passt, wird gemeldet, nicht zurechtgebogen.
+ * ================================================================== */
+
+function awm_awb_bir_seite()
+{
+    return 'https://www.awb-bir.de/Service/(0)Abfuhrkalender/';
+}
+
+/**
+ * Zerlegt eine Kalenderangabe der Form awb-bir:Strasse|Ortsgemeinde.
+ * Rueckgabe: null = keine solche Angabe (gewoehnliche Adresse),
+ * false = diese Form, aber unbrauchbar (Strasse leer, Gemeinde nach dem
+ * Strich leer, mehr als ein Strich, Steuerzeichen, kein UTF-8),
+ * sonst array('strasse' => ..., 'gemeinde' => ...).
+ */
+function awm_awb_bir_adresse($url)
+{
+    $u = trim((string) $url);
+    if (strtolower(substr($u, 0, 8)) !== 'awb-bir:') {
+        return null;
+    }
+    $teile = explode('|', (string) substr($u, 8));
+    if (count($teile) > 2) {
+        return false;
+    }
+    $strasse = trim($teile[0]);
+    $gemeinde = isset($teile[1]) ? trim($teile[1]) : '';
+    if ($strasse === '' || (count($teile) === 2 && $gemeinde === '')) {
+        return false;
+    }
+    if (!preg_match('//u', $strasse . $gemeinde) || preg_match('/[\x00-\x1F\x7F]/', $strasse . $gemeinde)) {
+        return false;
+    }
+    return array('strasse' => $strasse, 'gemeinde' => $gemeinde);
+}
+
+/** Taugt der Eintrag als Kalenderadresse? http(s)-Adresse oder awb-bir-Angabe. */
+function awm_kalenderadresse_ok($url)
+{
+    $u = trim((string) $url);
+    if (preg_match('~^https?://~i', $u)) {
+        return true;
+    }
+    return is_array(awm_awb_bir_adresse($u));
+}
+
+/**
+ * Kleinschreibung fuer den Vergleich, unabhaengig von Gebietsschema und
+ * mbstring: ASCII ueber eine feste Tabelle, dazu die deutschen Umlaute in
+ * UTF-8. strtolower() haengt unter PHP 7.4 vom Gebietsschema ab.
+ */
+function awm_awb_bir_klein($s)
+{
+    $s = strtr(trim((string) $s), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz');
+    return strtr($s, array("\xC3\x84" => "\xC3\xA4", "\xC3\x96" => "\xC3\xB6",
+                           "\xC3\x9C" => "\xC3\xBC", "\xE1\xBA\x9E" => "\xC3\x9F"));
+}
+
+/**
+ * Eine Tabelle var NAME = [...]; aus der Seite. Rueckgabe: Liste oder null.
+ * Ohne regulaeren Ausdruck ueber die ganze Seite (1,8 MB; ein nicht
+ * gieriges .*? stoesst dort an pcre.backtrack_limit).
+ */
+function awm_awb_bir_tabelle($html, $name)
+{
+    $kopf = 'var ' . $name . ' = ';
+    $a = strpos($html, $kopf);
+    if ($a === false) {
+        return null;
+    }
+    $a += strlen($kopf);
+    if (substr($html, $a, 1) !== '[') {
+        return null;
+    }
+    $e = strpos($html, '];', $a);
+    if ($e === false) {
+        return null;
+    }
+    $d = json_decode(substr($html, $a, $e - $a + 1), true);
+    if (!is_array($d) || ($d !== array() && array_keys($d) !== range(0, count($d) - 1))) {
+        return null;
+    }
+    return $d;
+}
+
+/** Text fuer eine ICS-Eigenschaft (RFC 5545, 3.3.11). */
+function awm_awb_bir_text($s)
+{
+    return str_replace(array('\\', ';', ',', "\r\n", "\n", "\r"),
+                       array('\\\\', '\\;', '\\,', '\\n', '\\n', '\\n'), (string) $s);
+}
+
+/**
+ * Aus der Seite einen ICS-Text fuer eine Strasse bauen.
+ * Rueckgabe: ICS-Text oder false; der Grund steht dann in $grund.
+ */
+function awm_awb_bir_ics($html, $strasse, $gemeinde, &$grund)
+{
+    $grund = '';
+    $html = (string) $html;
+    $tab = array();
+    $fehlt = array();
+    $pflicht = array(
+        'tblStrassen' => array('Strasse', 'StrassenId'),
+        'tblStrassenGruppen' => array('GruppenId', 'StrassenId'),
+        'tblTermine' => array('Datum', 'GruppenId', 'Muellart'),
+        'tblMuellarten' => array('MuellId', 'Art'),
+    );
+    foreach ($pflicht as $n => $felder) {
+        $tab[$n] = awm_awb_bir_tabelle($html, $n);
+        if ($tab[$n] === null) {
+            $fehlt[] = $n;
+            continue;
+        }
+        if ($tab[$n] === array()) {
+            $fehlt[] = $n . ' (leer)';
+            continue;
+        }
+        foreach ($tab[$n] as $z) {
+            if (!is_array($z)) {
+                $fehlt[] = $n . ' (Eintrag ohne Felder)';
+                break;
+            }
+            $ohne = array_diff($felder, array_keys($z));
+            if ($ohne) {
+                $fehlt[] = $n . '.' . implode('/', $ohne);
+                break;
+            }
+        }
+    }
+    if ($fehlt) {
+        $grund = sprintf(awm_t_oder('PRUEF.AWB_SEITE',
+            'Die Seite des AWB Birkenfeld hat sich geaendert - nicht lesbar: %s.'), implode(', ', $fehlt));
+        return false;
+    }
+
+    $s_klein = awm_awb_bir_klein($strasse);
+    $g_klein = awm_awb_bir_klein($gemeinde);
+    $treffer = array();
+    $ueberall = array();
+    foreach ($tab['tblStrassen'] as $z) {
+        if (awm_awb_bir_klein($z['Strasse']) !== $s_klein) {
+            continue;
+        }
+        $gem = trim((string) (isset($z['Gemeinde']) ? $z['Gemeinde'] : ''));
+        $ueberall[$gem] = true;
+        if ($g_klein !== '' && awm_awb_bir_klein($gem) !== $g_klein) {
+            continue;
+        }
+        $treffer[] = $z;
+    }
+    if (!$treffer && $ueberall) {
+        $liste = array_keys($ueberall);
+        sort($liste, SORT_STRING);
+        $grund = sprintf(awm_t_oder('PRUEF.AWB_GEMEINDE',
+            'Die Strasse "%s" gibt es im Abfuhrkalender des AWB Birkenfeld nicht in der Gemeinde "%s", wohl aber in: %s.'),
+            $strasse, $gemeinde, implode(', ', $liste));
+        return false;
+    }
+    if (!$treffer) {
+        $namen = array();
+        foreach ($tab['tblStrassen'] as $z) {
+            $n = trim((string) $z['Strasse']);
+            if ($n !== '') {
+                $namen[$n] = true;
+            }
+        }
+        $abstand = array();
+        foreach (array_keys($namen) as $n) {
+            $k = awm_awb_bir_klein($n);
+            $d = levenshtein(substr($k, 0, 255), substr($s_klein, 0, 255));
+            if ($s_klein !== '' && (strpos($k, $s_klein) !== false || strpos($s_klein, $k) !== false)) {
+                $d = min($d, 1);
+            }
+            $abstand[] = array($d, (string) $n);
+        }
+        usort($abstand, function ($x, $y) {
+            return $x[0] !== $y[0] ? ($x[0] < $y[0] ? -1 : 1) : strcmp($x[1], $y[1]);
+        });
+        $vorschlag = array();
+        foreach (array_slice($abstand, 0, 5) as $x) {
+            $vorschlag[] = $x[1];
+        }
+        $grund = sprintf(awm_t_oder('PRUEF.AWB_STRASSE',
+            'Die Strasse "%s" steht nicht im Abfuhrkalender des AWB Birkenfeld. Aehnliche Namen: %s.'),
+            $strasse, implode(', ', $vorschlag));
+        return false;
+    }
+    $gemeinden = array();
+    foreach ($treffer as $z) {
+        $gemeinden[trim((string) (isset($z['Gemeinde']) ? $z['Gemeinde'] : ''))] = true;
+    }
+    if (count($gemeinden) > 1) {
+        $liste = array_keys($gemeinden);
+        sort($liste, SORT_STRING);
+        $grund = sprintf(awm_t_oder('PRUEF.AWB_MEHRDEUTIG',
+            'Die Strasse "%s" gibt es in mehreren Gemeinden: %s. Bitte die Gemeinde mit angeben, etwa awb-bir:%s|%s.'),
+            $strasse, implode(', ', $liste), trim((string) $treffer[0]['Strasse']), $liste[0]);
+        return false;
+    }
+    $name_strasse = trim((string) $treffer[0]['Strasse']);
+    $name_gemeinde = (string) key($gemeinden);
+
+    $ids = array();
+    foreach ($treffer as $z) {
+        $ids[(string) $z['StrassenId']] = true;
+    }
+    $gruppen = array();
+    foreach ($tab['tblStrassenGruppen'] as $z) {
+        if (isset($ids[(string) $z['StrassenId']])) {
+            $gruppen[(string) $z['GruppenId']] = true;
+        }
+    }
+    $arten = array();
+    foreach ($tab['tblMuellarten'] as $z) {
+        $arten[(string) $z['MuellId']] = trim((string) $z['Art']);
+    }
+
+    $termine = array();
+    $kaputt = 0;
+    $unbekannt = array();
+    foreach ($tab['tblTermine'] as $t) {
+        if (!isset($gruppen[(string) $t['GruppenId']])) {
+            continue;
+        }
+        if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', (string) $t['Datum'], $m)
+            || !checkdate((int) $m[2], (int) $m[3], (int) $m[1])) {
+            $kaputt++;
+            continue;
+        }
+        $mid = (string) $t['Muellart'];
+        if (!isset($arten[$mid]) || $arten[$mid] === '') {
+            $unbekannt[$mid] = true;
+            continue;
+        }
+        $ymd = $m[1] . $m[2] . $m[3];
+        $schl = $ymd . '|' . $mid;
+        if (isset($termine[$schl])) {
+            continue;
+        }
+        $termine[$schl] = array(
+            'ymd' => $ymd,
+            'bis' => gmdate('Ymd', gmmktime(0, 0, 0, (int) $m[2], (int) $m[3] + 1, (int) $m[1])),
+            'art' => $arten[$mid],
+            'ort' => trim((string) (isset($t['Standort']) ? $t['Standort'] : '')),
+            'von_uhr' => trim((string) (isset($t['Uhrzeit']) ? $t['Uhrzeit'] : '')),
+            'bis_uhr' => trim((string) (isset($t['UhrzeitBis']) ? $t['UhrzeitBis'] : '')),
+        );
+    }
+    if ($kaputt > 0 || $unbekannt) {
+        $grund = sprintf(awm_t_oder('PRUEF.AWB_TERMINE',
+            'Die Seite des AWB Birkenfeld hat sich geaendert: %d Termine ohne gueltiges Datum, unbekannte Muellarten: %s.'),
+            $kaputt, $unbekannt ? implode(', ', array_keys($unbekannt)) : '-');
+        return false;
+    }
+    if (!$termine) {
+        $grund = sprintf(awm_t_oder('PRUEF.AWB_KEINE',
+            'Fuer "%s" liefert die Seite des AWB Birkenfeld keine Termine.'),
+            $name_strasse . ($name_gemeinde !== '' ? ', ' . $name_gemeinde : ''));
+        return false;
+    }
+    ksort($termine, SORT_STRING);
+
+    $jetzt = gmdate('Ymd\THis\Z');
+    $z = array(
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//LoxBerry Abfuhrkalender//AWB Birkenfeld//DE',
+        'CALSCALE:GREGORIAN',
+        'METHOD:PUBLISH',
+        'X-WR-CALNAME:' . awm_awb_bir_text('AWB Birkenfeld ' . $name_strasse
+            . ($name_gemeinde !== '' ? ' ' . $name_gemeinde : '')),
+    );
+    foreach ($termine as $t) {
+        $z[] = 'BEGIN:VEVENT';
+        $z[] = 'UID:' . substr(hash('sha256', $t['ymd'] . '|' . $t['art'] . '|' . $name_strasse . '|' . $name_gemeinde), 0, 24)
+             . '@awb-bir.awmabfuhr';
+        $z[] = 'DTSTAMP:' . $jetzt;
+        $z[] = 'DTSTART;VALUE=DATE:' . $t['ymd'];
+        $z[] = 'DTEND;VALUE=DATE:' . $t['bis'];
+        $z[] = 'SUMMARY:' . awm_awb_bir_text($t['art']);
+        if ($t['ort'] !== '') {
+            $z[] = 'LOCATION:' . awm_awb_bir_text($t['ort']);
+        }
+        if ($t['von_uhr'] !== '') {
+            $z[] = 'DESCRIPTION:' . awm_awb_bir_text($t['von_uhr']
+                . ($t['bis_uhr'] !== '' ? ' - ' . $t['bis_uhr'] : '') . ' Uhr');
+        }
+        $z[] = 'TRANSP:TRANSPARENT';
+        $z[] = 'END:VEVENT';
+    }
+    $z[] = 'END:VCALENDAR';
+    return implode("\r\n", $z) . "\r\n";
+}
+
+/**
+ * Abruf fuer eine awb-bir-Angabe: dieselbe Seite, derselbe HTTP-Weg
+ * (Zeitgrenze, Kopfzeilen, Weiterleitungen) wie jeder Kalender.
+ * Rueckgabe wie awm_http_get(): ICS-Text oder false, Grund in $grund.
+ */
+function awm_awb_bir_abruf($adresse, &$grund = '', &$status = 0)
+{
+    $html = awm_http_get(awm_awb_bir_seite(), 20, $grund, $status);
+    if ($html === false) {
+        return false;
+    }
+    $g = '';
+    $ics = awm_awb_bir_ics((string) $html, $adresse['strasse'], $adresse['gemeinde'], $g);
+    if ($ics === false) {
+        $grund = $g;
+        return false;
+    }
+    return $ics;
+}
+
 /* ---------------- ICS holen ---------------- */
 
 function awm_icsfile($cal = 1) {
@@ -1312,7 +1646,17 @@ function awm_fetch($force = false, $cal = 1) {
     }
     $grund = '';
     $status = 0;
-    $neu = awm_http_get($c['url'], 20, $grund, $status);
+    /* 1.4.33: eine Angabe awb-bir:Strasse|Ortsgemeinde liest die Seite des
+     * AWB Birkenfeld und baut den Kalender selbst; danach derselbe Weg. */
+    $awb = awm_awb_bir_adresse($c['url']);
+    if ($awb === false) {
+        $neu = false;
+        $grund = awm_t_oder('PRUEF.G_URL', 'Kalenderadresse ist keine http(s)-Adresse');
+    } elseif (is_array($awb)) {
+        $neu = awm_awb_bir_abruf($awb, $grund, $status);
+    } else {
+        $neu = awm_http_get($c['url'], 20, $grund, $status);
+    }
     /* Dieselbe Pruefung wie beim Datei-Upload. Bis 1.4.6 genuegte hier ein
      * BEGIN:VCALENDAR; ein syntaktisch gueltiger, aber LEERER Kalender - so
      * antwortet ein abgelaufener Link - ueberschrieb damit den guten
@@ -4370,6 +4714,14 @@ function awm_renew($cal = 1, &$wartet = null) {
      * meldete danach "FEHLGESCHLAGEN" in den Meldebereich. */
     if ($c['url'] === '') {
         awm_log('Jahres-Erneuerung Kalender ' . $cal . ': hochgeladener Kalender ohne Adresse - nichts zu erneuern');
+        return false;
+    }
+    /* 1.4.33: eine awb-bir-Angabe hat keinen Link mit Jahr; jeder Abruf
+     * liest die Seite des AWB Birkenfeld neu. Ohne diese Weiche lief sie in
+     * die allgemeine Rueckfallebene und meldete "bitte frischen iCal-Link holen". */
+    if (awm_awb_bir_adresse($c['url']) !== null) {
+        awm_log('Jahres-Erneuerung Kalender ' . $cal . ': AWB Birkenfeld - kein Link zu erneuern, '
+              . 'jeder Abruf liest die Seite des AWB neu');
         return false;
     }
     $s = awm_renew_strategie($c['url']);

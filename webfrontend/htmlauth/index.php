@@ -698,7 +698,7 @@ if ($aw_post && isset($_POST['save'])) {
         $aw_u = trim((string) (isset($aw_urls[$aw_i]) ? $aw_urls[$aw_i] : ''));
         $aw_alt = isset($aw_alt_cals[$aw_i]) ? (array) $aw_alt_cals[$aw_i] : array();
         $aw_hoch = !empty($aw_alt['hochgeladen']);
-        if ($aw_u !== '' && !preg_match('#^https?://#i', $aw_u)) {
+        if ($aw_u !== '' && !awm_kalenderadresse_ok($aw_u)) {      // 1.4.33: auch awb-bir:
             $aw_fehler[] = sprintf(awm_t('MELD.URL_UNGUELTIG'), $aw_i + 1);
             $aw_bean[] = 'cal_url.' . $aw_i;
             $aw_u = isset($aw_alt['url']) ? (string) $aw_alt['url'] : '';   // alte behalten
@@ -1332,6 +1332,7 @@ if ($aw_frame) {
 </table>
 </div>
 <div class="sm-hilfe"><?= awm_t('EINST.H_QUELLEN_HILFE') ?></div>
+<div class="sm-hilfe"><?= awm_t('EINST.AWB_BIR_HILFE') ?></div>
 
 <div class="sm-step"><b><?= aw_t('EINST.AWM_TITEL') ?></b><br>
 <?= aw_t('EINST.AWM_1') ?> <a href="https://www.awm-muenchen.de/abfall-entsorgen/muelltonnen/abfuhrkalender" target="_blank"><?= aw_t('EINST.AWM_LINK') ?></a><br>
