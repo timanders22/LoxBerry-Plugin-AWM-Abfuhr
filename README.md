@@ -23,6 +23,11 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.35
+
+- **Konfiguration wird nach einem Update vervollständigt:** Fehlen in `awm.json` Einstellungen, die eine neuere Fassung mitbringt, trägt der Minutentakt (`cron.php`) sie jetzt einmal in die Datei ein, vor dem ersten Lesen der Konfiguration; das Protokoll `awm.log` nennt die ergänzten Namen, keine Werte. Bisher ergänzte das Plugin fehlende Einstellungen nur beim Lesen; in die Datei kamen sie erst beim nächsten Speichern in der Oberfläche. Für `endpunkt_ein` und `mqtt_enabled` gilt dabei wie bisher die Regel für bestehende Konfigurationen (1 bzw. 0), nicht die Vorgabe einer Neuinstallation: der Endpunkt für Loxone bleibt offen, MQTT bleibt aus, wo es aus war.
+- Geschrieben werden die Werte aus der Datei, wie sie dort stehen, plus die fehlenden Vorgaben, unter derselben Sperre wie das Speichern in der Oberfläche; Schlüssel, die das Plugin nicht kennt, bleiben stehen, die Zweitschrift zieht mit. Leere Objekte (`{}`) bleiben dabei leere Objekte, oben wie verschachtelt, und werden nicht zu einer leeren Liste (`[]`). Nicht angefasst werden eine fehlende oder unlesbare `awm.json`, eine ohne gültiges Aktionstoken (auch eine leere neben einer heilen Zweitschrift – das Heilen bleibt Sache der Oberfläche) und jede Datei, solange eine Aktualisierung läuft. Gemessen im Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, dazu ein echter Lauf von `cron.php` ohne Kalender; am Gerät ist es noch nicht gemessen.
+
 ## Neu in 1.4.34
 
 - Gemeinsames Sprachmodul 1.4.3: Als LoxBerry-Wurzel aus `LBHOMEDIR` gilt für die Sprachausgabe nur noch ein Ordner mit `config/plugins`, `data/plugins` und `config/system/general.json`; bis 1.4.2 genügte `config/system`, und ein Prüfstand oder Rest mit diesem Ordner wurde wie ein LoxBerry gelesen. Auf einem LoxBerry ändert sich nichts.

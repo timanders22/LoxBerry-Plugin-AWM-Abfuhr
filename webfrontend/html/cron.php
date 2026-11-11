@@ -80,6 +80,10 @@ if ($awm_lock === false) {
     exit(0);
 }
 
+/* 1.4.35 (Regeln/05): fehlende Vorgaben einmal in awm.json schreiben - vor dem ersten Lesen der
+ * Konfiguration, nach der Marke oben (waehrend einer Aktualisierung kommt der Lauf nicht hierher). */
+awm_config_vervollstaendigen();
+
 /* Der Herzschlag wird EINMAL je Lauf hochgezaehlt, vor der Schleife -
  * nicht je Kalender. */
 $awm_zaehler = awm_zaehler(true);

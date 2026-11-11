@@ -7027,6 +7027,124 @@ function awm_config_speichern($cfg)
 
 
 /**
+ * Laeuft gerade eine Aktualisierung? Dieselbe Regel wie im Minutenlauf
+ * (cron.php, M10): die Marke data/plugins/<ordner>.upgrade_laeuft gilt eine
+ * Stunde ab ihrem Zeitstempel. Ohne Wurzel: nein (dann schreibt ohnehin
+ * niemand in die Anlage).
+ */
+function awm_upgrade_laeuft()
+{
+    $p = awm_paths();
+    if ($p['lbhome'] === '') {
+        return false;
+    }
+    $m = $p['lbhome'] . '/data/plugins/' . $p['plugin'] . '.upgrade_laeuft';
+    clearstatcache(true, $m);
+    return is_file($m) && time() - (int) @filemtime($m) < 3600;
+}
+
+/** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (11.11.2026),
+ *  damit json_encode() sie als {} und nicht als [] schreibt - oben wie verschachtelt, auch unter fremden
+ *  Schluesseln. Nur fuer awm_config_vervollstaendigen(); das Speichern im Formular bleibt, wie es ist.
+ *  Bauart Bewaesserung 0.9.56 (bw_json_leere_objekte()). */
+function awm_json_leere_objekte($a, $o)
+{
+    if (!is_array($a)) { return $a; }
+    if (is_object($o)) {
+        if (!get_object_vars($o) && $a === array()) { return new stdClass(); }
+        foreach ($a as $k => $v) {
+            $ks = (string) $k;
+            if (is_array($v) && property_exists($o, $ks)) { $a[$k] = awm_json_leere_objekte($v, $o->$ks); }
+        }
+    } elseif (is_array($o)) {
+        foreach ($a as $k => $v) {
+            if (is_array($v) && array_key_exists($k, $o)) { $a[$k] = awm_json_leere_objekte($v, $o[$k]); }
+        }
+    }
+    return $a;
+}
+
+/**
+ * Konfiguration vervollstaendigen (seit 1.4.35, Regeln/05 "Die Konfiguration
+ * wird vervollstaendigt, nicht nur ergaenzt"; Bauform Docker NG 1.3.7).
+ *
+ * Bis 1.4.34 ergaenzte awm_config() fehlende Schluessel bei jedem Lesen nur
+ * im Speicher; in awm.json kamen sie erst mit dem naechsten Speichern in der
+ * Oberflaeche. Aufgerufen vom Minutenlauf (cron.php) vor dem ersten Lesen
+ * der Konfiguration; weil nur bei FEHLENDEN Schluesseln geschrieben wird,
+ * bleibt es bei einem Schreibvorgang.
+ *
+ * - Nur mit Wurzel (nicht im Archivmodus), nicht waehrend einer
+ *   Aktualisierung, und nur wenn awm.json ein Objekt ist und ein gueltiges
+ *   Aktionstoken traegt (awm_token_gueltig()). Eine fehlende, leere, kaputte
+ *   oder nur aus der Zweitschrift lesbare Datei ist Sache der Selbstheilung
+ *   bzw. der Oberflaeche.
+ * - Gelesen und geschrieben wird unter der Sperre 'config' - sonst koennte
+ *   ein Speichern der Oberflaeche zwischen Lesen und Schreiben verloren gehen.
+ * - Geschrieben werden die WERTE AUS DER DATEI, nicht die von awm_config()
+ *   aufbereiteten (keine Migration, keine Teilvorgaben, kein Werk-Block der
+ *   Sprachausgabe); fremde Schluessel bleiben stehen. Nachgetragen werden nur
+ *   Schluessel aus awm_config_vorgaben() - die schreibt jedes Speichern.
+ * - Fehlende Schluessel bekommen den Wert, den awm_config() fuer eine
+ *   bestehende Datei liest: endpunkt_ein 1 und mqtt_enabled 0 (Lese-Regeln
+ *   fuer den Bestand), sonst die Vorgabe. Mit den Vorgaben einer
+ *   Neuinstallation schaltete das Nachtragen den HTTP-Endpunkt einer
+ *   Bestandsanlage still ab und MQTT still ein.
+ * - Geschrieben ueber awm_config_speichern() (unteilbar, 0600, Zweitschrift).
+ * - Genau eine Protokollzeile mit den Namen, nie mit Werten.
+ *
+ * Rueckgabe: array('stand' => ruht|gesperrt|ohne_datei|ohne_merkwort
+ *                  |vollstaendig|ergaenzt|fehler, 'schluessel' => array(...))
+ */
+function awm_config_vervollstaendigen()
+{
+    $p = awm_paths();
+    if ($p['lbhome'] === '' || awm_upgrade_laeuft()) {
+        return array('stand' => 'ruht', 'schluessel' => array());
+    }
+    clearstatcache(true, $p['config']);
+    if (!is_file($p['config'])) {
+        return array('stand' => 'ohne_datei', 'schluessel' => array());
+    }
+    $sperre = awm_sperre('config', 10);
+    if ($sperre === false) {
+        return array('stand' => 'gesperrt', 'schluessel' => array());
+    }
+    $roh = @file_get_contents($p['config']);
+    $datei = is_string($roh) ? json_decode($roh, true) : null;
+    if (!is_array($datei) || !awm_token_gueltig(isset($datei['aktionstoken']) ? $datei['aktionstoken'] : null)) {
+        awm_sperre_frei($sperre);
+        return array('stand' => 'ohne_merkwort', 'schluessel' => array());
+    }
+    // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim
+    // Schreiben als [] zurueck - der Rohwert wird erhalten, bevor ergaenzt wird (11.11.2026).
+    $datei = awm_json_leere_objekte($datei, json_decode($roh));
+    $lese_regel = array('endpunkt_ein' => 1, 'mqtt_enabled' => 0);
+    $fehlend = array();
+    foreach (awm_config_vorgaben() as $k => $w) {
+        if (!array_key_exists($k, $datei)) {
+            $datei[$k] = array_key_exists($k, $lese_regel) ? $lese_regel[$k] : $w;
+            $fehlend[] = $k;
+        }
+    }
+    if (!$fehlend) {
+        awm_sperre_frei($sperre);
+        return array('stand' => 'vollstaendig', 'schluessel' => array());
+    }
+    $ok = awm_config_speichern($datei);
+    awm_sperre_frei($sperre);
+    if (!$ok) {
+        awm_log('Konfiguration NICHT vervollstaendigt: awm.json liess sich nicht schreiben ('
+              . count($fehlend) . ' fehlende Schluessel).');
+        return array('stand' => 'fehler', 'schluessel' => $fehlend);
+    }
+    awm_log('Konfiguration vervollstaendigt - ' . count($fehlend)
+          . ' fehlende Vorgaben in awm.json geschrieben: ' . implode(', ', $fehlend));
+    return array('stand' => 'ergaenzt', 'schluessel' => $fehlend);
+}
+
+
+/**
  * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
  *
  * Der wichtigste Punkt: eine halb gueltige Datei ueberschreibt GAR NICHTS.
