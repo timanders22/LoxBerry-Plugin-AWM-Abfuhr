@@ -23,6 +23,10 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.34
+
+- Gemeinsames Sprachmodul 1.4.3: Als LoxBerry-Wurzel aus `LBHOMEDIR` gilt für die Sprachausgabe nur noch ein Ordner mit `config/plugins`, `data/plugins` und `config/system/general.json`; bis 1.4.2 genügte `config/system`, und ein Prüfstand oder Rest mit diesem Ordner wurde wie ein LoxBerry gelesen. Auf einem LoxBerry ändert sich nichts.
+
 ## Neu in 1.4.33
 
 - **AWB Birkenfeld ohne iCal-Datei:** Der Abfallwirtschaftsbetrieb Landkreis Birkenfeld bietet keinen Kalender zum Abonnieren an (Issue #2). Statt einer Adresse trägt man jetzt `awb-bir:Straße|Ortsgemeinde` in das Feld „iCal-Adresse“ ein, zum Beispiel `awb-bir:Falkenweg|Hahnweiler`. Das Plugin liest bei jedem Abruf die Abfuhrkalender-Seite des AWB (`https://www.awb-bir.de/Service/(0)Abfuhrkalender/`), sucht dort die Straße und baut daraus einen Kalender mit ganztägigen Terminen; danach geht er durch dieselbe Prüfung wie jeder abgerufene Kalender. Eine Jahres-Erneuerung ist dafür nicht nötig, die Seite trägt die Termine der kommenden Jahre selbst.
