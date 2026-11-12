@@ -84,6 +84,11 @@ require_once __DIR__ . '/awm_regeln.php';
  * eine eigene Abschrift, gilt die hier zuerst geladene; die Datei schuetzt sich selbst
  * gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* 1.4.37: Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des
+ * Hausherrn 12.11.2026) - Kennzeichen, Unbekanntes verwerfen und melden, leere Werte, halb gueltige
+ * Dateien und die Meldungen kommen von dort; die Beschreibung dieser Linie steht in
+ * awm_sicherung_beschreibung(). Liegt neben dieser Datei und schuetzt sich gegen doppeltes Laden. */
+require_once __DIR__ . '/sicherung.php';
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -7205,86 +7210,108 @@ function awm_config_vervollstaendigen()
  * X-3: $namen (optional, per Verweis) bekommt je beanstandetem Wert den
  * Schluessel und den Grund - fuer die Warnung am Knopf "Einstellungen
  * sichern". Die Gruende nennen nur Schluessel, nie Werte.
+ *
+ * 1.4.37: Lesen und Pruefen macht das gemeinsame Sicherungsmodul
+ * (sicherung_lesen(), Beschreibung awm_sicherung_beschreibung()). Bis 1.4.36
+ * stand hier eine eigene Schleife: ein unbekannter Schluessel OBEN wies die
+ * ganze Datei ab, einer IN EINEM BLOCK (notify, tts, ruhe, ansage, ein
+ * Kalender) ging still mit in awm.json und die Zweitschrift (gemessen
+ * 12.11.2026, Werkzeuge/sicherung_pruefstand.py, Klasse Z). Seither: verworfen
+ * und mit Namen gemeldet, oben wie im Block; eine Datei ohne das Kennzeichen
+ * _plugin, die keine aeltere Sicherung dieser Linie ist, wird abgewiesen.
+ * Weiter wie bisher: Altschluessel (ical_url, fetch_hours) still uebergangen,
+ * Spaetschluessel duerfen fehlen und behalten den geltenden Wert, jeder Wert
+ * geht durch awm_wert_pruefen(), eine halb gueltige Datei aendert nichts.
+ * Rueckgabe wie bisher array(Konfiguration|null, Beanstandungen[], Anzahl);
+ * das volle Ergebnis des Moduls steht in $r.
  */
-function awm_sicherung_lesen($roh, &$namen = null)
+function awm_sicherung_lesen($roh, &$namen = null, &$r = null, $jetzt = null)
 {
     if (!is_array($namen)) { $namen = array(); }
+    $gruende = array();
+    $b = awm_sicherung_beschreibung($gruende);
+    $r = sicherung_lesen($b, (string) $roh, is_array($jetzt) ? $jetzt : awm_config());
+    foreach ($gruende as $k => $g) { $namen[$k] = $g; }     // X-3: Schluessel => Grund, nie Werte
     $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(awm_t('EINST.SICH_KEIN_JSON')), 0);
+    foreach ($r['beanstandet'] as $x) {
+        $mangel[] = $x['text'] !== '' ? $x['text'] : sprintf(awm_t('EINST.SICH_WERT'), $x['name'], '-');
     }
-    $neu = awm_config_vorgaben();
-    $bekannt = array_keys($neu);
-    $anzahl = 0;
-    $bekannte = 0;          // U11: bekannte Schluessel, gleich ob ihr Wert taugt
-    $uebergangen = 0;
-    foreach ($daten as $k => $w) {
-        $k = (string) $k;
-        // Der lesbare Kopf ("_stand", "_hinweis") ist keine Einstellung und
-        // wird UEBERGANGEN, nicht beanstandet (Regeln/05).
-        if ($k !== '' && $k[0] === '_') { $uebergangen++; continue; }
-        /* Altschluessel aus fruheren Fassungen ebenso: awm_config() wandelt
-         * ical_url beim Lesen nach cals um, entfernt den Altschluessel aber
-         * nicht - er steht deshalb in der Sicherung JEDER fortgeschriebenen
-         * Anlage. Bis 1.4.6 lehnte das Zurueckspielen die eigene Sicherung
-         * dieser Anlagen deswegen VOLLSTAENDIG ab (gemessen 05.09.2026) -
-         * ausgerechnet beim Umzug auf einen zweiten LoxBerry, dem Zweck des
-         * Knopfes. */
-        if (in_array($k, awm_altschluessel(), true)) { $uebergangen++; continue; }
-        if ($k === 'ansage_token_herkunft') { continue; }     // 1.4.28: nie aus einer Datei
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(awm_t('EINST.SICH_FREMD'), (string) $k);
-            continue;
-        }
-        $bekannte++;
-        $grund = awm_wert_pruefen($k, $w);
-        if ($grund !== '') {
-            $mangel[] = sprintf(awm_t('EINST.SICH_WERT'), $k, $grund);
-            $namen[$k] = $grund;                    // X-3
-            continue;
-        }
-        $neu[$k] = $w;
-        $anzahl++;
-    }
-    /* U11: "keine bekannte Einstellung" nur, wenn wirklich kein Schluessel
-     * bekannt war. Bis 1.4.14 stand der Satz auch bei {"fetch_days": 500} -
-     * der Schluessel war bekannt, nur der Wert unzulaessig, und der Grund
-     * stand schon daneben. */
-    if ($bekannte === 0) {
-        $mangel[] = awm_t('EINST.SICH_LEER');
-    }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
-    $fehlend = array();
-    foreach (array_keys(awm_config_vorgaben()) as $fk) {
-        /* Gruppe 1 / MQTT (1.4.25): ein Schluessel, den eine Sicherung einer frueheren Fassung nicht kennen
-         * kann, ist kein fehlender - sonst wiese das Zurueckspielen JEDE Sicherung vor 1.4.25 ab. Er behaelt die
-         * Vorgabe (befehle_mqtt_ein: aus), das ist die sichere Seite. */
-        if (!array_key_exists($fk, $daten) && !in_array($fk, awm_spaet_schluessel(), true)) {
-            $fehlend[] = $fk;
-        }
-    }
-    if ($fehlend) {
-        $mangel[] = sprintf(awm_t('EINST.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
-    }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    return array($r['ok'] ? $r['neu'] : null, $mangel, (int) $r['anzahl']);
+}
+
+/**
+ * 1.4.37: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul -
+ * welche Schluessel und Bloecke sie kennt, was fehlen darf, wie ein Wert
+ * geprueft wird und woran eine aeltere Sicherung ohne Kennzeichen zu erkennen
+ * ist. $gruende sammelt je beanstandetem Schluessel den Grund (X-3).
+ *
+ * Die Unterschluessel der Bloecke sind die, die diese Fassung liest und
+ * schreibt (gemessen 12.11.2026 an awm_config_teilvorgaben(), awm_wert_pruefen(),
+ * den Kalender-Handlern in htmlauth/index.php und awm_regeln.php): notify
+ * audio/push/time/audio2/time2, ruhe urlaub/nachts/von/bis/bis_datum, ansage
+ * vorlage/vorlage2, tts awm_ansage_schluessel() und die Sprechtoken (ein
+ * gesichertes Sprechtoken weist awm_wert_pruefen() ab), je Kalender
+ * name/url/hochgeladen/ansage/zonen/regeln/regeln_modus/termine, je Regel
+ * muster/tonne/art, je eigenem Termin datum/tonne/text.
+ */
+function awm_sicherung_beschreibung(&$gruende = null)
+{
+    if (!is_array($gruende)) { $gruende = array(); }
+    $p = awm_paths();
+    $tts = array_merge(awm_ansage_schluessel(), ansage_geheim());
+    $tts_knoten = in_array('ziele', $tts, true)
+        ? array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))) : array();
+    $schluessel = array(
+        'cals'   => sicherung_liste(array('name', 'url', 'hochgeladen', 'ansage', 'zonen', 'regeln', 'regeln_modus', 'termine'), '',
+                        array('regeln' => sicherung_liste(array('muster', 'tonne', 'art')),
+                              'termine' => sicherung_liste(array('datum', 'tonne', 'text')))),
+        'notify' => sicherung_block(array('audio', 'push', 'time', 'audio2', 'time2')),
+        'tts'    => sicherung_block($tts, $tts_knoten) + array('sichern' => 'ansage_sicherung_bereinigen'),
+        'ruhe'   => sicherung_block(array('urlaub', 'nachts', 'von', 'bis', 'bis_datum')),
+        'ansage' => sicherung_block(array('vorlage', 'vorlage2')),
+    );
+    /* Gruppe 1/18 (1.4.25/1.4.26): ein Spaetschluessel, den eine Sicherung einer frueheren Fassung nicht kennt,
+     * behaelt beim Zurueckspielen den geltenden Wert - bis 1.4.36 in awm_sicherung_spaet_behalten(). */
+    foreach (awm_spaet_schluessel() as $s) { $schluessel[$s] = array('fehlt' => 'behalten'); }
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-AWM-Abfuhr',
+        'hinweis' => 'Sicherung des LoxBerry-Plugins Abfuhrkalender (AWM & iCal). '
+                   . 'Enthaelt das Aktionstoken und die Kalenderadresse - '
+                   . 'wie ein Passwort behandeln. Die Sprechtoken fuer Alexa-NG '
+                   . 'und Chromecast 4 Lox NG sind absichtlich NICHT enthalten.',
+        /* Die Fassung im Kopf kommt aus der Plugin-Datenbank bzw. plugin.cfg - keine fuenfte Stelle neben den
+         * vier, die Werkzeuge/fassung_setzen.py pflegt. */
+        'home' => isset($p['lbhome']) ? (string) $p['lbhome'] : '', 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => awm_config_vorgaben(),
+        'schluessel' => $schluessel,
+        'alt' => awm_altschluessel(),
+        'nie_aus_datei' => array('ansage_token_herkunft'),     // 1.4.28: nie aus einer Datei
+        'pruefen' => function ($k, $w) use (&$gruende) {
+            $g = awm_wert_pruefen($k, $w);
+            if ($g === '') { return ''; }
+            $gruende[$k] = $g;
+            return sprintf(awm_t('EINST.SICH_WERT'), $k, $g);
+        },
+        'uebersetzer' => 'awm_sicherung_alt_erkennen',
+        't' => 'awm_t',
+        'e' => 'aw_e',
+    );
+}
+
+/**
+ * 1.4.37: Eine Sicherung dieser Linie aus der Zeit vor dem Kennzeichen _plugin
+ * (1.4.7 bis 1.4.36) traegt den lesbaren Kopf _hinweis, den nur der Sichern-Knopf
+ * dieser Linie schreibt: "Sicherung des LoxBerry-Plugins Abfuhrkalender AWM."
+ * (1.4.7 bis mindestens 1.4.15) bzw. "... Abfuhrkalender (AWM & iCal)." (danach),
+ * gemessen 12.11.2026 an den Ordnern 1.4.5 bis 1.4.36. Daran wird sie erkannt.
+ * Eine Datei ohne diesen Kopf (bis 1.4.6 hatte die Sicherung keinen) ist nicht
+ * sicher von einer fremden zu unterscheiden und wird abgewiesen.
+ */
+function awm_sicherung_alt_erkennen($d)
+{
+    return (is_array($d) && isset($d['_hinweis']) && is_string($d['_hinweis'])
+            && strpos($d['_hinweis'], 'Sicherung des LoxBerry-Plugins Abfuhrkalender') === 0) ? $d : null;
 }
 
 /* ==================================================================
@@ -7715,22 +7742,12 @@ function awm_altschluessel()
 /** Die Sicherungsdatei bauen - an EINER Stelle (Inhalt: awm_sicherung_daten()). */
 function awm_sicherung_bauen()
 {
-    // Die VOLLE Konfiguration, gefiltert auf die bekannten Schluessel.
-    $daten = awm_sicherung_daten(awm_config());
-    /* X-3: wuerde das Zurueckspielen diese Datei abweisen, sagt es der Kopf -
-     * nur mit den NAMEN der Einstellungen, nie mit ihren Werten. Geliefert
-     * wird trotzdem vollstaendig (Entscheidung 13, Bauform EVCC 0.9.36):
-     * wer umzieht, braucht die Datei, und die Werte lassen sich darin
-     * berichtigen. "_warnung" beginnt mit "_" und wird beim Zurueckspielen
-     * uebergangen wie "_hinweis" und "_stand". */
-    $alt = awm_sicherung_altwerte($daten);
-    if ($alt) {
-        $kopf = array('_hinweis' => $daten['_hinweis'], '_stand' => $daten['_stand'],
-                      '_warnung' => sprintf(awm_t('EINST.SICH_WARNKOPF'), implode(', ', array_keys($alt))));
-        $daten = $kopf + $daten;
-    }
-    return json_encode($daten,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    /* 1.4.37: Kopf und Inhalt baut das gemeinsame Sicherungsmodul (sicherung_bauen()) aus
+     * awm_sicherung_daten(). X-3 wie bisher: wuerde das Zurueckspielen diese Datei abweisen,
+     * sagt es der Kopf "_warnung" - nur mit den NAMEN der Einstellungen, nie mit ihren
+     * Werten; geliefert wird trotzdem vollstaendig (Entscheidung 13, Bauform EVCC 0.9.36). */
+    $js = sicherung_json(awm_sicherung_daten(awm_config()));
+    return $js === '' ? false : $js;
 }
 
 /**
@@ -7740,29 +7757,17 @@ function awm_sicherung_bauen()
  * draussen) plus ein lesbarer Kopf. Der Aktionstoken IST dabei: ohne ihn
  * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin kaeme
  * trotzdem nicht an die Anlage. Der Formulartoken gehoert NICHT hinein - er
- * ist ein Sitzungsmerkmal.
+ * ist ein Sitzungsmerkmal. Die Sprechtoken (Ansage-2/3) und der Vermerk
+ * ansage_token_herkunft gehen nie mit (Beschreibung: 'sichern', 'nie_aus_datei').
+ *
+ * 1.4.37: Der Kopf traegt jetzt das Kennzeichen _plugin und die Fassung
+ * _fassung (Entscheidung des Hausherrn 12.11.2026). Die Fassung kommt aus der
+ * Plugin-Datenbank des LoxBerry bzw. der plugin.cfg - keine fuenfte Stelle im
+ * Code neben den vier, die Werkzeuge/fassung_setzen.py pflegt.
  */
 function awm_sicherung_daten(array $voll)
 {
-    $cfg = array_intersect_key($voll, awm_config_vorgaben());
-    // Ansage-2: das Alexa-NG-Sprechtoken wird wie ein Kennwort behandelt und
-    // geht NICHT mit; das Zurueckspielen behaelt das geltende.
-    if (isset($cfg['tts']) && is_array($cfg['tts'])) {
-        $cfg['tts'] = ansage_sicherung_bereinigen($cfg['tts']);    // Ansage-2/3, Nr. 36 b: eine Quelle
-        unset($cfg['ansage_token_herkunft']);     // 1.4.28
-    }
-    $kopf = array(
-        '_hinweis' => 'Sicherung des LoxBerry-Plugins Abfuhrkalender (AWM & iCal). '
-                    . 'Enthaelt das Aktionstoken und die Kalenderadresse - '
-                    . 'wie ein Passwort behandeln. Die Sprechtoken fuer Alexa-NG '
-                    . 'und Chromecast 4 Lox NG sind absichtlich NICHT enthalten.',
-        '_stand' => date('Y-m-d H:i:s'),
-    );
-    /* Keine Fassungsnummer im Kopf: sie stuende dann in einer PHP-Datei,
-     * und Werkzeuge/fassung_setzen.py pflegt nur die drei .cfg und die
-     * README. Eine vierte Stelle waere eine, die beim naechsten Release
-     * vergessen wird. */
-    return $kopf + $cfg;
+    return sicherung_bauen(awm_sicherung_beschreibung(), $voll);
 }
 
 /**

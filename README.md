@@ -23,6 +23,15 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.37
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe im Reiter *Einstellungen* arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:
+  - Die Sicherungsdatei trägt im Kopf das Kennzeichen des Plugins (`_plugin`) und die Fassung (`_fassung`). Eine Datei eines anderen Plugins und eine Datei ohne Kennzeichen werden als Ganzes abgewiesen; es ändert sich dann nichts. Sicherungen dieses Plugins von 1.4.7 bis 1.4.36 tragen noch kein Kennzeichen; sie werden an ihrem Kopf `_hinweis` erkannt und weiter angenommen, und die Meldung sagt das. Sicherungen von 1.4.4 bis 1.4.6 hatten gar keinen Kopf; sie lassen sich von einer fremden Datei nicht sicher unterscheiden und werden seit dieser Fassung abgewiesen (bis 1.4.36 wurden sie angenommen).
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei und in den Blöcken (Benachrichtigung, Sprachausgabe, Ruhezeiten, Ansagetexte, je Kalender). Die übrigen Einstellungen werden zurückgespielt. Bis 1.4.36 wies ein unbekannter Name oben die ganze Datei ab, während einer in einem Block still in die Konfiguration und die Zweitschrift ging.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Bisher galt das nur für das Aktionstoken.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, und alle Beanstandungen werden genannt. Aktionstoken und Kalenderadressen gehören in die Datei, die Sprechtoken nicht. Nach dem Zurückspielen zieht die Zweitschrift mit, die Kalender werden neu ausgewertet, und die Meldung sagt es.
+- Gemessen mit einem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt, mit den Sicherungen aller 33 Vorfassungen von 1.4.4 bis 1.4.36; am Gerät nicht gemessen.
+
 ## Neu in 1.4.36
 
 - **Warnung „Kalender endet“ passt zur Quelle:** Liefert ein Kalender in weniger als 30 Tagen keine Termine mehr, versprach die Warnung bisher immer die automatische Jahres-Erneuerung und riet, sonst einen frischen iCal-Link zu holen. Das stimmt nur für einen Kalender mit Link. Bei einer Angabe `awb-bir:` gibt es keinen Link zu erneuern – das Plugin liest bei jedem Abruf die Seite des Entsorgers neu; die Warnung sagt jetzt, dass die Termine fürs Folgejahr dort erscheinen, sobald der Entsorger sie veröffentlicht. Bei einer hochgeladenen `.ics`-Datei sagt sie, dass die Datei fürs Folgejahr hochzuladen ist. Das gilt für den Kasten im Reiter *Einstellungen* und für die LoxBerry-Benachrichtigung. Für Kalender mit Link bleibt der Text, wie er war. Am Verhalten ändert sich nichts; die Selbstprüfung im Reiter *Test* hat dazu eine Zeile mehr. Gemessen im Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, am Gerät noch nicht.

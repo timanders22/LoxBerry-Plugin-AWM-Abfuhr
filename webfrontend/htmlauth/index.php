@@ -925,53 +925,47 @@ if ($aw_post && isset($_POST['awm_zurueck'])) {
         $aw_fehler[] = awm_t('EINST.SICH_ZU_GROSS');
     } else {
         $awm_roh = (string) @file_get_contents($_FILES['awm_sicherung']['tmp_name']);
-        list($awm_neu, $awm_mangel, $awm_n) = awm_sicherung_lesen($awm_roh);
-        if ($awm_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
-             * wird nichts. */
-            $aw_fehler[] = awm_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $awm_mangel);
-        } else {
-            /* U3 (Bauform Renault 2.1.13 U4): eine Sicherung ohne Token
-             * ("kein Token gesichert") behaelt das geltende Token, und die
-             * Seite sagt es. Bis 1.4.14 wurde es gespeichert, und beim
-             * naechsten Seitenaufruf entstand STILL ein neues - jede in Loxone
-             * eingetragene Adresse war danach ungueltig. */
-            $awm_vorher = awm_config(true);
-            $awm_tok_behalten = false;
-            if ($awm_neu['aktionstoken'] === '' && awm_token_gueltig(isset($awm_vorher['aktionstoken']) ? $awm_vorher['aktionstoken'] : null)) {
-                $awm_neu['aktionstoken'] = $awm_vorher['aktionstoken'];
-                $awm_tok_behalten = true;
+        /* 1.4.37: das gemeinsame Sicherungsmodul (sicherung_zurueckspielen()) liest, prueft, verwirft
+         * Unbekanntes mit Namen, laesst leere Werte den bisherigen stehen und aendert bei einer
+         * Beanstandung GAR NICHTS (alle Beanstandungen, nicht nur die erste). Was diese Linie danach
+         * tut, steht in den Rueckrufen - dieselben Schritte wie bis 1.4.36. */
+        $awm_b = awm_sicherung_beschreibung();
+        $awm_ziele_spaet = array();
+        $awm_b['jetzt'] = function () { return awm_config(true); };
+        /* Nr. 36 b: die Sprechtoken stehen nicht in der Sicherung (eine Datei MIT einem weist
+         * awm_wert_pruefen() ab) - die geltenden BLEIBEN. Welle Mehrfach-Ziele: fehlt tts.ziele in der
+         * Datei (aeltere Fassung), gelten die jetzigen weiteren Ziele (awm_sicherung_spaet_behalten()). */
+        $awm_b['vorbereiten'] = function ($neu, $vorher) use ($awm_roh, &$awm_ziele_spaet) {
+            list($neu, $liste) = awm_sicherung_spaet_behalten($neu, $awm_roh, $vorher);
+            $awm_ziele_spaet = array_values(array_diff($liste, awm_spaet_schluessel()));
+            if (!isset($neu['tts']) || !is_array($neu['tts'])) { $neu['tts'] = array(); }
+            $neu['tts'] = ansage_sicherung_tokens_behalten($neu['tts'], isset($vorher['tts']) ? $vorher['tts'] : array());
+            return $neu;
+        };
+        $awm_b['speichern'] = function ($neu) { return awm_config_speichern($neu); };
+        $awm_b['zweitschrift'] = function () { $p = awm_paths(); return array($p['config'], $p['backup']); };
+        /* Den Dienst nachziehen UND sagen, was mit ihm geschah (Regeln/05). Ohne das stimmt die Seite,
+         * aber der Miniserver rechnet bis zum naechsten Minutenlauf mit dem alten Stand. */
+        $awm_b['nachziehen'] = function ($neu, $vorher) use (&$aw_fehler) {
+            $h = array();
+            aw_mqtt_folgen($vorher, $neu, $h, $aw_fehler);     // M2-M4, M8
+            aw_haus_folgen($vorher, $neu, $h, $aw_fehler);     // Gruppe 18 (1.4.26)
+            $nach = 0;
+            foreach (array_keys(awm_cals()) as $kn) {
+                awm_state(true, $kn);
+                awm_mqtt_publish(null, $kn);
+                $nach++;
             }
-            /* Nr. 36 b: die Sprechtoken stehen nicht in der Sicherung (eine Datei MIT einem
-             * hat awm_wert_pruefen() schon abgewiesen) - die geltenden BLEIBEN. */
-            /* Gruppe 18 (1.4.26; N3, Pflicht): ein Spaetschluessel, den die Datei NICHT traegt (Sicherung einer
-             * frueheren Fassung), behaelt den AKTUELLEN Wert - awm_sicherung_lesen() beginnt bei den Vorgaben, und
-             * eine 1.4.25-Sicherung schaltete sonst endpunkt_ein einer Bestandsanlage still auf 0 (wie G17 N2). */
-            list($awm_neu, $awm_spaet) = awm_sicherung_spaet_behalten($awm_neu, $awm_roh, $awm_vorher);
-            if (!isset($awm_neu['tts']) || !is_array($awm_neu['tts'])) { $awm_neu['tts'] = array(); }
-            $awm_neu['tts'] = ansage_sicherung_tokens_behalten($awm_neu['tts'],
-                isset($awm_vorher['tts']) ? $awm_vorher['tts'] : array());
-            if (!awm_config_speichern($awm_neu)) {
-                $aw_fehler[] = awm_t('EINST.SICH_SCHREIBFEHLER');
-            } else {
-            $aw_hinweise[] = sprintf(awm_t('EINST.SICH_UEBERNOMMEN'), $awm_n);
-            if ($awm_tok_behalten) { $aw_hinweise[] = awm_t('EINST.SICH_TOKEN_BEHALTEN'); }
-            if ($awm_spaet) { $aw_hinweise[] = sprintf(awm_t('EINST.SICH_SPAET_BEHALTEN'), implode(', ', $awm_spaet)); }
-            aw_mqtt_folgen($awm_vorher, $awm_neu, $aw_hinweise, $aw_fehler);     // M2-M4, M8
-            aw_haus_folgen($awm_vorher, $awm_neu, $aw_hinweise, $aw_fehler);     // Gruppe 18 (1.4.26)
-            /* Den Dienst nachziehen UND sagen, was mit ihm geschah
-             * (Regeln/05). Ohne das stimmt die Seite, aber der Miniserver
-             * rechnet bis zum naechsten Minutenlauf mit dem alten Stand. */
-            awm_log('Einstellungen aus einer Sicherungsdatei zurueckgespielt ('
-                    . (int) $awm_n . ' Werte).');
-            $awm_nach = 0;
-            foreach (array_keys(awm_cals()) as $awm_kn) {
-                awm_state(true, $awm_kn);
-                awm_mqtt_publish(null, $awm_kn);
-                $awm_nach++;
-            }
-            $aw_hinweise[] = sprintf(awm_t('EINST.SICH_DIENST'), $awm_nach);
-            }
+            $h[] = sprintf(awm_t('EINST.SICH_DIENST'), $nach);
+            return $h;
+        };
+        $awm_b['log'] = function ($z) { awm_log($z); };
+        $awm_r = sicherung_zurueckspielen($awm_b, $awm_roh);
+        $awm_m = sicherung_meldungen($awm_b, $awm_r);
+        foreach ($awm_m['fehler'] as $awm_x) { $aw_fehler[] = $awm_x; }
+        foreach ($awm_m['hinweise'] as $awm_x) { $aw_hinweise[] = $awm_x; }
+        if ($awm_r['gespeichert'] && $awm_ziele_spaet) {
+            $aw_hinweise[] = sprintf(awm_t('EINST.SICH_SPAET_BEHALTEN'), aw_e(implode(', ', $awm_ziele_spaet)));
         }
     }
 }
