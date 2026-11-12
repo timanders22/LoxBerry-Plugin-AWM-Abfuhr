@@ -1276,6 +1276,28 @@ function awm_kalenderadresse_ok($url)
 }
 
 /**
+ * 1.4.36 (Nachtpruefung 12.11.2026, Punkt A10): welcher Satz gehoert zur Warnung "Kalender endet in weniger als
+ * 30 Tagen"? Dieselbe Weiche wie in awm_renew(): ohne Adresse (hochgeladene Datei) gibt es nichts zu erneuern,
+ * eine awb-bir-Angabe wird bei jedem Abruf neu gelesen und nie erneuert; nur ein Link wird erneuert. Bis 1.4.35
+ * versprach die Warnung in allen drei Faellen die automatische Jahres-Erneuerung und riet zu einem frischen
+ * iCal-Link. Der Schluessel KALENDER_ENDET behaelt seine Bedeutung (Link); die beiden anderen stehen daneben.
+ */
+function awm_kalender_endet_schluessel($c)
+{
+    if (!is_array($c)) {
+        return 'KALENDER_ENDET';
+    }
+    $url = isset($c['url']) ? trim((string) $c['url']) : '';
+    if ($url === '') {
+        return 'KALENDER_ENDET_DATEI';
+    }
+    if (awm_awb_bir_adresse($url) !== null) {
+        return 'KALENDER_ENDET_SEITE';
+    }
+    return 'KALENDER_ENDET';
+}
+
+/**
  * Kleinschreibung fuer den Vergleich, unabhaengig von Gebietsschema und
  * mbstring: ASCII ueber eine feste Tabelle, dazu die deutschen Umlaute in
  * UTF-8. strtolower() haengt unter PHP 7.4 vom Gebietsschema ab.
@@ -2407,10 +2429,25 @@ function awm_state($force = false, $cal = 1) {
     awm_log_if_changed('zustand_' . $cal, 'morgen ' . implode(' ', $kurz)
         . ' | Warnung=' . $st['warnung'] . ' | Abruf=' . $st['abruf_ok']);
     if ($st['warnung']) {
-        awm_notify(3, awm_t_oder('MELDUNG.KALENDER_ENDET',
+        // 1.4.36 (A10): der Satz nach der Art der Quelle (awm_kalender_endet_schluessel()).
+        $ke = awm_kalender_endet_schluessel(awm_cal($cal));
+        if ($ke === 'KALENDER_ENDET_SEITE') {
+            $ke_text = awm_t_oder('MELDUNG.KALENDER_ENDET_SEITE',
+                    'Der Abfuhrkalender liefert in weniger als 30 Tagen keine Termine mehr. Diese Quelle hat '
+                    . 'keinen Link, der erneuert wird: das Plugin liest bei jedem Abruf die Seite des Entsorgers '
+                    . 'neu. Die Termine fuers Folgejahr erscheinen, sobald der Entsorger sie dort veroeffentlicht.');
+        } elseif ($ke === 'KALENDER_ENDET_DATEI') {
+            $ke_text = awm_t_oder('MELDUNG.KALENDER_ENDET_DATEI',
+                    'Der Abfuhrkalender liefert in weniger als 30 Tagen keine Termine mehr. Eine hochgeladene '
+                    . 'Datei wird nicht erneuert: bitte die Datei fuers Folgejahr beim Entsorger holen und im '
+                    . 'Reiter Einstellungen hochladen.');
+        } else {
+            $ke_text = awm_t_oder('MELDUNG.KALENDER_ENDET',
                     'Der Abfuhrkalender liefert in weniger als 30 Tagen keine Termine mehr. '
                     . 'Die Jahres-Erneuerung laeuft automatisch; klappt sie nicht, muss ein '
-                    . 'frischer iCal-Link beim Entsorger geholt werden.'), 'jahr' . $cal);
+                    . 'frischer iCal-Link beim Entsorger geholt werden.');
+        }
+        awm_notify(3, $ke_text, 'jahr' . $cal);
     }
     return $st;
 }
@@ -5390,6 +5427,14 @@ function awm_selbstpruefung_robust()
        awm_t('SELBST.B56'));
     $p(awm_loxzeit('20260821') > awm_loxzeit('20260820'),
        awm_t('SELBST.B57'));
+
+    /* --- 9. Warnung "Kalender endet" nach der Art der Quelle (1.4.36, A10) --- */
+    $p(awm_kalender_endet_schluessel(array('url' => 'awb-bir:Probe|1')) === 'KALENDER_ENDET_SEITE'
+       && awm_kalender_endet_schluessel(array('url' => '', 'hochgeladen' => 1)) === 'KALENDER_ENDET_DATEI'
+       && awm_kalender_endet_schluessel(array('url' => 'https://example.invalid/k_2026.ics')) === 'KALENDER_ENDET'
+       && awm_t('MELD.KALENDER_ENDET_SEITE') !== 'MELD.KALENDER_ENDET_SEITE'
+       && awm_t('MELDUNG.KALENDER_ENDET_DATEI') !== 'MELDUNG.KALENDER_ENDET_DATEI',
+       awm_t('SELBST.B62'));
 
     return $e;
 }

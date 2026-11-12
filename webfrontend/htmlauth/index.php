@@ -1266,8 +1266,11 @@ if ($aw_frame) {
 <?php if (!empty($aw_st['hinweis'])) { ?>
 <div class="sm-warnung"><b><?= aw_t('MELD.HINWEIS_ENTSORGER') ?></b> <?= aw_e($aw_st['hinweis']) ?></div>
 <?php } ?>
-<?php if (!empty($aw_st['warnung'])) { ?>
-<div class="sm-warnung"><b><?= aw_t('MELD.ACHTUNG') ?></b> <?= aw_t('MELD.KALENDER_ENDET') ?></div>
+<?php if (!empty($aw_st['warnung'])) {
+    /* 1.4.36 (A10): der Satz nach der Art der Quelle - dieselbe Weiche wie awm_renew(). */
+    $aw_ke = awm_kalender_endet_schluessel(isset($aw_cals[$aw_n]) ? $aw_cals[$aw_n] : null); ?>
+<div class="sm-warnung"><b><?= aw_t('MELD.ACHTUNG') ?></b> <?= $aw_ke === 'KALENDER_ENDET_SEITE' ? aw_t('MELD.KALENDER_ENDET_SEITE')
+    : ($aw_ke === 'KALENDER_ENDET_DATEI' ? aw_t('MELD.KALENDER_ENDET_DATEI') : aw_t('MELD.KALENDER_ENDET')) ?></div>
 <?php } ?>
 <?php if (!empty($aw_st['luecken'])) { ?>
 <div class="sm-warnung"><b><?= aw_t('MELD.LUECKEN') ?></b> <?= aw_t('MELD.LUECKEN_TEXT') ?>

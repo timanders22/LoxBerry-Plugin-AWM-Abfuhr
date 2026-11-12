@@ -23,6 +23,10 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.36
+
+- **Warnung „Kalender endet“ passt zur Quelle:** Liefert ein Kalender in weniger als 30 Tagen keine Termine mehr, versprach die Warnung bisher immer die automatische Jahres-Erneuerung und riet, sonst einen frischen iCal-Link zu holen. Das stimmt nur für einen Kalender mit Link. Bei einer Angabe `awb-bir:` gibt es keinen Link zu erneuern – das Plugin liest bei jedem Abruf die Seite des Entsorgers neu; die Warnung sagt jetzt, dass die Termine fürs Folgejahr dort erscheinen, sobald der Entsorger sie veröffentlicht. Bei einer hochgeladenen `.ics`-Datei sagt sie, dass die Datei fürs Folgejahr hochzuladen ist. Das gilt für den Kasten im Reiter *Einstellungen* und für die LoxBerry-Benachrichtigung. Für Kalender mit Link bleibt der Text, wie er war. Am Verhalten ändert sich nichts; die Selbstprüfung im Reiter *Test* hat dazu eine Zeile mehr. Gemessen im Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, am Gerät noch nicht.
+
 ## Neu in 1.4.35
 
 - **Konfiguration wird nach einem Update vervollständigt:** Fehlen in `awm.json` Einstellungen, die eine neuere Fassung mitbringt, trägt der Minutentakt (`cron.php`) sie jetzt einmal in die Datei ein, vor dem ersten Lesen der Konfiguration; das Protokoll `awm.log` nennt die ergänzten Namen, keine Werte. Bisher ergänzte das Plugin fehlende Einstellungen nur beim Lesen; in die Datei kamen sie erst beim nächsten Speichern in der Oberfläche. Für `endpunkt_ein` und `mqtt_enabled` gilt dabei wie bisher die Regel für bestehende Konfigurationen (1 bzw. 0), nicht die Vorgabe einer Neuinstallation: der Endpunkt für Loxone bleibt offen, MQTT bleibt aus, wo es aus war.
