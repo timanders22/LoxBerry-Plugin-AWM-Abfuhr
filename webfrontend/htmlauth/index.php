@@ -912,19 +912,16 @@ if ($aw_post && isset($_POST['awm_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
- * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
- * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
- * nicht erst gelesen. */
+ * 1.4.38: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(), Modul 1.1.0, Entscheidung des
+ * Hausherrn 12.11.2026) - in jeder Linie gleich: zuerst der Haken zurueck_ok (ohne ihn wird nichts gelesen und
+ * nichts geaendert), dann is_uploaded_file() (sonst liesse sich jede Datei des Servers unterschieben) und die
+ * Groessengrenze des Moduls; erst danach wird die Datei gelesen. */
 if ($aw_post && isset($_POST['awm_zurueck'])) {
-    if (!isset($_FILES['awm_sicherung']) || !is_array($_FILES['awm_sicherung'])
-        || !isset($_FILES['awm_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['awm_sicherung']['tmp_name'])) {
-        $aw_fehler[] = awm_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['awm_sicherung']['size'] > 262144) {
-        $aw_fehler[] = awm_t('EINST.SICH_ZU_GROSS');
+    list($awm_roh, $awm_ab) = sicherung_eingang(awm_sicherung_beschreibung(), $_POST, $_FILES, 'awm_sicherung');
+    if ($awm_ab !== null) {
+        $awm_m = sicherung_meldungen(awm_sicherung_beschreibung(), $awm_ab);
+        foreach ($awm_m['fehler'] as $awm_x) { $aw_fehler[] = $awm_x; }
     } else {
-        $awm_roh = (string) @file_get_contents($_FILES['awm_sicherung']['tmp_name']);
         /* 1.4.37: das gemeinsame Sicherungsmodul (sicherung_zurueckspielen()) liest, prueft, verwirft
          * Unbekanntes mit Namen, laesst leere Werte den bisherigen stehen und aendert bei einer
          * Beanstandung GAR NICHTS (alle Beanstandungen, nicht nur die erste). Was diese Linie danach
@@ -989,9 +986,9 @@ if ($aw_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel'
     if (isset($_POST['ansage_test_ziel']) && $aw_tnur === 0) {
         $aw_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($aw_tnur >= 1) {
-        $aw_tr = ansage_testansage($aw_tcfg['tts'], $aw_tk, $aw_tnur);
+        $aw_tr = ansage_testansage(awm_ansage_vor_ort($aw_tcfg), $aw_tk, $aw_tnur);
     } else {
-        $aw_tr = ansage_testansage($aw_tcfg['tts'], $aw_tk);
+        $aw_tr = ansage_testansage(awm_ansage_vor_ort($aw_tcfg), $aw_tk);
     }
     awm_log('Testansage' . ($aw_tnur >= 1 ? ' an Ziel ' . $aw_tnur : '') . ': ' . ansage_kurz($aw_tr));
     if ($aw_tr['stand'] === 1) {
@@ -1662,6 +1659,7 @@ if ($aw_altw) {
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="formtoken" value="<?= aw_e($aw_ftok) ?>">
     <input data-role="none" type="file" name="awm_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(awm_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="awm_zurueck" value="1"><?= awm_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>

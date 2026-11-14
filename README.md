@@ -23,6 +23,15 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.38
+
+- **Verhalten geändert – Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem gemeinsamen Sicherungsmodul 1.1.0 und sind in allen Plugins dieser Reihe gleich.
+- **Gemeinsames Sicherungsmodul 1.2.0:** Das Modul kann jetzt, was einzelne Plugins dieser Reihe bisher selbst darum herum gebaut haben (Entscheidung „Einheitlichkeit“). An diesem Plugin ändert sich dadurch nichts.
+- **Gemeinsames Sicherungsmodul 1.2.1:** Ein Vermerk, der nie aus einer Sicherungsdatei kommt (etwa, dass ein Sprechtoken aus einem Nachbar-Plugin übernommen wurde), behält beim Zurückspielen seinen geltenden Wert. Bis Modul 1.2.0 ging der Vermerk `ansage_token_herkunft` dabei verloren: danach hielt das Plugin übernommene Sprechtoken für von Hand eingetragen und zog sie nicht mehr nach, wenn sie sich bei Alexa-NG oder Chromecast4lox änderten (am LoxBerry gemessen am 12.11.2026).
+- **Gemeinsames Sicherungsmodul 1.2.2:** Fehlt eine Einstellung in der Sicherung und setzt das Plugin ihren Wert nach einer eigenen Übergangsregel (etwa aus einer verwandten Einstellung derselben Sicherung), bleibt dieser Wert beim Zurückspielen, und die Meldung nennt ihn als nach einer Übergangsregel abgeleitet – nicht als Werkseinstellung und nicht als bisherigen Wert. An diesem Plugin ändert sich dadurch nichts.
+- **Testansage mit übernommenem Sprechtoken:** Ist das Sprechtoken für Alexa-NG oder Chromecast 4 Lox NG hier leer, holt die echte Ansage es aus dem Nachbar-Plugin, die Testansage im Reiter *Test* tat das nicht. Echo- und Google-Lautsprecher blieben dort stumm mit „kein Token“, obwohl die Ansage sie erreicht hätte. Jetzt spricht die Testansage mit demselben Block wie die echte Ansage; gespeichert wird dabei nichts. Am LoxBerry gemessen am 13.11.2026 an AWM-Abfuhr 1.4.38: Mit geleerten Token meldete die Testansage bei Echo und Google „kein Token“, die echte Ansage gleich danach holte die Token und erreichte Google.
+- Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt; am Gerät nicht gemessen.
+
 ## Neu in 1.4.37
 
 - **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe im Reiter *Einstellungen* arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:
