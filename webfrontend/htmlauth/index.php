@@ -1103,7 +1103,8 @@ $aw_tok = aw_e($aw_cfg['aktionstoken']);
 
 if ($aw_frame) {
     /* Gruppe 18 (1.4.26; A9): die eigene Wiki-Seite (seit 01.10.2026) statt der Startseite. */
-    LBWeb::lbheader('Abfuhrkalender (AWM &amp; iCal)', 'https://wiki.loxberry.de/plugins/awmabfuhr/start', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Abfuhrkalender (AWM &amp; iCal)', __DIR__), 'https://wiki.loxberry.de/plugins/awmabfuhr/start', 'help.html');
 }
 
 ?>
