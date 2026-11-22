@@ -23,6 +23,10 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.43
+
+- Gemeinsames Sprachmodul auf 1.5.0 nachgezogen (Einheitlichkeit aller Linien, Entscheidung des Hausherrn 22.11.2026: Nachtruhe an Nicht-Schultagen). Die Linie rechnet mit ihrer eigenen Ruhezeit (Abschnitt „Ruhezeiten“, „Nachts nicht sprechen“); die Nachtruhe des Moduls gilt hier nicht. An ihrem Verhalten ändert sich deshalb nichts.
+
 ## Neu in 1.4.42
 
 - Die Kopfzeile zeigt jetzt die installierte Fassung, einheitlich in allen Plugins.
