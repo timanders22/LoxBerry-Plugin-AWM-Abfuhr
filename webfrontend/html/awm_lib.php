@@ -84,11 +84,13 @@ require_once __DIR__ . '/awm_regeln.php';
  * eine eigene Abschrift, gilt die hier zuerst geladene; die Datei schuetzt sich selbst
  * gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 1.4.44)
 /* 1.4.37: Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des
  * Hausherrn 12.11.2026) - Kennzeichen, Unbekanntes verwerfen und melden, leere Werte, halb gueltige
  * Dateien und die Meldungen kommen von dort; die Beschreibung dieser Linie steht in
  * awm_sicherung_beschreibung(). Liegt neben dieser Datei und schuetzt sich gegen doppeltes Laden. */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 1.4.44, Regeln/07)
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -301,6 +303,7 @@ function awm_config_vorgaben()
         /* Die Tafel des Plugins Dashboard: 1 = auch dort ansagen (nie gesetzt = an), leer = alle offenen Tafeln. */
         'ansage_tafel_ein' => 1,
         'ansage_tafel_namen' => '',
+        'meldung' => meld_vorgaben(awm_meld_anlaesse(), awm_meld_haken_vorgabe()),     // 1.4.44: Meldungen an SignalBot, ab Werk aus
     );
 }
 
@@ -434,6 +437,10 @@ function awm_wert_pruefen($schluessel, $wert)
     /* U2 (Bauart E): eine LISTE nur fuer die Schluessel, die Unterbaeume
      * sind. Bis 1.4.14 liess awm_wert_taugt() jede Liste durch, und die
      * Einzelpruefungen machten mit (string) "Array" daraus. */
+    if ($schluessel === 'meldung') {     // 1.4.44: Block der Meldungen an SignalBot (gemeinsames Modul meldung.php)
+        $f = meld_block_pruefen($wert, awm_meld_anlaesse());
+        return $f ? meld_beanstandung_text($f[0], awm_meld_k()) : '';
+    }
     if (is_array($wert) && !in_array($schluessel, array('cals', 'notify', 'tts', 'ruhe', 'ansage'), true)) {
         return awm_t_oder('PRUEF.G_LISTE', 'muss ein einzelner Wert sein, keine Liste');
     }
@@ -3762,6 +3769,7 @@ function awm_mqtt_senden($msgs, $cal = 1, $raeumen = array())
         return -1;
     }
     $prefix = awm_mqtt_praefix($cal);   // Kalender 1 behaelt die kurzen Topics
+    awm_praefix_haus_melden(awm_config());   // 1.4.44: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) {
         awm_log('MQTT: UDP-Buchse liess sich nicht oeffnen - keine Veroeffentlichung.');
@@ -4355,6 +4363,50 @@ function awm_announce_text2($st = null, $cal = 1) {
 }
 
 /**
+ * 1.4.44 (Signal-Welle, Entscheidung des Hausherrn 24.11.2026, F5 "Kalender ja, Ruhe nein"): die Meldungen an SignalBot
+ * zum Vorabend und zum Abholmorgen - je Kalender mit Haken "Ansage", zur selben Uhrzeit wie die Ansage (Fenster 10 min),
+ * auch ohne "Ansage aktiv" und auch in der Ruhe (Urlaub, nachts, bis Datum gelten nur fuer die Ansage). Eine Quittierung
+ * laesst den Abholmorgen entfallen wie bei der Ansage; das Warten auf Anwesenheit gilt nur fuer das Sprechen.
+ * Je Kalender und Tag einmal (Merker meldet_<n>_<Ymd>, meldet2_<n>_<Ymd>). Rueckgabe: Zahl der gemeldeten Eintraege.
+ */
+function awm_meld_pruefen($jetzt = null)
+{
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $cfg = awm_config();
+    if (!awm_meld_aktiv($cfg)) { return 0; }
+    $b = awm_meld_block($cfg);
+    $imFenster = function ($zeit) use ($jetzt) {
+        if (!preg_match('/^\d{1,2}:\d{2}$/', (string) $zeit)) { return false; }
+        list($hh, $mm) = explode(':', $zeit);
+        $start = mktime((int) $hh, (int) $mm, 0, (int) date('n', $jetzt), (int) date('j', $jetzt), (int) date('Y', $jetzt));
+        return $jetzt >= $start && $jetzt < $start + 600;
+    };
+    $tag = date('Ymd', $jetzt);
+    $l = array();
+    foreach (awm_cals() as $n => $c) {
+        if (empty($c['ansage'])) { continue; }     // F5: ein abgewaehlter Kalender wird nicht gemeldet
+        if (meld_anlass_an($b, 'vorabend')) {
+            $when = preg_match('/^\d{1,2}:\d{2}$/', (string) $cfg['notify']['time']) ? $cfg['notify']['time'] : '18:00';
+            $flag = awm_tmpdir() . '/meldet_' . $n . '_' . $tag;
+            if ($imFenster($when) && !is_file($flag) && awm_ansage_merker($flag)) {
+                $text = awm_announce_text(null, $n);
+                if ($text !== '') { $l[] = array('schluessel' => 'vorabend|' . $n, 'anlass' => 'vorabend', 'text' => $text); }
+            }
+        }
+        if (meld_anlass_an($b, 'morgen')) {
+            $when2 = preg_match('/^\d{1,2}:\d{2}$/', (string) $cfg['notify']['time2']) ? $cfg['notify']['time2'] : '06:30';
+            $flag2 = awm_tmpdir() . '/meldet2_' . $n . '_' . $tag;
+            if ($imFenster($when2) && !is_file($flag2) && awm_ansage_merker($flag2) && !awm_ack_active()) {
+                $text = awm_announce_text2(null, $n);
+                if ($text !== '') { $l[] = array('schluessel' => 'morgen|' . $n, 'anlass' => 'morgen', 'text' => $text); }
+            }
+        }
+    }
+    if ($l) { awm_meld_senden($l, $cfg); }
+    return count($l);
+}
+
+/**
  * Cron-Pruefung: Ansage am Vorabend und am Abholmorgen.
  *
  * ZEITFENSTER STATT MINUTENGLEICHHEIT. Bis 1.3.8 stand hier
@@ -4368,6 +4420,7 @@ function awm_announce_text2($st = null, $cal = 1) {
  * ein Fenster ist also gefahrlos.
  */
 function awm_announce_check() {
+    awm_meld_pruefen();     // 1.4.44: Meldungen an SignalBot - vor dem Schalter "Ansage aktiv" und vor der Ruhe (F5)
     $cfg = awm_config();
     if (empty($cfg['notify']['audio'])) {
         return;
@@ -7269,6 +7322,7 @@ function awm_sicherung_beschreibung(&$gruende = null)
         'tts'    => sicherung_block($tts, $tts_knoten) + array('sichern' => 'ansage_sicherung_bereinigen'),
         'ruhe'   => sicherung_block(array('urlaub', 'nachts', 'von', 'bis', 'bis_datum')),
         'ansage' => sicherung_block(array('vorlage', 'vorlage2')),
+        'meldung' => meld_sicherung_knoten(awm_meld_anlaesse(), awm_meld_k()),     // 1.4.44
     );
     /* Gruppe 1/18 (1.4.25/1.4.26): ein Spaetschluessel, den eine Sicherung einer frueheren Fassung nicht kennt,
      * behaelt beim Zurueckspielen den geltenden Wert - bis 1.4.36 in awm_sicherung_spaet_behalten(). */
@@ -7289,6 +7343,10 @@ function awm_sicherung_beschreibung(&$gruende = null)
         'nie_aus_datei' => array('ansage_token_herkunft'),     // 1.4.28: nie aus einer Datei
         'pruefen' => function ($k, $w) use (&$gruende) {
             $g = awm_wert_pruefen($k, $w);
+            /* 1.4.44: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+            if ($g === '' && $k === 'mqtt_topic' && hb_bereich($w) !== '') {
+                $g = sprintf(awm_t('HAUSBEREICH.SICH_W'), hb_bereich($w));
+            }
             if ($g === '') { return ''; }
             $gruende[$k] = $g;
             return sprintf(awm_t('EINST.SICH_WERT'), $k, $g);
@@ -7800,3 +7858,160 @@ function awm_sicherung_altwerte($daten = null)
  * index.php: sonst steht er dem Endpunkt und jedem weiteren
  * Aufrufer nicht zur Verfuegung (Hausform, REGELN_2). */
 function aw_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
+
+/**
+ * 1.4.44 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function awm_pruef_praefix_haus($cfg)
+{
+    $p = awm_mqtt_basis($cfg);
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_enabled']))) {
+            return array(-1, sprintf(awm_t('HAUSBEREICH.A_AUS'), strval($p), strval($b)));
+        }
+        return array(0, sprintf(awm_t('HAUSBEREICH.A_NEIN'), strval($p), strval($b)));
+    }
+    return array(1, sprintf(awm_t('HAUSBEREICH.A_JA'), strval($p)));
+}
+
+/**
+ * 1.4.44: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function awm_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = awm_mqtt_basis($cfg);
+    if ($merk === null) {
+        $merk = awm_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        awm_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('awm_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (1.4.44, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (awm_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (awm_meld_will()); der Sender trennt die Wege wieder (awm_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function awm_meld_anlaesse()
+{
+    return array('vorabend' => awm_t('EINST.L_ANSAGETEXT'), 'morgen' => awm_t('EINST.L_ANSAGETEXT2'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function awm_meld_haken_vorgabe()
+{
+    return array('vorabend' => 1, 'morgen' => 0);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function awm_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    $n = (is_array($cfg) && isset($cfg['notify']) && is_array($cfg['notify'])) ? $cfg['notify'] : array();
+    if ($a === 'vorabend') { return !empty($n['audio']); }
+    if ($a === 'morgen') { return !empty($n['audio']) && !empty($n['audio2']); }
+    return false;
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function awm_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, awm_meld_anlaesse(), awm_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function awm_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, awm_meld_anlaesse(), awm_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function awm_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(awm_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function awm_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    return awm_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(awm_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function awm_meld_k()
+{
+    return (function () { $p = awm_paths(); return array('plugin' => (string) $p['plugin'], 'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : awm_tmpdir()) + awm_ansage_k(); })();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function awm_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    $anl = awm_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !awm_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function awm_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    $b = awm_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, awm_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        awm_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function awm_meld_test()
+{
+    $r = meld_testmeldung(awm_meld_k());
+    awm_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function awm_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = awm_config(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = awm_meld_k();
+    $o = array();
+    /* 1.4.44: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(awm_meld_block($cfg), awm_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(awm_meld_block($cfg), awm_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
+}

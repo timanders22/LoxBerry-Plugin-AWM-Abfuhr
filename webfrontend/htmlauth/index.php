@@ -381,6 +381,13 @@ if ($aw_post && isset($_POST['mqtt_save'])) {
     } elseif (awm_wert_pruefen('mqtt_topic', $aw_thema) !== '') {
         $aw_fehler[] = awm_t('MELD.THEMA_UNGUELTIG');
         $aw_bean[] = 'mqtt_topic';
+    } elseif (hb_bereich($aw_thema) !== '' && $aw_thema !== trim((string) awm_config()['mqtt_topic'])) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 1.4.44 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        $aw_fehler[] = sprintf(awm_t('HAUSBEREICH.FEHLER'), $aw_thema, hb_bereich($aw_thema));
+        $aw_bean[] = 'mqtt_topic';
     } else {
         $aw_new['mqtt_topic'] = $aw_thema;
         if (aw_speichern($aw_new, $aw_fehler)) {
@@ -684,7 +691,7 @@ if ($aw_post && isset($_POST['fetchnow'])) {
  * werden, Tonnenzuordnung, MQTT-Werte und Aktionstoken zu retten. Genau so
  * gingen am 13.08.2026 in drei anderen Linien die Token verloren.
  */
-if ($aw_post && isset($_POST['save'])) {
+if ($aw_post && isset($_POST['save']) && !isset($_POST['meld_test'])) {     // 1.4.44: der Knopf Testmeldung (im selben Formular, verstecktes Feld save) speichert nicht
     $aw_bean_form = 'save';
     $aw_new = awm_config(true);
     $aw_vorher = $aw_new;
@@ -847,6 +854,12 @@ if ($aw_post && isset($_POST['save'])) {
     foreach ($aw_tb2 as $aw_tb) { $aw_bean[] = $aw_tb; }
     $aw_new['ansage_tafel_ein'] = (int) $aw_tr['tafel'];
     $aw_new['ansage_tafel_namen'] = (string) $aw_tr['tafel_namen'];
+    // 1.4.44: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+    $aw_mm = array();
+    $aw_mb = array();
+    $aw_new['meldung'] = meld_formular_lesen($_POST, isset($aw_new['meldung']) ? $aw_new['meldung'] : null, awm_meld_anlaesse(), $aw_mm, $aw_mb, awm_meld_k(), awm_meld_haken_vorgabe());
+    foreach ($aw_mm as $aw_mx) { $aw_fehler[] = $aw_mx['text']; }
+    foreach ($aw_mb as $aw_my) { $aw_bean[] = $aw_my; }
     // 1.4.31: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.4.30 ueberschrieb es der naechste Abgleich.
     $aw_new['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($aw_new['ansage_token_herkunft']) ? $aw_new['ansage_token_herkunft'] : array(), array('namen' => awm_ansage_namen()));
     /* Ein Feld, das keine Zeichenkette ist (name[]), ist eine Beanstandung; Rand-Leerraum
@@ -979,6 +992,12 @@ if ($aw_sperre) { awm_sperre_frei($aw_sperre); }     // C9: nach den Handlern
  * oder Text; die Umleitung (U1) unten sorgt dafuer, dass Neuladen nichts ausloest. */
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 1.4.44: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($aw_post && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = awm_meld_test();
+    if ($meld_ok) { $aw_hinweise[] = $meld_satz; } else { $aw_fehler[] = $meld_satz; }
+    $aw_tab = 'tab-test';
+}
 if ($aw_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $aw_tcfg = awm_config();
     $aw_tk = awm_ansage_k();
@@ -1443,6 +1462,7 @@ echo ansage_formular_html($aw_tts, array(
     'ziele' => awm_mit_zielen(),
     'ziele_post' => aw_ein_aktiv('save') ? awm_ziele_x2_post($GLOBALS['aw_ein']['werte']) : null), awm_ansage_k());
 echo awm_ansage_tafel_html($aw_cfg, function ($n) { return aw_em('save', $n); }, function ($n, $g) { return aw_ew('save', $n, $g); }, function ($n, $g) { return aw_eh('save', $n, $g); }); ?>
+<?= awm_meld_form_html($aw_cfg) ?>
 <div class="sm-hilfe"><?= aw_e(awm_t('TTS.H_TESTANSAGE')) ?></div>
 
 <div class="sm-row">
@@ -2018,6 +2038,10 @@ $aw_pflicht[] = awm_pruef_vorlagen(count($aw_cals));
 $aw_pflicht = array_merge($aw_pflicht, awm_pruef_cron());
 $aw_pflicht[] = awm_pruef_bruecke();       // Gruppe 1 / MQTT (1.4.25): Befehlsbruecke
 $aw_pflicht[] = awm_pruef_v2_haken($aw_cfg);   // Nachtwelle N5 (1.4.27): Gateway V2 gegen subscriptions.json
+// 1.4.44: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+$aw_hb = awm_pruef_praefix_haus($aw_cfg);
+$aw_pflicht[] = array($aw_hb[0] === 1 ? 'ok' : ($aw_hb[0] === 0 ? 'fehl' : 'hinweis'),
+                      awm_t('HAUSBEREICH.F_TEST') . ' ' . $aw_hb[1]);
 $aw_ph = 0;
 foreach ($aw_pflicht as $aw_z) {
     if ($aw_z[0] === 'hinweis') { $aw_ph++; continue; }
