@@ -829,6 +829,7 @@ if ($aw_post && isset($_POST['save']) && !isset($_POST['meld_test'])) {     // 1
     $aw_new['ruhe'] = array(
         'urlaub' => isset($_POST['ruhe_urlaub']) ? 1 : 0,
         'nachts' => isset($_POST['ruhe_nachts']) ? 1 : 0,
+        'frei' => isset($_POST['ruhe_frei']) ? 1 : 0,       // 1.4.45
         'von' => $aw_rv,
         'bis' => $aw_rb,
         'bis_datum' => $aw_bd_ymd,
@@ -1432,6 +1433,10 @@ if ($aw_frame) {
     <label style="display:inline-flex;align-items:center;gap:6px;">
         <input data-role="none" type="checkbox" name="ruhe_nachts" <?= aw_eh('save', 'ruhe_nachts', !empty($aw_ruhe['nachts'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_NACHTS') ?>
     </label>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin-left:24px;">
+        <input data-role="none" type="checkbox" name="ruhe_frei" <?= aw_eh('save', 'ruhe_frei', !empty($aw_ruhe['frei'])) ? 'checked' : '' ?>> <?= aw_t('EINST.L_FREI') ?>
+    </label>
+    <div class="sm-hilfe"><?= aw_t('EINST.H_FREI') ?></div>
     <div class="sm-hilfe"><?= aw_t('EINST.H_URLAUB') ?>
     <?php $aw_dt = awm_daytype(); ?>
     <?php if ($aw_dt['quelle'] === 'keine') { ?><span class="sm-grau">(<?= aw_t('EINST.FERIEN_FEHLT') ?>)</span><?php } else { ?><span class="sm-an">(<?= aw_e($aw_dt['quelle']) ?>)</span><?php } ?>

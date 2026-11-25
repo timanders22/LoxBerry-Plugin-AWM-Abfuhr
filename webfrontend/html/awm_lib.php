@@ -319,7 +319,7 @@ function awm_config_teilvorgaben()
          * Formular. */
         'tts' => ansage_vorgaben('musicserver'),
         'ruhe' => array('urlaub' => 0, 'nachts' => 0, 'von' => '22:00', 'bis' => '07:00',
-                        'bis_datum' => ''),
+                        'bis_datum' => '', 'frei' => 0),
         'ansage' => array('vorlage' => '', 'vorlage2' => ''),
     );
 }
@@ -560,7 +560,7 @@ function awm_wert_pruefen($schluessel, $wert)
             return '';
         case 'ruhe':
             if (!is_array($wert)) { return awm_t_oder('PRUEF.G_KEINE_LISTE', 'muss eine Liste sein'); }
-            foreach (array('urlaub', 'nachts') as $k) {
+            foreach (array('urlaub', 'nachts', 'frei') as $k) {
                 if (isset($wert[$k]) && !awm_ist_schalter($wert[$k])) {
                     return sprintf(awm_t_oder('PRUEF.G_SCHALTER_K', '%s muss 0 oder 1 sein'), $k);
                 }
@@ -2622,14 +2622,16 @@ function awm_daytype($tag = null)
 
 /**
  * Darf jetzt gesprochen werden? Rueckgabe: true/false, Grund ueber &$grund.
+ * $k (1.4.45, Pruefstand): 'jetzt' (Rueckruf, gibt den Zeitpunkt) und die Rueckrufe von awm_ruhe_frei_ende().
  */
-function awm_ruhe_aktiv(&$grund = '')
+function awm_ruhe_aktiv(&$grund = '', array $k = array())
 {
+    $zeit = (isset($k['jetzt']) && is_callable($k['jetzt'])) ? (int) call_user_func($k['jetzt']) : time();
     $cfg = awm_config();
     $r = $cfg['ruhe'];
     $grund = '';
     $bis = preg_replace('/[^0-9]/', '', (string) $r['bis_datum']);
-    if (strlen($bis) === 8 && date('Ymd') <= $bis) {
+    if (strlen($bis) === 8 && date('Ymd', $zeit) <= $bis) {
         $grund = 'Ansage ist bis zum ' . substr($bis, 6, 2) . '.' . substr($bis, 4, 2) . '.' . substr($bis, 0, 4) . ' ausgesetzt';
         return true;
     }
@@ -2643,15 +2645,47 @@ function awm_ruhe_aktiv(&$grund = '')
     if (!empty($r['nachts'])) {
         $von = preg_match('/^\d{1,2}:\d{2}$/', (string) $r['von']) ? $r['von'] : '22:00';
         $bis2 = preg_match('/^\d{1,2}:\d{2}$/', (string) $r['bis']) ? $r['bis'] : '07:00';
-        $jetzt = date('H:i');
+        $jetzt = date('H:i', $zeit);
         $drin = ($von <= $bis2) ? ($jetzt >= $von && $jetzt < $bis2)
                                 : ($jetzt >= $von || $jetzt < $bis2);
         if ($drin) {
             $grund = 'Sperrzeit ' . $von . ' bis ' . $bis2;
             return true;
         }
+        if (!empty($r['frei'])) {       // 1.4.45: an Nicht-Schultagen laenger ruhen (ab Werk aus)
+            $ende = awm_ruhe_frei_ende($von, $bis2, $zeit, $k);
+            if ($ende !== '') {
+                $grund = 'Sperrzeit ' . $von . ' bis ' . $ende . ' (Nicht-Schultag, Ende aus Ferien und Feiertage)';
+                return true;
+            }
+        }
     }
     return false;
+}
+
+/**
+ * 1.4.45 (Entscheidung des Hausherrn 25.11.2026): das spaetere Ende der eigenen Ruhezeit an einem Nicht-Schultag, oder ''.
+ * Nur fuer eine Ruhezeit ueber Mitternacht (von nach bis). Nicht-Schultag und Ende kommen wie bei allen Linien aus dem
+ * Sprachmodul (ansage_regeln_heute_lesen(): haus/kalender/datum und haus/kalender/heute/frei von Ferien und Feiertage,
+ * ohne sie Samstag und Sonntag nach der Uhr; Ende haus/ansage/nachtruhe_frei_bis). Ein Ende, das die eigene Ruhezeit nicht
+ * verlaengert, gilt nicht. Der Broker wird nur zwischen dem eigenen Ende und 12:00 gefragt, mit einer kurzen Sitzung.
+ * $k: Rueckrufe wie im Sprachmodul ('haus' ersetzt den Broker; Pruefstand).
+ */
+function awm_ruhe_frei_ende($von, $bis, $zeit = null, array $k = array())
+{
+    $hm = function ($s) {
+        return preg_match('/^(\d{1,2}):(\d{2})$/', (string) $s, $m) && (int) $m[1] < 24 && (int) $m[2] < 60
+            ? sprintf('%02d:%02d', (int) $m[1], (int) $m[2]) : '';
+    };
+    $von = $hm($von);
+    $bis = $hm($bis);
+    $zeit = ($zeit === null) ? time() : (int) $zeit;
+    $jetzt = date('H:i', $zeit);
+    if ($von === '' || $bis === '' || $von <= $bis || $jetzt < $bis || $jetzt >= '12:00') { return ''; }
+    $k['jetzt'] = function () use ($zeit) { return $zeit; };
+    list($rg, $lage) = ansage_regeln_heute_lesen(array('nachtruhe' => 1, 'von' => $von, 'bis' => $bis, 'bis_frei' => ''), $k);
+    if ($lage['quelle'] !== 'HAUS' || $rg['bis'] === $bis) { return ''; }
+    return ansage_nachtruhe($rg, $zeit) ? $rg['bis'] : '';
 }
 
 /* ---------------- Ansage-/Push-Fenster (fuer Loxone) ---------------- */
@@ -7301,7 +7335,7 @@ function awm_sicherung_lesen($roh, &$namen = null, &$r = null, $jetzt = null)
  * Die Unterschluessel der Bloecke sind die, die diese Fassung liest und
  * schreibt (gemessen 12.11.2026 an awm_config_teilvorgaben(), awm_wert_pruefen(),
  * den Kalender-Handlern in htmlauth/index.php und awm_regeln.php): notify
- * audio/push/time/audio2/time2, ruhe urlaub/nachts/von/bis/bis_datum, ansage
+ * audio/push/time/audio2/time2, ruhe urlaub/nachts/von/bis/bis_datum/frei (1.4.45), ansage
  * vorlage/vorlage2, tts awm_ansage_schluessel() und die Sprechtoken (ein
  * gesichertes Sprechtoken weist awm_wert_pruefen() ab), je Kalender
  * name/url/hochgeladen/ansage/zonen/regeln/regeln_modus/termine, je Regel
@@ -7320,7 +7354,7 @@ function awm_sicherung_beschreibung(&$gruende = null)
                               'termine' => sicherung_liste(array('datum', 'tonne', 'text')))),
         'notify' => sicherung_block(array('audio', 'push', 'time', 'audio2', 'time2')),
         'tts'    => sicherung_block($tts, $tts_knoten) + array('sichern' => 'ansage_sicherung_bereinigen'),
-        'ruhe'   => sicherung_block(array('urlaub', 'nachts', 'von', 'bis', 'bis_datum')),
+        'ruhe'   => sicherung_block(array('urlaub', 'nachts', 'von', 'bis', 'bis_datum', 'frei')),
         'ansage' => sicherung_block(array('vorlage', 'vorlage2')),
         'meldung' => meld_sicherung_knoten(awm_meld_anlaesse(), awm_meld_k()),     // 1.4.44
     );
@@ -7447,7 +7481,7 @@ function awm_eingabe_felder($formular)
             'autorenew' => $h, 'melden' => $h,
             'notify_audio' => $h, 'notify_push' => $h, 'notify_time' => $t,
             'notify_audio2' => $h, 'notify_time2' => $t,
-            'ruhe_urlaub' => $h, 'ruhe_nachts' => $h, 'ruhe_von' => $t,
+            'ruhe_urlaub' => $h, 'ruhe_nachts' => $h, 'ruhe_frei' => $h, 'ruhe_von' => $t,
             'ruhe_bis_zeit' => $t, 'ruhe_bis' => $t,
             'tts_mode' => $t, 'tts_ip' => $t, 'tts_port' => $t, 'tts_zones' => $t,
             'tts_volume' => $t, 'tts_lang' => $t, 'tts_template' => $t,

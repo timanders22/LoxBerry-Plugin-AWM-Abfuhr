@@ -23,6 +23,10 @@ Der Name „AWM“ steht noch im Plugin-Ordner und in den Adressen
 Dateinamen. Sie gelten für jeden Entsorger gleich und bleiben, damit eingerichtete
 Anlagen weiterlaufen.
 
+## Neu in 1.4.45
+
+- **An Nicht-Schultagen länger ruhen (Entscheidung des Hausherrn 25.11.2026):** Unter *Ruhezeiten* im Reiter *Einstellungen* steht neben „Nachts nicht sprechen“ der neue Haken „An Nicht-Schultagen länger ruhen“, ab Werk aus. Eingeschaltet endet die eigene Ruhezeit an Wochenenden, Feiertagen und in den Ferien erst zu der Uhrzeit, die im Plugin *Ferien und Feiertage* unter „Nachtruhe an Nicht-Schultagen bis“ steht (Thema `haus/ansage/nachtruhe_frei_bis`), sofern sie später liegt als „Ruhe bis“. Ob heute ein Nicht-Schultag ist, sagt dasselbe Plugin (`haus/kalender/heute/frei`); ohne es zählen Samstag und Sonntag. Das betrifft vor allem die zweite Ansage am Abholmorgen; die Erinnerung am Vorabend bleibt, wie sie ist. Der Broker wird dafür nur morgens zwischen „Ruhe bis“ und 12:00 gefragt, mit einer kurzen Sitzung. Der Schlüssel `ruhe.frei` reist mit „Einstellungen sichern“; eine ältere Sicherung ohne ihn lässt den Haken aus.
+
 ## Neu in 1.4.44
 
 - **Themen-Präfix auf einem gemeinsamen Bereich (Entscheidung des Hausherrn 23.11.2026 „Nur gemeinsame Bereiche“):** Ein MQTT-Präfix, das einer der gemeinsamen Bereiche unter `haus/` ist oder darin beginnt (`haus/<bereich>` bzw. `haus/<bereich>/…` für abfahrt, abfuhr, alarm, ansage, anwesenheit, energie, fahrzeug, kalender, klima, pv, raumklima, sonne, speicher, strompreis, szene, tag, tuer, usv, wetter), weisen Speichern im Reiter *MQTT* und das Zurückspielen einer Sicherung jetzt mit Namen ab: Dort liefern die Plugins einander Zustände ohne eigenes Präfix. `haus` allein und andere Präfixe unter `haus/` (etwa `haus/fenster`) bleiben erlaubt; Groß und Klein zählen wie bei MQTT. Ist ein solches Präfix schon gespeichert, ändert sich am Betrieb nichts – das Plugin sendet weiter darunter, nennt es einmal im Protokoll, und der Reiter *Test* zeigt die Zeile „Liegt das Themen-Präfix außerhalb der gemeinsamen Bereiche unter haus/?“ rot. Liste und Texte kommen aus dem gemeinsamen Modul `haus_bereiche.php`.
